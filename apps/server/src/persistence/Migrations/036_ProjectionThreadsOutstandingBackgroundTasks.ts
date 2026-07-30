@@ -22,63 +22,73 @@ export default Effect.gen(function* () {
   }
 
   // Backfill from the projected activity timeline, mirroring the live
-  // derivation in ProjectionPipeline: a task counts only with a well-formed
-  // string taskId, and it is settled only by a task.completed at or after the
-  // task's first opening activity — a stale completed that precedes the start
+  // derivation in ProjectionPipeline exactly. Rows are replayed in the same
+  // total order (unsequenced legacy rows first as a group, then sequence,
+  // then createdAt/activityId — the ROW_NUMBER window below), a task counts
+  // only with a well-formed string taskId, it opens at its first
+  // started/progress row, and it is settled only by a task.completed that
+  // replays after that opening — a stale completed that precedes the start
   // does not settle it, and a progress row after a completed does not reopen
   // it. The outer WHERE is the session gate: a thread whose provider process
   // is gone takes its children with it, so dead threads keep the 0/NULL
   // default instead of resurrecting as permanently working.
   yield* sql`
+    WITH task_events AS (
+      SELECT
+        thread_id,
+        kind,
+        created_at,
+        json_extract(payload_json, '$.taskId') AS task_id,
+        ROW_NUMBER() OVER (
+          PARTITION BY thread_id
+          ORDER BY COALESCE(sequence, -1), created_at, activity_id
+        ) AS ordinal
+      FROM projection_thread_activities
+      WHERE kind IN ('task.started', 'task.progress', 'task.completed')
+        AND json_type(payload_json, '$.taskId') = 'text'
+        AND TRIM(json_extract(payload_json, '$.taskId')) <> ''
+    ),
+    task_state AS (
+      SELECT
+        thread_id,
+        task_id,
+        MIN(CASE WHEN kind IN ('task.started', 'task.progress') THEN ordinal END)
+          AS first_open_ordinal,
+        MAX(CASE WHEN kind = 'task.completed' THEN ordinal END)
+          AS last_completed_ordinal,
+        (
+          SELECT opening.created_at
+          FROM task_events AS opening
+          WHERE opening.thread_id = task_events.thread_id
+            AND opening.task_id = task_events.task_id
+            AND opening.kind IN ('task.started', 'task.progress')
+          ORDER BY opening.ordinal
+          LIMIT 1
+        ) AS started_at
+      FROM task_events
+      GROUP BY thread_id, task_id
+    ),
+    thread_aggregate AS (
+      SELECT
+        thread_id,
+        COUNT(*) AS open_count,
+        MIN(started_at) AS oldest_started_at
+      FROM task_state
+      WHERE first_open_ordinal IS NOT NULL
+        AND (last_completed_ordinal IS NULL OR last_completed_ordinal < first_open_ordinal)
+      GROUP BY thread_id
+    )
     UPDATE projection_threads
     SET
       outstanding_background_task_count = COALESCE((
-        SELECT COUNT(DISTINCT json_extract(open_activity.payload_json, '$.taskId'))
-        FROM projection_thread_activities AS open_activity
-        WHERE open_activity.thread_id = projection_threads.thread_id
-          AND open_activity.kind IN ('task.started', 'task.progress')
-          AND json_type(open_activity.payload_json, '$.taskId') = 'text'
-          AND TRIM(json_extract(open_activity.payload_json, '$.taskId')) <> ''
-          AND NOT EXISTS (
-            SELECT 1
-            FROM projection_thread_activities AS settled_activity
-            WHERE settled_activity.thread_id = open_activity.thread_id
-              AND settled_activity.kind = 'task.completed'
-              AND json_extract(settled_activity.payload_json, '$.taskId')
-                = json_extract(open_activity.payload_json, '$.taskId')
-              AND settled_activity.created_at >= (
-                SELECT MIN(first_open.created_at)
-                FROM projection_thread_activities AS first_open
-                WHERE first_open.thread_id = open_activity.thread_id
-                  AND first_open.kind IN ('task.started', 'task.progress')
-                  AND json_extract(first_open.payload_json, '$.taskId')
-                    = json_extract(open_activity.payload_json, '$.taskId')
-              )
-          )
+        SELECT open_count
+        FROM thread_aggregate
+        WHERE thread_aggregate.thread_id = projection_threads.thread_id
       ), 0),
       outstanding_background_task_started_at = (
-        SELECT MIN(open_activity.created_at)
-        FROM projection_thread_activities AS open_activity
-        WHERE open_activity.thread_id = projection_threads.thread_id
-          AND open_activity.kind IN ('task.started', 'task.progress')
-          AND json_type(open_activity.payload_json, '$.taskId') = 'text'
-          AND TRIM(json_extract(open_activity.payload_json, '$.taskId')) <> ''
-          AND NOT EXISTS (
-            SELECT 1
-            FROM projection_thread_activities AS settled_activity
-            WHERE settled_activity.thread_id = open_activity.thread_id
-              AND settled_activity.kind = 'task.completed'
-              AND json_extract(settled_activity.payload_json, '$.taskId')
-                = json_extract(open_activity.payload_json, '$.taskId')
-              AND settled_activity.created_at >= (
-                SELECT MIN(first_open.created_at)
-                FROM projection_thread_activities AS first_open
-                WHERE first_open.thread_id = open_activity.thread_id
-                  AND first_open.kind IN ('task.started', 'task.progress')
-                  AND json_extract(first_open.payload_json, '$.taskId')
-                    = json_extract(open_activity.payload_json, '$.taskId')
-              )
-          )
+        SELECT oldest_started_at
+        FROM thread_aggregate
+        WHERE thread_aggregate.thread_id = projection_threads.thread_id
       )
     WHERE EXISTS (
       SELECT 1

@@ -89,6 +89,7 @@ layer("036_ProjectionThreadsOutstandingBackgroundTasks", (it) => {
         readonly kind: string;
         readonly payload: string;
         readonly createdAt: string;
+        readonly sequence?: number;
       }) =>
         sql`
           INSERT INTO projection_thread_activities (
@@ -110,7 +111,7 @@ layer("036_ProjectionThreadsOutstandingBackgroundTasks", (it) => {
             ${input.kind},
             ${input.kind},
             ${input.payload},
-            NULL,
+            ${input.sequence ?? null},
             ${input.createdAt}
           )
         `;
@@ -247,6 +248,28 @@ layer("036_ProjectionThreadsOutstandingBackgroundTasks", (it) => {
         createdAt: "2026-07-01T00:06:00.000Z",
       });
 
+      // Sequence outranks wall clock, exactly as in the live replay: this
+      // completion carries a later sequence but an earlier createdAt (clock
+      // skew), and it must still settle the task.
+      yield* insertThread("thread-skewed");
+      yield* insertSession("thread-skewed", "ready");
+      yield* insertActivity({
+        activityId: "activity-skewed-1",
+        threadId: "thread-skewed",
+        kind: "task.started",
+        payload: '{"taskId":"task-8"}',
+        createdAt: "2026-07-01T00:05:00.000Z",
+        sequence: 1,
+      });
+      yield* insertActivity({
+        activityId: "activity-skewed-2",
+        threadId: "thread-skewed",
+        kind: "task.completed",
+        payload: '{"taskId":"task-8","status":"completed"}',
+        createdAt: "2026-07-01T00:02:00.000Z",
+        sequence: 2,
+      });
+
       yield* runMigrations({ toMigrationInclusive: 36 });
 
       const rows = yield* sql<{
@@ -292,6 +315,11 @@ layer("036_ProjectionThreadsOutstandingBackgroundTasks", (it) => {
         },
         {
           threadId: "thread-settled",
+          outstandingBackgroundTaskCount: 0,
+          outstandingBackgroundTaskStartedAt: null,
+        },
+        {
+          threadId: "thread-skewed",
           outstandingBackgroundTaskCount: 0,
           outstandingBackgroundTaskStartedAt: null,
         },
