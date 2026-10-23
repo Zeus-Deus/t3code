@@ -28,7 +28,11 @@ interface Call {
 type Launch =
   | { state: "proposed" }
   | { state: "started"; threadId?: string; diagnostic?: string; choices?: unknown }
-  | { state: "uncertain" | "pending"; diagnostic?: string; choices?: unknown };
+  | {
+      state: "uncertain" | "pending" | "starting" | "abandoned";
+      diagnostic?: string;
+      choices?: unknown;
+    };
 
 const DEFAULTS = {
   modelSelection: { instanceId: "codex", model: "gpt-5-codex" },
@@ -168,6 +172,10 @@ function mountView(initial: PluginViewContext) {
 
 const startButton = (view: ReturnType<typeof mountView>, taskId: string) =>
   view.row(taskId).querySelector<HTMLButtonElement>('button[data-action="start"]');
+const rowButton = (view: ReturnType<typeof mountView>, taskId: string, action: string) =>
+  view.row(taskId).querySelector<HTMLButtonElement>(`button[data-action="${action}"]`);
+const ABANDONED =
+  "Launch acknowledged and retired. A thread may already exist; this does not cancel or delete it. Proposing a new plan may duplicate that work.";
 
 it("shows each task's recorded launch state and never offers to restart an uncertain one", async () => {
   using view = mountView(card(CARD_FEATURES));
@@ -496,4 +504,211 @@ it("asks nothing without a thread", async () => {
     expect(view.$("#placeholder").textContent).toContain("Open Task Launcher beside a thread"),
   );
   expect(view.calls).toEqual([]);
+});
+
+it("abandons an uncertain task only after a confirmation that names the thread to look for", async () => {
+  using view = mountView(card(CARD_FEATURES));
+  (await view.nextCall("read")).resolve({
+    data: planData([
+      task("t1", "Review tests"),
+      task("t2", "Fix flaky test"),
+      task("t3", "Update docs", { state: "uncertain", diagnostic: UNCERTAIN }),
+    ]),
+  });
+  await view.rowState("t3", "uncertain");
+  expect(rowButton(view, "t1", "acknowledge")).toBeNull();
+  view.choose("#runtime", "auto");
+
+  rowButton(view, "t3", "acknowledge")!.focus();
+  rowButton(view, "t3", "acknowledge")!.click();
+  const confirm = view.row("t3").querySelector(".confirm")!;
+  // Keyboard focus moves to the safe choice, not to the confirmation.
+  expect(view.doc().activeElement).toBe(rowButton(view, "t3", "acknowledge-cancel"));
+  expect(confirm.textContent).toContain("“[Task Launcher] Update docs”");
+  expect(confirm.textContent).toContain("doesn't cancel or delete");
+  expect(confirm.textContent).toContain("duplicate");
+  // Backing out sends nothing.
+  rowButton(view, "t3", "acknowledge-cancel")!.click();
+  expect(view.row("t3").querySelector(".confirm")).toBeNull();
+  expect(view.calls).toEqual([]);
+
+  rowButton(view, "t3", "acknowledge")!.click();
+  rowButton(view, "t3", "acknowledge-confirm")!.click();
+  const acknowledge = await view.nextCall("acknowledge");
+  expect(acknowledge.input).toEqual({ planId: "plan-1", taskId: "t3", confirmUncertain: true });
+  await vi.waitFor(() => expect(startButton(view, "t1")!.disabled).toBe(true));
+  expect(view.$<HTMLButtonElement>("#start-all").disabled).toBe(true);
+  expect(rowButton(view, "t3", "acknowledge-confirm")!.disabled).toBe(true);
+  // A signal during the acknowledgement waits for its answer.
+  view.host.changed("view:launcher");
+  await Promise.resolve();
+  expect(view.calls).toEqual([]);
+
+  acknowledge.resolve({
+    data: planData([
+      task("t1", "Review tests"),
+      task("t2", "Fix flaky test"),
+      task("t3", "Update docs", {
+        state: "abandoned",
+        diagnostic: ABANDONED,
+        choices: { ...DEFAULTS, workspaceStrategy: { type: "root" } },
+      }),
+    ]),
+  });
+  await view.rowState("t3", "abandoned");
+  expect(view.row("t3").querySelector(".state")!.textContent).toBe("Abandoned");
+  expect(view.row("t3").querySelector(".diagnostic")!.textContent).toBe(ABANDONED);
+  expect(view.row("t3").querySelector(".confirm")).toBeNull();
+  expect(startButton(view, "t3")).toBeNull();
+  expect(rowButton(view, "t3", "acknowledge")).toBeNull();
+  expect(view.$("#tally").textContent).toBe("2 not started · 1 abandoned");
+  expect(view.$("#status").textContent).toContain("not cancelled");
+  // Abandoned work is never part of Start all, and the unsaved settings survived.
+  expect(view.$("#start-all").textContent).toBe("Start 2 tasks");
+  expect(view.$<HTMLSelectElement>("#runtime").value).toBe("auto");
+
+  const reread = await view.nextCall("read");
+  expect(reread.input).toEqual({ planId: "plan-1" });
+  reread.resolve({
+    data: planData([
+      task("t1", "Review tests"),
+      task("t2", "Fix flaky test"),
+      task("t3", "Update docs", { state: "abandoned", diagnostic: ABANDONED }),
+    ]),
+  });
+  await vi.waitFor(() => expect(view.$<HTMLButtonElement>("#start-all").disabled).toBe(false));
+  view.$("#start-all").click();
+  const startAll = await view.nextCall("startAll");
+  expect(startAll.input).toMatchObject({
+    choices: [
+      { taskId: "t1", runtimeMode: "auto" },
+      { taskId: "t2", runtimeMode: "auto" },
+    ],
+  });
+});
+
+it("shows a refused acknowledgement as is, rereads, and never sends it again", async () => {
+  using view = mountView(sidePanel);
+  (await view.nextCall("read")).resolve({
+    data: planData([task("t1", "Update docs", { state: "uncertain", diagnostic: UNCERTAIN })]),
+  });
+  await view.rowState("t1", "uncertain");
+  rowButton(view, "t1", "acknowledge")!.click();
+  rowButton(view, "t1", "acknowledge-confirm")!.click();
+  const acknowledge = await view.nextCall("acknowledge");
+  expect(acknowledge.input).toEqual({ planId: "plan-1", taskId: "t1", confirmUncertain: true });
+
+  acknowledge.reject(new Error("Only uncertain launches can be acknowledged."));
+  const reread = await view.nextCall("read");
+  await vi.waitFor(() =>
+    expect(view.$("#failure-text").textContent).toBe(
+      "Only uncertain launches can be acknowledged.",
+    ),
+  );
+  expect(view.$("#status").textContent).toBe("");
+  reread.resolve({
+    data: planData([task("t1", "Update docs", { state: "uncertain", diagnostic: UNCERTAIN })]),
+  });
+  await vi.waitFor(() => expect(rowButton(view, "t1", "acknowledge")!.disabled).toBe(false));
+  expect(view.row("t1").dataset.state).toBe("uncertain");
+  expect(view.row("t1").querySelector(".confirm")).toBeNull();
+  expect(view.calls).toEqual([]);
+});
+
+it("drops an acknowledgement answer for a card the view has left", async () => {
+  using view = mountView(card(CARD_FEATURES));
+  (await view.nextCall("read")).resolve({
+    data: planData([task("t1", "Update docs", { state: "uncertain", diagnostic: UNCERTAIN })]),
+  });
+  await view.rowState("t1", "uncertain");
+  rowButton(view, "t1", "acknowledge")!.click();
+  rowButton(view, "t1", "acknowledge-confirm")!.click();
+  const acknowledge = await view.nextCall("acknowledge");
+
+  const other = card(CARD_FEATURES);
+  view.setContext({ ...other, card: { ...other.card!, data: { planId: "plan-2" } } });
+  const read = await view.nextCall("read");
+  expect(read.input).toEqual({ planId: "plan-2" });
+  read.resolve({
+    data: planData([task("t1", "Update docs", { state: "uncertain", diagnostic: UNCERTAIN })]),
+  });
+  await view.rowState("t1", "uncertain");
+  acknowledge.resolve({
+    data: planData([task("t1", "Update docs", { state: "abandoned", diagnostic: ABANDONED })]),
+  });
+  // The bridge delivers in order, so by the next signal's read the late answer was handled.
+  view.host.changed("view:launcher");
+  const again = await view.nextCall("read");
+  expect(view.row("t1").dataset.state).toBe("uncertain");
+  expect(view.row("t1").querySelector(".confirm")).toBeNull();
+  expect(view.$("#status").textContent).toBe("");
+  again.resolve({ data: { plan: null, canStart: true, canWorktree: true } });
+});
+
+it("never offers Start or abandonment for a task another view is starting or one already abandoned", async () => {
+  using view = mountView(sidePanel);
+  (await view.nextCall("read")).resolve({
+    data: planData([
+      task("t1", "Review tests"),
+      task("t2", "Fix flaky test", { state: "starting" }),
+      task("t3", "Update docs", { state: "abandoned" }),
+      task("t4", "Bump deps"),
+    ]),
+  });
+  await view.rowState("t2", "starting");
+  expect(view.row("t2").querySelector(".state")!.textContent).toBe("Starting…");
+  expect(view.row("t3").dataset.state).toBe("abandoned");
+  // Without the backend's text, an abandoned task still says the thread was not cancelled.
+  expect(view.row("t3").querySelector(".diagnostic")!.textContent).toContain(
+    "“[Task Launcher] Update docs”",
+  );
+  for (const id of ["t2", "t3"]) {
+    expect(startButton(view, id)).toBeNull();
+    expect(rowButton(view, id, "acknowledge")).toBeNull();
+  }
+  expect(view.$("#tally").textContent).toBe("2 not started · 1 starting · 1 abandoned");
+  view.$("#start-all").click();
+  expect((await view.nextCall("startAll")).input).toMatchObject({
+    choices: [{ taskId: "t1" }, { taskId: "t4" }],
+  });
+});
+
+it("warns before starting several tasks in one project folder without choosing a worktree for the person", async () => {
+  using view = mountView(card(CARD_FEATURES));
+  (await view.nextCall("read")).resolve({
+    data: planData([task("t1", "Review tests"), task("t2", "Fix flaky test")]),
+  });
+  await view.rowState("t1", "proposed");
+  expect(view.$<HTMLInputElement>("#ws-root").checked).toBe(true);
+  expect(view.$("#share-warning").hidden).toBe(false);
+  expect(view.$("#share-warning").textContent).toContain("same project folder");
+  expect(view.$("#share-warning").textContent).toContain("New worktree");
+
+  view.$("#ws-worktree").click();
+  expect(view.$("#share-warning").hidden).toBe(true);
+  // No base is guessed for the person.
+  expect(view.$<HTMLInputElement>("#base-ref").value).toBe("");
+  expect(view.$<HTMLButtonElement>("#start-all").disabled).toBe(true);
+
+  view.$("#ws-root").click();
+  view.$("#refresh").click();
+  (await view.nextCall("read")).resolve({
+    data: planData([task("t1", "Review tests"), task("t2", "Fix flaky test")], {
+      canWorktree: false,
+    }),
+  });
+  await vi.waitFor(() => expect(view.$<HTMLInputElement>("#ws-worktree").disabled).toBe(true));
+  expect(view.$("#share-warning").hidden).toBe(false);
+  expect(view.$("#share-warning").textContent).not.toContain("New worktree");
+
+  view.$("#refresh").click();
+  (await view.nextCall("read")).resolve({
+    data: planData([
+      task("t1", "Review tests"),
+      task("t2", "Fix flaky test", { state: "started", threadId: "thread-b" }),
+    ]),
+  });
+  // One task left: nothing to share.
+  await view.rowState("t2", "started");
+  expect(view.$("#share-warning").hidden).toBe(true);
 });

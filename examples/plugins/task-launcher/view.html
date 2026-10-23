@@ -203,6 +203,9 @@
         border-color: var(--warning);
         border-style: dashed;
       }
+      .task[data-state="abandoned"] .mark {
+        border-style: dotted;
+      }
       .task-main {
         flex: 1 1 200px;
         min-width: 0;
@@ -262,6 +265,27 @@
         display: flex;
         gap: 6px;
         margin-left: auto;
+      }
+      .confirm {
+        flex: 1 1 100%;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        margin-left: 20px;
+        padding: 8px 10px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: var(--surface);
+      }
+      .confirm p {
+        margin: 0;
+        font-size: 12px;
+        overflow-wrap: anywhere;
+      }
+      .confirm .confirm-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
       }
       details {
         border-bottom: 1px solid var(--border);
@@ -429,7 +453,8 @@
         margin: 0;
         font-size: 12px;
       }
-      .hint.blocked {
+      .hint.blocked,
+      .hint.warning {
         color: var(--warning);
       }
       .sr-only {
@@ -537,6 +562,7 @@
         <div class="footer-text">
           <p class="status" id="status" role="status" aria-live="polite"></p>
           <p class="hint" id="start-hint"></p>
+          <p class="hint warning" id="share-warning" hidden></p>
         </div>
         <button type="button" class="primary" id="start-all" hidden></button>
       </footer>
@@ -558,10 +584,16 @@
           starting: "Starting…",
           started: "Started",
           uncertain: "Outcome uncertain",
+          abandoned: "Abandoned",
         };
         var UNCERTAIN_FALLBACK =
           "Launch outcome is uncertain. Inspect threads before starting this work elsewhere.";
         var LONG_PROMPT = 160;
+
+        /** The title the host gives a launched thread, which is what a person searches for. */
+        function hostTitle(title) {
+          return "[Task Launcher] " + title;
+        }
 
         var state = {
           context: null,
@@ -577,6 +609,9 @@
           // Task ids this view is starting right now. The journal says pending for them too, but
           // here the answer is still coming, so they read as starting, not uncertain.
           busy: null,
+          // The uncertain task whose abandonment the person is confirming, then sending.
+          confirming: null,
+          acknowledging: null,
           results: {},
           status: "",
           // Only what the person changed; everything else follows the plan's defaults.
@@ -686,6 +721,8 @@
           state.data = null;
           state.failure = null;
           state.busy = null;
+          state.confirming = null;
+          state.acknowledging = null;
           state.results = {};
           state.status = "";
           state.edits = {};
@@ -730,9 +767,14 @@
           );
         }
 
+        /** A start or an acknowledgement is in flight; no other change may go out meanwhile. */
+        function mutating() {
+          return Boolean(state.busy || state.acknowledging);
+        }
+
         /** Rereads once the request in flight settles, if a change signal arrived meanwhile. */
         function settle() {
-          if (state.changed && !state.busy && !state.reading && !unreadable()) read();
+          if (state.changed && !mutating() && !state.reading && !unreadable()) read();
         }
 
         function read() {
@@ -774,7 +816,7 @@
         function onChanged(change) {
           if (!change || !state.context || !state.context.view) return;
           if (change.topic !== "view:" + state.context.view.viewId || unreadable()) return;
-          if (state.busy || state.reading) state.changed = true;
+          if (mutating() || state.reading) state.changed = true;
           else read();
         }
 
@@ -866,11 +908,15 @@
 
         // ---- Tasks --------------------------------------------------------------------------
 
-        /** What a person should read for a task: anything not plainly settled is uncertain. */
+        /**
+         * What a person should read for a task: anything not plainly settled is uncertain.
+         * "starting" from the backend means another view's start is still open there; after a
+         * restart that same journal reads as uncertain.
+         */
         function taskState(task) {
           if (state.busy && state.busy[task.id]) return "starting";
           var recorded = task.launch.state;
-          return recorded === "proposed" || recorded === "started" ? recorded : "uncertain";
+          return STATE_LABEL[recorded] ? recorded : "uncertain";
         }
 
         function startable() {
@@ -883,7 +929,7 @@
 
         function start(ids) {
           var current = plan();
-          if (!current || state.busy || state.reading || blocker() || ids.length === 0) return;
+          if (!current || mutating() || state.reading || blocker() || ids.length === 0) return;
           var generation = state.generation;
           var chosen = choices();
           var request =
@@ -900,6 +946,7 @@
             state.busy[id] = true;
           });
           state.failure = null;
+          state.confirming = null;
           state.results = {};
           state.status = ids.length === 1 ? "Starting…" : "Starting " + ids.length + " tasks…";
           render();
@@ -960,6 +1007,68 @@
           if (counts.uncertain) parts.push(counts.uncertain + " uncertain");
           if (counts.other) parts.push(counts.other + " not started");
           return parts.join(", ") + ".";
+        }
+
+        /**
+         * Retires an uncertain task for good after the person confirmed it. Nothing is cancelled
+         * or deleted, and the task never starts again; the backend's answer is shown as given.
+         */
+        function acknowledge(task) {
+          var current = plan();
+          if (!current || mutating() || state.reading || taskState(task) !== "uncertain") return;
+          var generation = state.generation;
+          var request = call("acknowledge", {
+            planId: current.id,
+            taskId: task.id,
+            confirmUncertain: true,
+          });
+          state.acknowledging = task.id;
+          state.failure = null;
+          state.status = "";
+          render();
+          request.then(
+            function (result) {
+              if (generation !== state.generation) return;
+              state.acknowledging = null;
+              state.confirming = null;
+              var data = result && result.data;
+              if (!isReadData(data)) {
+                state.failure = {
+                  kind: "acknowledge",
+                  title: "Unexpected response",
+                  text: "Task Launcher returned an unexpected response. The list below is reread.",
+                };
+                read();
+                return;
+              }
+              state.readSeq += 1;
+              state.reading = false;
+              state.data = data;
+              var after = (data.plan ? data.plan.tasks : []).filter(function (entry) {
+                return entry.id === task.id;
+              })[0];
+              state.status =
+                after && after.launch.state === "abandoned"
+                  ? "Marked “" +
+                    task.title +
+                    "” abandoned. Any thread it may have started was not cancelled."
+                  : "";
+              render();
+              settle();
+            },
+            function (error) {
+              if (generation !== state.generation) return;
+              state.acknowledging = null;
+              state.confirming = null;
+              state.failure = {
+                kind: "acknowledge",
+                title: "Couldn't mark abandoned",
+                text: message(error, "The request failed."),
+              };
+              // As with start: the server decides what was recorded, and nothing is resent.
+              read();
+            },
+          );
         }
 
         function reveal(threadId) {
@@ -1073,7 +1182,7 @@
           $("meta").textContent = current
             ? "Proposed " + plural(tasks.length, "task") + " · " + formatTime(current.createdAt)
             : "";
-          var counts = { proposed: 0, starting: 0, started: 0, uncertain: 0 };
+          var counts = { proposed: 0, starting: 0, started: 0, uncertain: 0, abandoned: 0 };
           tasks.forEach(function (task) {
             counts[taskState(task)] += 1;
           });
@@ -1082,11 +1191,12 @@
             counts.starting ? counts.starting + " starting" : null,
             counts.started ? counts.started + " started" : null,
             counts.uncertain ? counts.uncertain + " uncertain" : null,
+            counts.abandoned ? counts.abandoned + " abandoned" : null,
           ]
             .filter(Boolean)
             .join(" · ");
-          $("refresh").disabled = Boolean(unreadable()) || state.reading || Boolean(state.busy);
-          $("app").setAttribute("aria-busy", String(state.reading || Boolean(state.busy)));
+          $("refresh").disabled = Boolean(unreadable()) || state.reading || mutating();
+          $("app").setAttribute("aria-busy", String(state.reading || mutating()));
 
           // The card's text is what the agent's result recorded, kept for when the live plan is
           // still loading or no longer readable.
@@ -1120,22 +1230,43 @@
               ? launch.diagnostic
               : shown === "uncertain"
                 ? UNCERTAIN_FALLBACK
-                : shown === "proposed"
-                  ? state.results[task.id] || null
-                  : null;
+                : shown === "abandoned"
+                  ? "Abandoned. A thread named “" +
+                    hostTitle(task.title) +
+                    "” may exist and was not cancelled. This task won't start again from here."
+                  : shown === "proposed"
+                    ? state.results[task.id] || null
+                    : null;
           var used = describe(launch.choices);
           var actions = [];
-          if (shown === "proposed" || shown === "starting") {
+          var confirming = shown === "uncertain" && state.confirming === task.id;
+          if (shown === "proposed" || (shown === "starting" && state.busy && state.busy[task.id])) {
             actions.push(
               el("button", {
                 type: "button",
                 "data-action": "start",
                 "data-focus": "start:" + task.id,
                 "aria-label": "Start " + task.title,
-                disabled: blocked || state.busy || state.reading ? "" : null,
+                disabled: blocked || mutating() || state.reading ? "" : null,
                 text: shown === "starting" ? "Starting…" : "Start",
                 onclick: function () {
                   start([task.id]);
+                },
+              }),
+            );
+          }
+          if (shown === "uncertain" && !confirming) {
+            actions.push(
+              el("button", {
+                type: "button",
+                "data-action": "acknowledge",
+                "data-focus": "acknowledge:" + task.id,
+                "aria-label": "Mark " + task.title + " abandoned",
+                disabled: mutating() || state.reading ? "" : null,
+                text: "Mark abandoned…",
+                onclick: function () {
+                  state.confirming = task.id;
+                  render();
                 },
               }),
             );
@@ -1198,7 +1329,53 @@
                 : null,
             ]),
             actions.length ? el("div", { class: "task-actions" }, actions) : null,
+            confirming ? confirmBox(task) : null,
           ]);
+        }
+
+        function confirmBox(task) {
+          var sending = state.acknowledging === task.id;
+          var locked = mutating() || state.reading;
+          return el(
+            "div",
+            { class: "confirm", role: "group", "aria-label": "Mark " + task.title + " abandoned" },
+            [
+              el("p", {
+                text:
+                  "Look for a thread named “" +
+                  hostTitle(task.title) +
+                  "” first. It may already exist and be doing this work.",
+              }),
+              el("p", {
+                text: "Marking this task abandoned doesn't cancel or delete that thread, and the task can't be started again from here. If the work still needs doing, ask the agent for a new proposal; it may duplicate what an existing thread already did.",
+              }),
+              el("div", { class: "confirm-actions" }, [
+                el("button", {
+                  type: "button",
+                  "data-action": "acknowledge-confirm",
+                  "data-focus": "acknowledge-confirm:" + task.id,
+                  disabled: locked ? "" : null,
+                  text: sending ? "Marking abandoned…" : "Mark abandoned",
+                  onclick: function () {
+                    acknowledge(task);
+                  },
+                }),
+                el("button", {
+                  type: "button",
+                  class: "ghost",
+                  "data-action": "acknowledge-cancel",
+                  // Takes the opener's focus key, so the keyboard lands on the safe choice.
+                  "data-focus": "acknowledge:" + task.id,
+                  disabled: sending ? "" : null,
+                  text: "Cancel",
+                  onclick: function () {
+                    state.confirming = null;
+                    render();
+                  },
+                }),
+              ]),
+            ],
+          );
         }
 
         function renderTasks() {
@@ -1263,11 +1440,23 @@
                 ? "Every task here has a recorded launch. Uncertain ones are never started again from here."
                 : "");
           hint.className = reason ? "hint blocked" : "hint";
+          // Parallel agents in one checkout edit the same files; say so, but leave the choice
+          // (and any base ref) to the person.
+          var shared = $("share-warning");
+          shared.hidden = ready.length < 2 || workspace() !== "root" || Boolean(state.busy);
+          shared.textContent = shared.hidden
+            ? ""
+            : "Start all runs " +
+              ready.length +
+              " agents in the same project folder at once." +
+              (state.data && state.data.canWorktree === true
+                ? " Choose New worktree in Launch settings to give each its own checkout."
+                : "");
           $("status").textContent = state.status;
           var all = $("start-all");
           all.hidden = ready.length < 2 && !(state.busy && Object.keys(state.busy).length > 1);
           all.textContent = state.busy ? "Starting…" : "Start " + ready.length + " tasks";
-          all.disabled = Boolean(reason) || Boolean(state.busy) || state.reading;
+          all.disabled = Boolean(reason) || mutating() || state.reading;
         }
 
         function render() {
@@ -1280,7 +1469,7 @@
         // ---- Wiring -------------------------------------------------------------------------
 
         $("refresh").addEventListener("click", function () {
-          if (state.reading || state.busy) return;
+          if (state.reading || mutating()) return;
           state.status = "";
           read();
         });
