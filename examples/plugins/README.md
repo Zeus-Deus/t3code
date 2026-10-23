@@ -79,9 +79,11 @@ await ctx.threads.send({
 });
 ```
 
-Reusing the invocation's operation identity and effect key prevents duplicate
-T3 commands after a lost response or process restart. Distinct intended effects
-need distinct keys. This protection does not make your own HTTP requests or
+Within the same invocation and authorized caller identity, reusing the operation
+identity and effect key prevents duplicate T3 commands. The host also includes
+the caller's private principal identity: an equal operation ID from another
+client session does not establish a replay. Distinct intended effects need
+distinct keys. This protection does not make your own HTTP requests or
 filesystem writes idempotent.
 Each new client action has a new operation identity. If a workflow spans
 separate clicks, keep its progress in storage and make uncertain outcomes

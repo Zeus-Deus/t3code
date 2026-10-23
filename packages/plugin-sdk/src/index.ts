@@ -338,8 +338,9 @@ export interface PluginContext {
   readonly threads: {
     readonly read: (input: { readonly threadId: string }) => Promise<PluginThread>;
     /**
-     * Keep this key stable across retries and revisions of the same logical mutation. Reusing it
-     * for a different request rejects with code `idempotency_conflict`; it never repeats the effect.
+     * Keep this key stable across retries and revisions within the same invocation and caller
+     * identity. Reusing that identity for a different request rejects with `idempotency_conflict`.
+     * Equal operation IDs from different client sessions do not establish a replay.
      */
     readonly send: (input: {
       readonly threadId: string;
