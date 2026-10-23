@@ -35,18 +35,23 @@ A plugin can also show a short status for the open thread, such as **Realm live*
 in the thread details card (in the thread header while the card is closed, and
 above the composer on mobile); select it to open that plugin's panel for the thread.
 
-A plugin can offer another sidebar layout, such as threads grouped by project.
-Once one is available, a switch appears beside the sidebar search (and in the
-command palette) to move between it and **Activity**. Installing or enabling
-such a plugin never switches the sidebar for you, and the choice is kept per
-device. If the plugin is disabled, removed, or unavailable, the sidebar shows
-Activity again without changing your open thread. It returns to your choice
-when the plugin comes back. In a project layout, pinned and active threads
-sit under their project. Forks and T3-delegated tasks nest under their live
-parent in the same project; provider-internal subagents stay hidden.
-Settled and snoozed threads stay on the shelves
-below. Search and the project filter work as they do in Activity. The mobile
-thread list keeps the Activity layout.
+A plugin can offer another sidebar layout, such as threads grouped by project,
+or a programmable tree of groups and threads. Choose it beside the web sidebar
+search or from the command palette; mobile offers supported trees in its View
+menu. The older declarative project layouts remain web and desktop only.
+Installing or enabling a plugin never changes your layout automatically. Your
+choice and folds stay on this device. If the plugin becomes unavailable, T3
+returns to Activity and keeps your choice for when it comes back.
+
+T3 still draws the thread rows and handles search, the project filter, and thread
+actions. Your open thread and threads omitted by a tree remain reachable.
+Only environments where you installed and enabled the plugin contribute to it.
+
+An agent can leave a plugin card in a conversation for you to review and use.
+On mobile, open it full screen. When its plugin is unavailable, the recorded
+summary remains readable. Older clients retain the normal tool-call history.
+Plugin pages can also be this device's start page on web and desktop; choose
+one in **Settings → Plugins**. An unavailable page falls back to T3's usual start.
 
 Use **Check source for changes** to stage an update. The current version stays active until
 you review and approve the update. You can discard the staged update instead.
@@ -84,6 +89,13 @@ The repository's `examples/plugins` directories are complete plugin packages:
   mobile, insert the request from the thread's Plugins menu. The configured
   repository applies to every thread in that environment; it does not switch
   automatically with the thread's project.
+- **Projects Tree** groups threads using the public plugin API, including
+  independent launches and related threads. T3 supplies the native rows and
+  keeps unplaced threads reachable.
+- **Task Launcher** lets an agent propose a small task plan as a conversation
+  card. Review the prompts, models, and workspace choices before starting
+  independent threads. A lost launch response is shown as uncertain; inspect
+  your threads before starting that work elsewhere.
 
 Install each example by its absolute directory on the server. The examples stay
 external to the host; editing one requires refreshing its installed snapshot.
