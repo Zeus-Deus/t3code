@@ -39,8 +39,20 @@ const thread = (
   environmentId,
   projectId: ProjectId.make(projectId),
   updatedAt,
+  lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: ThreadId.make(id) },
 });
-const keyOf = (value: ReturnType<typeof thread>) =>
+const child = (
+  id: string,
+  parent: Pick<ReturnType<typeof thread>, "id" | "environmentId" | "projectId">,
+) => ({
+  ...thread(id, parent.environmentId, parent.projectId),
+  lineage: {
+    parentThreadId: parent.id,
+    relationshipToParent: "fork" as const,
+    rootThreadId: parent.id,
+  },
+});
+const keyOf = (value: Pick<ReturnType<typeof thread>, "id" | "environmentId">) =>
   scopedThreadKey(scopeThreadRef(value.environmentId, value.id));
 
 const build = (overrides: Partial<Parameters<typeof buildProjectView>[0]> = {}) =>
@@ -57,6 +69,74 @@ const build = (overrides: Partial<Parameters<typeof buildProjectView>[0]> = {}) 
   });
 
 describe("buildProjectView", () => {
+  it("nests lineage recursively and traverses parents before children in sibling order", () => {
+    const parent = thread("parent", laptop, "app");
+    const first = child("first", parent);
+    const second = child("second", parent);
+    const grandchild = child("grandchild", first);
+    const other = thread("other", laptop, "app");
+    const live = [grandchild, first, other, second, parent];
+    const { sections } = build({
+      groups: [group("app", [ref(laptop, "app")])],
+      liveThreads: live,
+      allThreads: live,
+    });
+    expect(sections[0]?.rows).toMatchObject([
+      { thread: other, children: [] },
+      {
+        thread: parent,
+        children: [
+          { thread: first, children: [{ thread: grandchild, children: [] }] },
+          { thread: second, children: [] },
+        ],
+      },
+    ]);
+    expect(projectViewThreadKeys(sections)).toEqual(
+      [other, parent, first, grandchild, second].map(keyOf),
+    );
+    expect(sections[0]?.liveCount).toBe(5);
+  });
+
+  it("leaves children of missing, parked, other-section, and other-environment parents at the root", () => {
+    const parked = thread("parked", laptop, "app");
+    const elsewhere = thread("elsewhere", laptop, "docs");
+    const remote = thread("remote", server, "app");
+    const children = [
+      child("orphan", thread("gone", laptop, "app")),
+      child("of-parked", parked),
+      { ...child("of-docs", elsewhere), projectId: ProjectId.make("app") },
+      { ...child("of-remote", remote), environmentId: laptop },
+    ];
+    const live = [...children, elsewhere, remote];
+    const { sections } = build({
+      groups: [
+        group("app", [ref(laptop, "app"), ref(server, "app")]),
+        group("docs", [ref(laptop, "docs")]),
+      ],
+      liveThreads: live,
+      allThreads: [...live, parked],
+    });
+    expect(sections[0]?.rows.map((row) => row.thread.id)).toEqual(
+      [...children, remote].map((t) => t.id),
+    );
+    expect(sections[0]?.rows.every((row) => row.children.length === 0)).toBe(true);
+  });
+
+  it("never drops self-cycles, parent cycles, or rows leading into a cycle", () => {
+    const a = child("a", thread("b", laptop, "app"));
+    const b = child("b", a);
+    const self = child("self", thread("self", laptop, "app"));
+    const tail = child("tail", a);
+    const live = [tail, a, b, self];
+    const { sections } = build({
+      groups: [group("app", [ref(laptop, "app")])],
+      liveThreads: live,
+      allThreads: live,
+    });
+    expect(projectViewThreadKeys(sections)).toEqual(live.map(keyOf));
+    expect(sections[0]?.rows).toHaveLength(4);
+  });
+
   it("groups threads by the environment-scoped project, merging only grouped members", () => {
     // The same project id on two environments is two projects unless grouping joins them.
     const app = group("repo:app", [ref(laptop, "p1"), ref(server, "p9")]);

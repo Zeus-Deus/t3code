@@ -1,4 +1,4 @@
-import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { pluginSidebarViewKey } from "@t3tools/client-runtime/plugins";
 import {
   EnvironmentId,
@@ -15,6 +15,7 @@ import { act, render } from "../../test/render";
 import type { SidebarProjectSnapshot } from "../sidebarProjectGrouping";
 import { makeThreadFixture } from "../test-fixtures";
 import type { Thread } from "../types";
+import { useThreadSelectionStore } from "../threadSelectionStore";
 import { useUiStateStore } from "../uiStateStore";
 import { PluginSidebarViewSources } from "./plugins/PluginCatalogueSubscriptions";
 import Sidebar from "./Sidebar";
@@ -122,7 +123,30 @@ vi.mock("../state/presentation", async (original) => ({
 }));
 vi.mock("../state/server", async (original) => ({
   ...(await original<object>()),
-  primaryServerKeybindingsAtom: Atom.make([]),
+  primaryServerKeybindingsAtom: Atom.make([
+    {
+      command: "thread.next",
+      shortcut: {
+        key: "]",
+        ctrlKey: true,
+        metaKey: false,
+        altKey: false,
+        shiftKey: true,
+        modKey: false,
+      },
+    },
+    {
+      command: "thread.jump.2",
+      shortcut: {
+        key: "2",
+        ctrlKey: true,
+        metaKey: false,
+        altKey: false,
+        shiftKey: false,
+        modKey: false,
+      },
+    },
+  ]),
 }));
 vi.mock("../state/projects", async (original) => ({
   ...(await original<object>()),
@@ -176,14 +200,23 @@ vi.mock("./sidebar/SidebarThreadRow", () => ({
     isActive: boolean;
     variant: string;
     variantAction: string;
+    jumpLabel: string | null;
+    onThreadClick: (event: React.MouseEvent, ref: ScopedThreadRef) => void;
   }) => (
     <li
       data-testid="thread-row"
+      data-thread-item={scopedThreadKey(
+        scopeThreadRef(props.thread.environmentId, props.thread.id),
+      )}
       data-variant={props.variant}
       data-action={props.variantAction}
       aria-current={props.isActive ? "page" : undefined}
+      onClick={(event) =>
+        props.onThreadClick(event, scopeThreadRef(props.thread.environmentId, props.thread.id))
+      }
     >
       {props.thread.title}
+      {props.jumpLabel ? <kbd>{props.jumpLabel}</kbd> : null}
     </li>
   ),
   SidebarSearchResultRow: () => null,
@@ -280,6 +313,7 @@ function setup(input: {
   scope?: string;
 }) {
   window.localStorage.clear();
+  useThreadSelectionStore.getState().clearSelection();
   useSidebarViewSourceStore.setState({ sources: new Map() });
   useUiStateStore.getState().setSidebarProjectScopeKey(input.scope ?? null);
   const app = [project(laptop, "p1", "App"), project(server, "p9", "App")];
@@ -323,6 +357,106 @@ const rowTitles = () =>
     .map((element) => element.textContent);
 
 describe("Sidebar project view", () => {
+  it("nests forks and T3 delegations recursively, hiding provider subagents", async () => {
+    const parent = thread("parent", laptop, "p1");
+    const fork = thread("fork", laptop, "p1", {
+      lineage: { parentThreadId: parent.id, rootThreadId: parent.id, relationshipToParent: "fork" },
+    });
+    const delegated = thread("delegated", laptop, "p1", {
+      source: { ...parent.source, creationSource: "mcp" },
+      lineage: {
+        parentThreadId: fork.id,
+        rootThreadId: parent.id,
+        relationshipToParent: "subagent",
+      },
+    });
+    const native = thread("native", laptop, "p1", {
+      source: { ...parent.source, creationSource: "provider" },
+      lineage: {
+        parentThreadId: delegated.id,
+        rootThreadId: parent.id,
+        relationshipToParent: "subagent",
+      },
+    });
+    const other = thread("other", laptop, "p1");
+    setup({ threads: [delegated, fork, other, native, parent], route: delegated });
+    await using _screen = await renderSidebar();
+    expect(rowTitles()).toEqual(["other", "parent", "fork", "delegated"]);
+    expect(page.getByText("native", { exact: true }).elements()).toHaveLength(0);
+    await expect
+      .element(page.getByText("delegated", { exact: true }))
+      .toHaveAttribute("aria-current", "page");
+    const forkRow = page.getByText("fork", { exact: true }).element();
+    expect(
+      forkRow.closest("[data-parent-thread-key]")?.getAttribute("data-parent-thread-key"),
+    ).toBe(scopedThreadKey(routeTo(parent)));
+    expect(
+      page
+        .getByText("delegated", { exact: true })
+        .element()
+        .closest("[data-parent-thread-key]")
+        ?.getAttribute("data-parent-thread-key"),
+    ).toBe(scopedThreadKey(routeTo(fork)));
+
+    await act(() => data.update({ route: routeTo(native) }));
+    await expect
+      .element(page.getByText("delegated", { exact: true }))
+      .toHaveAttribute("aria-current", "page");
+    await act(() => data.update({ installations: [projectsPlugin(false)] }));
+    expect(rowTitles()).toEqual(["fork", "other", "parent"]);
+    await expect
+      .element(page.getByText("fork", { exact: true }))
+      .toHaveAttribute("aria-current", "page");
+    await act(() => data.update({ installations: [projectsPlugin()] }));
+    expect(rowTitles()).toEqual(["other", "parent", "fork", "delegated"]);
+
+    await userEvent.click(page.getByRole("button", { name: "App, 4 active" }));
+    expect(rowTitles()).toEqual(["delegated"]);
+    await expect
+      .element(page.getByText("delegated", { exact: true }))
+      .toHaveAttribute("aria-current", "page");
+  });
+
+  it("uses nested visual order for keyboard traversal, jump hints, and range selection", async () => {
+    const parent = thread("parent", laptop, "p1", { activeOrderKey: "b" });
+    const child = thread("child", laptop, "p1", {
+      activeOrderKey: "a",
+      lineage: { parentThreadId: parent.id, rootThreadId: parent.id, relationshipToParent: "fork" },
+    });
+    const other = thread("other", laptop, "p1", { activeOrderKey: "c" });
+    setup({ threads: [child, other, parent], route: parent });
+    await using screen = await renderSidebar();
+    using navigate = vi.spyOn(screen.router!, "navigate").mockResolvedValue(undefined);
+    await act(() =>
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "]", ctrlKey: true, shiftKey: true, bubbles: true }),
+      ),
+    );
+    expect(navigate).toHaveBeenLastCalledWith(
+      expect.objectContaining({ params: { environmentId: laptop, threadId: child.id } }),
+    );
+    await act(() =>
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "2", ctrlKey: true, bubbles: true }),
+      ),
+    );
+    expect(navigate).toHaveBeenLastCalledWith(
+      expect.objectContaining({ params: { environmentId: laptop, threadId: child.id } }),
+    );
+    await userEvent.keyboard("{Control>}");
+    await expect
+      .element(page.getByText("child", { exact: false }))
+      .toHaveTextContent("childCtrl+2");
+    await userEvent.keyboard("{/Control}");
+    await act(() => useThreadSelectionStore.getState().setAnchor(scopedThreadKey(routeTo(parent))));
+    await userEvent.keyboard("{Shift>}");
+    await userEvent.click(page.getByText("child", { exact: true }));
+    await userEvent.keyboard("{/Shift}");
+    expect([...useThreadSelectionStore.getState().selectedThreadKeys]).toEqual(
+      [parent, child].map((t) => scopedThreadKey(routeTo(t))),
+    );
+  });
+
   it("groups live threads under environment-scoped projects and keeps parked ones on the shelves", async () => {
     const a1 = thread("a1", laptop, "p1");
     const a2 = thread("a2", server, "p9", { pinnedAt: NOW });
@@ -417,7 +551,7 @@ describe("Sidebar project view", () => {
     setup({ threads: [a1, s1], route: s1 });
     await using _screen = await renderSidebar();
     await expect
-      .element(page.getByRole("button", { name: "Projects", exact: true }))
+      .element(page.getByRole("button", { name: "Toggle Projects view", exact: true }))
       .toHaveAttribute("aria-pressed", "true");
 
     using scrolled = vi.spyOn(Element.prototype, "scrollIntoView");
@@ -429,7 +563,7 @@ describe("Sidebar project view", () => {
         scrolled.mock.contexts.some((row) => row instanceof Element && row.textContent === "s1"),
       )
       .toBe(true);
-    expect(page.getByRole("group", { name: "Sidebar view" }).elements()).toHaveLength(0);
+    expect(page.getByRole("button", { name: "Toggle Projects view" }).elements()).toHaveLength(0);
     await expect.element(page.getByText("s1")).toHaveAttribute("aria-current", "page");
     expect(rowTitles()).toEqual(["a1", "s1"]);
 
@@ -441,10 +575,12 @@ describe("Sidebar project view", () => {
     const a1 = thread("a1", laptop, "p1");
     setup({ threads: [a1], route: a1, chooseProjects: false });
     await using _screen = await renderSidebar();
-    await expect.element(page.getByRole("button", { name: "Projects", exact: true })).toBeVisible();
+    await expect
+      .element(page.getByRole("button", { name: "Toggle Projects view", exact: true }))
+      .toBeVisible();
     expect(sectionNames()).toEqual([]);
 
-    await userEvent.click(page.getByRole("button", { name: "Projects", exact: true }));
+    await userEvent.click(page.getByRole("button", { name: "Toggle Projects view", exact: true }));
     await expect.poll(sectionNames).toEqual(["repo:app"]);
     await expect.element(page.getByText("a1")).toHaveAttribute("aria-current", "page");
   });

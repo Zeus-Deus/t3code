@@ -541,23 +541,33 @@ export async function archiveSelectedThreadEntries<
   return { archivedThreadKeys, mutationFailure: null, followupFailures };
 }
 
-export function isSidebarSubagentThread(thread: Pick<SidebarThreadSummary, "lineage">): boolean {
-  return thread.lineage.relationshipToParent === "subagent";
+type SidebarLineageThread = Pick<SidebarThreadSummary, "lineage"> &
+  Partial<Pick<SidebarThreadSummary, "source">>;
+
+export function isSidebarSubagentThread(
+  thread: SidebarLineageThread,
+  showDelegatedThreads = false,
+): boolean {
+  return (
+    thread.lineage.relationshipToParent === "subagent" &&
+    !(showDelegatedThreads && thread.source?.creationSource === "mcp")
+  );
 }
 
-// Subagent threads have no sidebar row, so an open subagent is represented by
-// its nearest non-subagent ancestor. A broken chain (missing parent, cycle,
+// Hidden subagents resolve to their nearest visible ancestor. Projects can show T3-owned
+// delegations, while provider-internal helpers remain hidden. A broken chain (missing parent, cycle,
 // other environment) resolves to the thread itself, which then matches no row.
 export function resolveSidebarRowThreadId(
   threadId: ThreadId,
   environmentId: EnvironmentId,
-  threads: readonly Pick<SidebarThreadSummary, "id" | "environmentId" | "lineage">[],
+  threads: readonly (Pick<SidebarThreadSummary, "id" | "environmentId"> & SidebarLineageThread)[],
+  showDelegatedThreads = false,
 ): ThreadId {
   const findThread = (id: ThreadId) =>
     threads.find((thread) => thread.id === id && thread.environmentId === environmentId);
   const visited = new Set<ThreadId>();
   let thread = findThread(threadId);
-  while (thread !== undefined && isSidebarSubagentThread(thread)) {
+  while (thread !== undefined && isSidebarSubagentThread(thread, showDelegatedThreads)) {
     if (thread.lineage.parentThreadId === null || visited.has(thread.id)) return threadId;
     visited.add(thread.id);
     thread = findThread(thread.lineage.parentThreadId);
@@ -570,22 +580,21 @@ export function resolveSidebarRowThreadId(
  * the sidebar lists, by thread key; they show under that thread, as subagents do.
  */
 export function filterSidebarV2VisibleThreads<
-  T extends Pick<SidebarThreadSummary, "archivedAt" | "environmentId" | "id" | "lineage"> & {
-    projectId: string;
-  },
+  T extends SidebarLineageThread &
+    Pick<SidebarThreadSummary, "archivedAt"> & {
+      environmentId: string;
+      projectId: string;
+    },
 >(
   threads: readonly T[],
   scopedProjectKeys: ReadonlySet<string> | null,
   delegatedUnderParent: ReadonlySet<string>,
+  showDelegatedThreads = false,
 ): T[] {
   return threads.filter(
     (thread) =>
       thread.archivedAt === null &&
-      !isShownUnderParent(
-        { environmentId: thread.environmentId, threadId: thread.id },
-        thread.lineage,
-        delegatedUnderParent,
-      ) &&
+      !(showDelegatedThreads ? isSidebarSubagentThread(thread, true) : isShownUnderParent({ environmentId: thread.environmentId, threadId: thread.id }, thread.lineage, delegatedUnderParent)) &&
       (scopedProjectKeys === null ||
         scopedProjectKeys.has(`${thread.environmentId}:${thread.projectId}`)),
   );

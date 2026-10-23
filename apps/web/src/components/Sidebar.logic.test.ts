@@ -10,6 +10,7 @@ import {
   deleteSelectedThreadEntries,
   getFallbackThreadIdAfterDelete,
   hasUnseenCompletion,
+  filterSidebarV2VisibleThreads,
   resolveSidebarRowThreadId,
   orderItemsByPreferredIds,
   pinOrderKeyBetween,
@@ -169,6 +170,38 @@ describe("archiveSelectedThreadEntries", () => {
 });
 
 describe("sidebar thread lineage helpers", () => {
+  it("shows T3 delegations only in Projects and maps provider helpers to the visible row", () => {
+    const parent = makeThreadFixture();
+    const delegated = makeThreadFixture({
+      id: ThreadId.make("delegated"),
+      source: { ...parent.source, creationSource: "mcp" },
+      lineage: {
+        parentThreadId: parent.id,
+        rootThreadId: parent.id,
+        relationshipToParent: "subagent",
+      },
+    });
+    const native = makeThreadFixture({
+      id: ThreadId.make("native"),
+      source: { ...parent.source, creationSource: "provider" },
+      lineage: {
+        parentThreadId: delegated.id,
+        rootThreadId: parent.id,
+        relationshipToParent: "subagent",
+      },
+    });
+    const threads = [parent, delegated, native];
+    expect(filterSidebarV2VisibleThreads(threads, null)).toEqual([parent]);
+    expect(filterSidebarV2VisibleThreads(threads, null, true)).toEqual([parent, delegated]);
+    expect(resolveSidebarRowThreadId(delegated.id, delegated.environmentId, threads, true)).toBe(
+      delegated.id,
+    );
+    expect(resolveSidebarRowThreadId(native.id, native.environmentId, threads, true)).toBe(
+      delegated.id,
+    );
+    expect(resolveSidebarRowThreadId(native.id, native.environmentId, threads)).toBe(parent.id);
+  });
+
   it("maps an open subagent to its nearest visible ancestor's sidebar row", () => {
     const environmentId = EnvironmentId.make("environment-row");
     const otherEnvironmentId = EnvironmentId.make("environment-other");

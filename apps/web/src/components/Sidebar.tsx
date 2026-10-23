@@ -254,6 +254,7 @@ import {
   SidebarProjectSectionHeader,
   SidebarQuietProjectsToggle,
   SidebarViewSwitch,
+  SidebarProjectThreadTree,
 } from "./sidebar/SidebarProjectView";
 import {
   useSidebarProjectFolds,
@@ -351,6 +352,7 @@ interface SidebarThreadPartitionInput {
   readonly workingShelfEnabled: boolean;
   /** Boring mode: folders list active threads by the user's latest message. */
   readonly sortActiveBySend: boolean;
+  readonly showDelegatedThreads: boolean;
   // Snooze wakes, the queued-turn grace and the Working shelf's exit grace depend
   // on the clock, so the minute tick, the precise snooze-wake tick and the inbox
   // tracker's expiry version are inputs: a new key repartitions.
@@ -481,6 +483,7 @@ function useSidebarThreads(input: {
     workingShelfEnabled,
     sortActiveBySend: folderGroups !== null,
     clockKey: `${nowMinute}:${snoozeWakeClock}:${inboxReturnsVersion}`,
+    showDelegatedThreads: projectView !== null,
   });
 
   const { pinnedThreads, activeThreads, workingThreads, snoozedThreads, settledThreads } =
@@ -639,7 +642,7 @@ function partitionSidebarThreads(input: SidebarThreadPartitionInput) {
     sortActiveBySend,
   } = input;
   const preciseNow = new Date().toISOString();
-  const visible = filterSidebarV2VisibleThreads(threads, scopedProjectKeys, delegatedUnderParent);
+  const visible = filterSidebarV2VisibleThreads(threads, scopedProjectKeys, delegatedUnderParent, input.showDelegatedThreads);
   const inboxObservation = inboxReturns.observe(workingShelfEnabled ? threads : null);
   const pinned: EnvironmentThreadShell[] = [];
   const active: EnvironmentThreadShell[] = [];
@@ -3185,16 +3188,14 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
               searchResultCount={threadSearchResults.length}
               activeSearchResultIndex={activeSearchResultIndex}
               onClearSearch={clearThreadSearch}
-            />
-            {sidebarViewOptions.length > 0 ? (
-              <div className="pt-1.5">
+              viewSwitch={
                 <SidebarViewSwitch
                   options={sidebarViewOptions}
                   selectedKey={sidebarView.selected?.key ?? null}
                   onSelect={sidebarView.select}
                 />
-              </div>
-            ) : null}
+              }
+            />
           </SidebarGroup>
         }
       >
@@ -3306,7 +3307,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                         );
                         const isCard =
                           section === "active" || section === "pinned" || section === "working";
-                        const rowVariant = folderRow
+                        const rowVariant = projectLayout !== null ? "project" : folderRow
                           ? folderRowsMultiline
                             ? "folder-multiline"
                             : "folder"
@@ -3445,15 +3446,19 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                               onOpenSettings={openProjectSettingsFromHeader}
                             />,
                           );
-                          for (const thread of section.threads) {
-                            const key = scopedThreadKey(
-                              scopeThreadRef(thread.environmentId, thread.id),
-                            );
-                            items.push(
-                              renderThreadRow(thread, sectionByThreadKey.get(key) ?? "active"),
-                            );
-                            projectRowCount += 1;
-                          }
+                          items.push(
+                            <SidebarProjectThreadTree
+                              key={`tree:${section.key}`}
+                              rows={section.rows}
+                              renderRow={(thread) =>
+                                renderThreadRow(
+                                  thread,
+                                  sectionByThreadKey.get(threadShellKey(thread)) ?? "active",
+                                )
+                              }
+                            />,
+                          );
+                          projectRowCount += section.threads.length;
                         };
                         for (const section of projectLayout.sections) renderSection(section);
                         if (projectLayout.quietSections.length > 0) {

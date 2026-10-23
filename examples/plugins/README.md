@@ -141,7 +141,10 @@ empty `activate`.
 ```
 
 `groupBy: "project"` lists each project's pinned and active threads under its
-heading, using the person's project grouping and sort settings. Settled and
+heading, using the person's project grouping and sort settings. The host nests
+forks and T3-owned delegations under a live parent in the same project section,
+with siblings in that sort order. Provider-internal subagents stay hidden;
+ordinary thread launches have no parent relationship. Settled and
 snoozed threads stay on the shared shelves. `quietAfterDays` folds projects with
 nothing active and no activity for that long behind "N more projects".
 `emptyProjects` decides whether projects without threads get a heading. The

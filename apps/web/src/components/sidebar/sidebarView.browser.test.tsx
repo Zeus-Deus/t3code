@@ -6,6 +6,7 @@ import { act, render } from "../../../test/render";
 import { PluginSidebarViewSources } from "../plugins/PluginCatalogueSubscriptions";
 import { SidebarViewSwitch } from "./SidebarProjectView";
 import { useSidebarView, useSidebarViewSourceStore } from "./sidebarView";
+import { SidebarProvider } from "../ui/sidebar";
 
 const laptop = EnvironmentId.make("env-laptop");
 // The catalogue is a subscription in the app; the mock notifies the same way.
@@ -87,7 +88,7 @@ function SidebarList(props: { onRender?: (view: string) => void }) {
 function Harness() {
   const view = useSidebarView();
   return (
-    <>
+    <SidebarProvider>
       <PluginSidebarViewSources />
       <output data-testid="rendered-view">{view.selected?.view.title ?? "Activity"}</output>
       {view.options.length > 0 || view.selected !== null ? (
@@ -97,26 +98,25 @@ function Harness() {
           onSelect={view.select}
         />
       ) : null}
-    </>
+    </SidebarProvider>
   );
 }
 
 const renderedView = () => page.getByTestId("rendered-view");
-const segment = (name: string) => page.getByRole("button", { name, exact: true });
+const toggle = () => page.getByRole("button", { name: "Toggle Projects view", exact: true });
 
 describe("sidebar view choice", () => {
-  it("offers a plugin view without switching to it, and never clears the selected segment", async () => {
+  it("offers a compact toggle without selecting a view, and toggles back to Activity", async () => {
     setup([projectsPlugin()]);
     await using _screen = await render(<Harness />);
-    await expect.element(segment("Projects")).toBeVisible();
+    await expect.element(toggle()).toBeVisible();
     await expect.element(renderedView()).toHaveTextContent("Activity");
-    await expect.element(segment("Activity")).toHaveAttribute("aria-pressed", "true");
+    await expect.element(toggle()).toHaveAttribute("aria-pressed", "false");
 
-    await userEvent.click(segment("Projects"));
+    await userEvent.click(toggle());
     await expect.element(renderedView()).toHaveTextContent("Projects");
-    await userEvent.click(segment("Projects"));
-    await expect.element(renderedView()).toHaveTextContent("Projects");
-    await userEvent.click(segment("Activity"));
+    await expect.element(toggle()).toHaveAttribute("aria-pressed", "true");
+    await userEvent.click(toggle());
     await expect.element(renderedView()).toHaveTextContent("Activity");
   });
 
@@ -124,13 +124,37 @@ describe("sidebar view choice", () => {
     setup([projectsPlugin({ grants: { capabilities: [], projectIds: [] } })]);
     await using _screen = await render(<Harness />);
     await expect.element(renderedView()).toHaveTextContent("Activity");
-    expect(page.getByRole("group", { name: "Sidebar view" }).elements()).toHaveLength(0);
+    expect(toggle().elements()).toHaveLength(0);
+  });
+
+  it("uses one header menu when several views are offered", async () => {
+    const installation = projectsPlugin();
+    setup([
+      {
+        ...installation,
+        manifest: {
+          ...installation.manifest,
+          sidebarViews: [
+            { id: "projects", title: "Projects", groupBy: "project" },
+            { id: "quiet", title: "Quiet projects", groupBy: "project", quietAfterDays: 3 },
+          ],
+        },
+      },
+    ]);
+    await using _screen = await render(<Harness />);
+    const button = () => page.getByRole("button", { name: "Sidebar view", exact: true });
+    await userEvent.click(button());
+    await userEvent.click(page.getByRole("menuitemradio", { name: "Quiet projects", exact: true }));
+    await expect.element(renderedView()).toHaveTextContent("Quiet projects");
+    await userEvent.click(button());
+    await userEvent.click(page.getByRole("menuitemradio", { name: "Activity", exact: true }));
+    await expect.element(renderedView()).toHaveTextContent("Activity");
   });
 
   it("falls back while the plugin is unavailable and restores the remembered choice", async () => {
     setup([projectsPlugin()]);
     await using _screen = await render(<Harness />);
-    await userEvent.click(segment("Projects"));
+    await userEvent.click(toggle());
     await expect.element(renderedView()).toHaveTextContent("Projects");
 
     for (const unavailable of [
@@ -145,7 +169,7 @@ describe("sidebar view choice", () => {
     ]) {
       await act(() => catalogue.update(unavailable));
       await expect.element(renderedView()).toHaveTextContent("Activity");
-      expect(page.getByRole("group", { name: "Sidebar view" }).elements()).toHaveLength(0);
+      expect(toggle().elements()).toHaveLength(0);
 
       await act(() =>
         catalogue.update({ installations: [projectsPlugin()], executionDisabled: false }),
@@ -187,7 +211,7 @@ describe("sidebar view choice", () => {
   it("keeps the remembered view while its environment's plugins are still loading", async () => {
     setup([projectsPlugin()]);
     await using screen = await render(<Harness />);
-    await userEvent.click(segment("Projects"));
+    await userEvent.click(toggle());
     await screen.unmount();
 
     // A relaunch: nothing reported yet, then a catalogue that is still loading.

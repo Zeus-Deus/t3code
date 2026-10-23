@@ -1,6 +1,6 @@
 import type { PluginSidebarViewOption } from "@t3tools/client-runtime/plugins";
-import { ChevronRightIcon, FolderIcon, SquarePenIcon } from "lucide-react";
-import type { MouseEvent as ReactMouseEvent } from "react";
+import { ChevronRightIcon, FolderIcon, ListTreeIcon, SquarePenIcon } from "lucide-react";
+import { Fragment, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 
 import { useNowMinute } from "../../hooks/useNowMinute";
 import { cn } from "~/lib/utils";
@@ -9,49 +9,90 @@ import type { SidebarProjectSnapshot } from "../../sidebarProjectGrouping";
 import { ProjectFavicon } from "../ProjectFavicon";
 import { Button } from "../ui/button";
 import { CollapsibleSectionHeader } from "../ui/collapsible-section-header";
-import { ToggleGroup, ToggleGroupItem } from "../ui/toggle-group";
+import { Menu, MenuPopup, MenuRadioGroup, MenuRadioItem, MenuTrigger } from "../ui/menu";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { SidebarHeaderIconButton } from "./SidebarThreadHeader";
+import type { ProjectViewRow } from "./projectView.logic";
 
 const ACTIVITY_VALUE = "activity";
 
 /**
- * Switches between the built-in activity list and plugin-contributed views. Rendered only when a
- * plugin offers one; selecting the current segment again never clears the choice.
+ * One offered view toggles directly; several views use a menu without growing the header.
  */
 export function SidebarViewSwitch(props: {
   options: ReadonlyArray<PluginSidebarViewOption>;
   selectedKey: string | null;
   onSelect: (option: PluginSidebarViewOption | null) => void;
 }) {
+  if (props.options.length === 0) return null;
+  const selected = props.options.find((option) => option.key === props.selectedKey);
+  const first = props.options[0]!;
+  if (props.options.length === 1) {
+    return (
+      <SidebarHeaderIconButton
+        label={`Toggle ${first.view.title} view`}
+        tooltip={selected ? "Show Activity in sidebar" : `Show ${first.view.title} in sidebar`}
+        aria-pressed={selected !== undefined}
+        active={selected !== undefined}
+        onClick={() => props.onSelect(selected ? null : first)}
+      >
+        <ListTreeIcon />
+      </SidebarHeaderIconButton>
+    );
+  }
   return (
-    <ToggleGroup
-      aria-label="Sidebar view"
-      className="w-full *:flex-1"
-      variant="segmented"
-      value={[props.selectedKey ?? ACTIVITY_VALUE]}
-      onValueChange={(value) => {
-        const next = value[0];
-        if (next === undefined) return;
-        if (next === ACTIVITY_VALUE) props.onSelect(null);
-        else {
-          const option = props.options.find((candidate) => candidate.key === next);
-          if (option) props.onSelect(option);
+    <Menu>
+      <MenuTrigger
+        render={
+          <SidebarHeaderIconButton
+            label="Sidebar view"
+            tooltip={`Sidebar view: ${selected?.view.title ?? "Activity"}`}
+          />
         }
-      }}
-    >
-      <ToggleGroupItem value={ACTIVITY_VALUE}>Activity</ToggleGroupItem>
-      {props.options.map((option) => (
-        <Tooltip key={option.key}>
-          <TooltipTrigger render={<ToggleGroupItem value={option.key} />}>
-            <span className="truncate">{option.view.title}</span>
-          </TooltipTrigger>
-          <TooltipPopup side="bottom">
-            {option.view.description ?? `${option.view.title} view`} · {option.pluginName} plugin
-          </TooltipPopup>
-        </Tooltip>
-      ))}
-    </ToggleGroup>
+      >
+        <ListTreeIcon />
+      </MenuTrigger>
+      <MenuPopup align="end">
+        <MenuRadioGroup
+          value={props.selectedKey ?? ACTIVITY_VALUE}
+          onValueChange={(key) =>
+            props.onSelect(props.options.find((option) => option.key === key) ?? null)
+          }
+        >
+          <MenuRadioItem value={ACTIVITY_VALUE} closeOnClick>
+            Activity
+          </MenuRadioItem>
+          {props.options.map((option) => (
+            <MenuRadioItem key={option.key} value={option.key} closeOnClick>
+              {option.view.title}
+            </MenuRadioItem>
+          ))}
+        </MenuRadioGroup>
+      </MenuPopup>
+    </Menu>
   );
+}
+
+export function SidebarProjectThreadTree<TThread>(props: {
+  rows: ReadonlyArray<ProjectViewRow<TThread>>;
+  renderRow: (thread: TThread) => ReactNode;
+}) {
+  return props.rows.map((row) => (
+    <Fragment key={row.key}>
+      {props.renderRow(row.thread)}
+      {row.children.length > 0 ? (
+        <li role="presentation" className="ml-[18px] list-none pl-2">
+          <ul
+            role="presentation"
+            data-parent-thread-key={row.key}
+            className="relative flex flex-col gap-px before:pointer-events-none before:absolute before:-left-2 before:top-0 before:bottom-4 before:border-l before:border-sidebar-border/70 [&>li[data-thread-item]]:relative [&>li[data-thread-item]]:before:pointer-events-none [&>li[data-thread-item]]:before:absolute [&>li[data-thread-item]]:before:-left-2 [&>li[data-thread-item]]:before:top-0 [&>li[data-thread-item]]:before:h-4 [&>li[data-thread-item]]:before:w-2 [&>li[data-thread-item]]:before:rounded-bl-md [&>li[data-thread-item]]:before:border-b [&>li[data-thread-item]]:before:border-l [&>li[data-thread-item]]:before:border-sidebar-border/70"
+          >
+            <SidebarProjectThreadTree rows={row.children} renderRow={props.renderRow} />
+          </ul>
+        </li>
+      ) : null}
+    </Fragment>
+  ));
 }
 
 function ProjectAge(props: { timestamp: string }) {
@@ -61,7 +102,7 @@ function ProjectAge(props: { timestamp: string }) {
 }
 
 const headingClassName =
-  "flex h-8 min-w-0 flex-1 items-center gap-2 rounded-md px-2 text-left text-sm text-sidebar-foreground/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70";
+  "flex h-8 min-w-0 flex-1 items-center gap-2.5 rounded-md px-2.5 text-left text-sm text-sidebar-foreground/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70";
 
 /** One project's heading in a project view: folds its rows and starts a thread there. */
 export function SidebarProjectSectionHeader(props: {
@@ -83,19 +124,29 @@ export function SidebarProjectSectionHeader(props: {
   };
   const heading = (
     <>
-      <ChevronRightIcon
-        aria-hidden
-        className={cn(
-          "-ml-0.5 size-3.5 shrink-0 text-sidebar-muted-foreground/70 transition-transform duration-150",
-          !props.folded && "rotate-90",
-          !foldable && "invisible",
-        )}
-      />
-      {project ? (
-        <ProjectFavicon project={project} className="size-4 shrink-0" />
-      ) : (
-        <FolderIcon aria-hidden className="size-4 shrink-0 text-sidebar-muted-foreground" />
-      )}
+      <span className="relative flex size-4 shrink-0 items-center justify-center">
+        <ChevronRightIcon
+          aria-hidden
+          className={cn(
+            "absolute size-3.5 text-sidebar-muted-foreground/70 opacity-0 transition-transform duration-150 group-hover/project-section:opacity-100 group-focus-within/project-section:opacity-100 pointer-coarse:opacity-100",
+            !props.folded && "rotate-90",
+            !foldable && "invisible",
+          )}
+        />
+        <span
+          className={cn(
+            "flex",
+            foldable &&
+              "group-hover/project-section:opacity-0 group-focus-within/project-section:opacity-0 pointer-coarse:opacity-0",
+          )}
+        >
+          {project ? (
+            <ProjectFavicon project={project} className="size-4 shrink-0" />
+          ) : (
+            <FolderIcon aria-hidden className="size-4 shrink-0 text-sidebar-muted-foreground" />
+          )}
+        </span>
+      </span>
       <span
         className={cn(
           "min-w-0 flex-1 truncate font-medium",
@@ -115,7 +166,7 @@ export function SidebarProjectSectionHeader(props: {
   );
   return (
     <li
-      className="group/project-section mx-0.5 mt-2 flex h-8 list-none items-center gap-1 first:mt-0"
+      className="group/project-section mt-2 flex h-8 list-none items-center gap-1 first:mt-0"
       data-thread-selection-safe
       data-testid="sidebar-project-section"
       data-project-key={props.sectionKey}

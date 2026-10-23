@@ -478,7 +478,7 @@ export function SortableThreadRow(
   const thread =
     useThreadShell(scopeThreadRef(rowProps.thread.environmentId, rowProps.thread.id)) ??
     rowProps.thread;
-  // Keyed by variant so a card/slim switch remounts the row.
+  // Keyed by variant so changing density remounts the row.
   return <SidebarThreadRow key={rowProps.variant} {...rowProps} thread={thread} sortable={bag} />;
 }
 export type SidebarSweepAction = "settle" | "unsettle" | "unsnooze";
@@ -535,7 +535,7 @@ type SidebarThreadRowProps = {
   thread: SidebarThreadSummary;
   // "folder" is a one-line row inside a boring sidebar project folder;
   // "folder-multiline" adds the card's branch and PR line under it.
-  variant: "card" | "slim" | "folder" | "folder-multiline";
+  variant: "card" | "slim" | "folder" | "folder-multiline" | "project";
   navigationParent?: string | undefined;
   variantAction: SidebarSweepAction;
   settlementSupported: boolean;
@@ -777,6 +777,20 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                         }
                       : null;
   const isWokeStatus = topStatus?.icon === "woke";
+  const StatusIcon =
+    topStatus?.icon === "working"
+      ? CircleDashedIcon
+      : topStatus?.icon === "waiting"
+        ? CircleDotDashedIcon
+        : topStatus?.icon === "input"
+          ? MessageCircleQuestionIcon
+          : topStatus?.icon === "approval"
+            ? ShieldQuestionIcon
+            : topStatus?.icon === "failed"
+              ? CircleAlertIcon
+              : topStatus?.icon === "done"
+                ? CircleCheckIcon
+                : AlarmClockIcon;
 
   const branchMismatch = resolveLocalCheckoutBranchMismatch({
     effectiveEnvMode: thread.worktreePath === null ? "local" : "worktree",
@@ -1203,7 +1217,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
           sortable?.isDragging && "relative z-20",
         )}
       >
-        <Tooltip disabled={sortable?.isDragging}>
+        <Tooltip disabled={snoozeMenuOpen || sortable?.isDragging}>
           <TooltipTrigger
             render={
               <div

@@ -16,6 +16,7 @@ export interface SidebarThreadHeaderProps {
   searchFieldRef?: RefObject<HTMLDivElement | null>;
   hasProjects: boolean;
   projectScope: ReactNode;
+  viewSwitch?: ReactNode;
   onNewProject: () => void;
   onNewThread: (event: ReactMouseEvent) => void;
   newThreadDisabled: boolean;
@@ -36,6 +37,7 @@ export function SidebarThreadHeader({
   searchFieldRef,
   hasProjects,
   projectScope,
+  viewSwitch,
   onNewProject,
   onNewThread,
   newThreadDisabled,
@@ -102,6 +104,7 @@ export function SidebarThreadHeader({
         ) : null}
       </div>
       <div className="flex shrink-0 items-center">
+        {viewSwitch}
         {hasProjects ? (
           <>
             {projectScope}
@@ -138,11 +141,13 @@ export function SidebarThreadHeader({
 export function SidebarHeaderIconButton({
   label,
   tooltip = label,
+  active = false,
   className,
   children,
   ...rest
 }: {
   label: string;
+  active?: boolean;
   tooltip?: ReactNode;
   className?: string | undefined;
   children?: ReactNode;
@@ -158,6 +163,7 @@ export function SidebarHeaderIconButton({
             size="icon"
             type="button"
             aria-label={label}
+            isActive={active}
             {...rest}
             className={cn("relative size-7 shrink-0", className)}
           />

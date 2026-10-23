@@ -1,6 +1,7 @@
 import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import type {
   EnvironmentId,
+  OrchestrationV2AppThreadLineage,
   PluginSidebarView,
   ProjectId,
   ScopedProjectRef,
@@ -14,6 +15,7 @@ interface ProjectViewThread {
   readonly environmentId: EnvironmentId;
   readonly projectId: ProjectId;
   readonly updatedAt: string;
+  readonly lineage: OrchestrationV2AppThreadLineage;
 }
 
 interface ProjectViewGroupInput {
@@ -29,9 +31,16 @@ export interface ProjectViewSection<TGroup, TThread> {
   readonly key: string;
   /** Rows to render: the live threads, or only the open one while folded. */
   readonly threads: ReadonlyArray<TThread>;
+  readonly rows: ReadonlyArray<ProjectViewRow<TThread>>;
   readonly liveCount: number;
   readonly lastActivityAt: string | null;
   readonly folded: boolean;
+}
+
+export interface ProjectViewRow<TThread> {
+  readonly thread: TThread;
+  readonly key: string;
+  readonly children: ReadonlyArray<ProjectViewRow<TThread>>;
 }
 
 export const UNKNOWN_PROJECT_SECTION_KEY = "\0unknown-project";
@@ -41,6 +50,56 @@ const threadKey = (thread: ProjectViewThread) =>
 
 const latest = (left: string | null, right: string) =>
   left === null || Date.parse(right) > Date.parse(left) ? right : left;
+
+function nestProjectThreads<TThread extends ProjectViewThread>(threads: ReadonlyArray<TThread>) {
+  const nodes = new Map(
+    threads.map((thread) => [
+      threadKey(thread),
+      { thread, key: threadKey(thread), children: [] as ProjectViewRow<TThread>[] },
+    ]),
+  );
+  const parents = new Map<string, string>();
+  for (const thread of threads) {
+    if (thread.lineage.parentThreadId === null || thread.lineage.relationshipToParent === null)
+      continue;
+    const parentKey = scopedThreadKey(
+      scopeThreadRef(thread.environmentId, thread.lineage.parentThreadId),
+    );
+    if (nodes.has(parentKey)) parents.set(threadKey(thread), parentKey);
+  }
+  // Resolve each chain once. Broken cycles (and chains into them) stay at the root rather
+  // than disappearing from the tree; environment-scoped keys never join two machines.
+  const cyclic = new Map<string, boolean>();
+  for (const key of nodes.keys()) {
+    const path = new Set<string>();
+    let cursor: string | undefined = key;
+    while (cursor !== undefined && !cyclic.has(cursor) && !path.has(cursor)) {
+      path.add(cursor);
+      cursor = parents.get(cursor);
+    }
+    const isCycle = cursor !== undefined && (cyclic.get(cursor) === true || path.has(cursor));
+    for (const visited of path) cyclic.set(visited, isCycle);
+  }
+  const roots: ProjectViewRow<TThread>[] = [];
+  for (const [key, node] of nodes) {
+    const parentKey = cyclic.get(key) ? undefined : parents.get(key);
+    const parent = parentKey === undefined ? undefined : nodes.get(parentKey);
+    if (parent) parent.children.push(node);
+    else roots.push(node);
+  }
+  return roots;
+}
+
+function flattenProjectRows<TThread>(rows: ReadonlyArray<ProjectViewRow<TThread>>): TThread[] {
+  const threads: TThread[] = [];
+  const stack = rows.toReversed();
+  while (stack.length > 0) {
+    const row = stack.pop()!;
+    threads.push(row.thread);
+    for (let index = row.children.length - 1; index >= 0; index--) stack.push(row.children[index]!);
+  }
+  return threads;
+}
 
 /**
  * Arranges the sidebar's threads by project for a plugin-declared view. The host decides what is
@@ -95,13 +154,20 @@ export function buildProjectView<
   }
 
   const section = (key: string, group: TGroup | null): ProjectViewSection<TGroup, TThread> => {
-    const rows = live.get(key) ?? [];
+    const liveThreads = live.get(key) ?? [];
     const folded = input.foldedKeys.has(key);
+    // Folding keeps only the open row, at the root: hidden ancestors must not consume space.
+    const rows = nestProjectThreads(
+      folded
+        ? liveThreads.filter((thread) => threadKey(thread) === input.routeThreadKey)
+        : liveThreads,
+    );
     return {
       group,
       key,
-      threads: folded ? rows.filter((thread) => threadKey(thread) === input.routeThreadKey) : rows,
-      liveCount: rows.length,
+      threads: flattenProjectRows(rows),
+      rows,
+      liveCount: liveThreads.length,
       lastActivityAt: activity.get(key) ?? null,
       folded,
     };

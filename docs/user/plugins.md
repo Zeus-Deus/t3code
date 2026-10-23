@@ -36,13 +36,15 @@ in the thread header (above the composer on mobile); select it to open that
 plugin's panel for the thread.
 
 A plugin can offer another sidebar layout, such as threads grouped by project.
-Once one is available, a switch appears under the sidebar search (and in the
+Once one is available, a switch appears beside the sidebar search (and in the
 command palette) to move between it and **Activity**. Installing or enabling
 such a plugin never switches the sidebar for you, and the choice is kept per
 device. If the plugin is disabled, removed, or unavailable, the sidebar shows
 Activity again without changing your open thread. It returns to your choice
 when the plugin comes back. In a project layout, pinned and active threads
-sit under their project, and settled and snoozed threads stay on the shelves
+sit under their project. Forks and T3-delegated tasks nest under their live
+parent in the same project; provider-internal subagents stay hidden.
+Settled and snoozed threads stay on the shelves
 below. Search and the project filter work as they do in Activity. The mobile
 thread list keeps the Activity layout.
 
