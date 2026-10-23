@@ -7,26 +7,37 @@ import { AsyncResult } from "effect/reactivity";
 import { expect, it, vi } from "vite-plus/test";
 import { page } from "vite-plus/test/browser";
 
-import { render } from "../../../test/render";
+import { act, render } from "../../../test/render";
 
 const state = vi.hoisted(() => ({
   html: "",
   installation: null as PluginInstallation | null,
+  catalogueListeners: new Set<() => void>(),
   calls: [] as string[],
+  generations: [] as string[],
   answer: (_name: string): Promise<PluginInvokeResult> => Promise.resolve({}),
   applied: [] as Array<{ locationKey: string; intents: unknown }>,
 }));
 
 vi.mock(import("../../state/plugins"), async (original) => {
   const actual = await original();
+  const { useSyncExternalStore } = await import("react");
+  const subscribe = (listener: () => void) => {
+    state.catalogueListeners.add(listener);
+    return () => state.catalogueListeners.delete(listener);
+  };
   return {
     ...actual,
-    usePluginCatalogue: () => ({
-      availability: "available" as const,
-      installations: state.installation ? [state.installation] : [],
-      loaded: true,
-      error: null,
-    }),
+    usePluginCatalogue: () => {
+      // Subscribed like the real catalogue, so an update reaches memoized components.
+      const installation = useSyncExternalStore(subscribe, () => state.installation);
+      return {
+        availability: "available" as const,
+        installations: installation ? [installation] : [],
+        loaded: true,
+        error: null,
+      };
+    },
   };
 });
 vi.mock(import("../../state/use-atom-command"), async (original) => {
@@ -35,12 +46,13 @@ vi.mock(import("../../state/use-atom-command"), async (original) => {
   return {
     ...actual,
     useAtomCommand: ((command: { label: string }) =>
-      async (request: { input: { handler?: string } }) => {
+      async (request: { input: { handler?: string; generation: string } }) => {
         if (command.label === pluginEnvironment.readView.label) {
           return AsyncResult.success({ html: state.html });
         }
         const name = request.input.handler?.split(":").at(-1) ?? "";
         state.calls.push(name);
+        state.generations.push(request.input.generation);
         return AsyncResult.success(await state.answer(name));
       }) as never,
   };
@@ -60,6 +72,7 @@ function setup(html: string, answer: (name: string) => Promise<PluginInvokeResul
   const digest = "a".repeat(64);
   state.html = html;
   state.calls = [];
+  state.generations = [];
   state.applied = [];
   state.answer = answer;
   state.installation = {
@@ -141,4 +154,52 @@ it("judges a view's intents against where the user was when it asked", async () 
 
   await vi.waitFor(() => expect(state.applied).toHaveLength(1));
   expect(state.applied[0]!.locationKey).toBe("/plugins/env-1/inst-1/board");
+});
+
+it("drops a pending answer from the generation a plugin update replaced", async () => {
+  let releaseOld!: () => void;
+  const oldHeld = new Promise<void>((resolve) => {
+    releaseOld = resolve;
+  });
+  let releaseNew!: () => void;
+  const newHeld = new Promise<void>((resolve) => {
+    releaseNew = resolve;
+  });
+  setup(`<script>t3.invoke("review");</script>`, async (name) => {
+    if (name === "review") {
+      await oldHeld;
+      return { data: { stale: true }, intents: [{ type: "view.open", viewId: "board" }] };
+    }
+    await newHeld;
+    return { data: { fresh: true } };
+  });
+  await using _screen = await render(view(), { router: "/plugins/env-1/inst-1/board" });
+  await vi.waitFor(() => expect(state.calls).toEqual(["review"]));
+
+  // Both documents number their first request 1, so a stray answer would settle the new one.
+  state.html = `<script>t3.invoke("fresh").then(function (result) {
+    parent.postMessage({ freshGot: result.data }, "*");
+  });</script>`;
+  await act(() => {
+    state.installation = { ...state.installation!, generation: "gen-2" };
+    for (const listener of state.catalogueListeners) listener();
+  });
+  await vi.waitFor(() => expect(state.calls).toEqual(["review", "fresh"]));
+  const freshGot = new Promise<unknown>((resolve) => {
+    const listener = (event: MessageEvent) => {
+      if (!event.data?.freshGot) return;
+      window.removeEventListener("message", listener);
+      resolve(event.data.freshGot);
+    };
+    window.addEventListener("message", listener);
+  });
+
+  // The old answer settles first; the new one reaches the view in a later task, by which time
+  // the old answer has been handled.
+  releaseOld();
+  releaseNew();
+
+  expect(await freshGot).toEqual({ fresh: true });
+  expect(state.generations).toEqual(["gen-1", "gen-2"]);
+  expect(state.applied).toEqual([]);
 });

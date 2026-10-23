@@ -135,6 +135,90 @@ it("binds only the first hand-over that carries this document's token", async ()
   expect(received).toEqual([{ from: "first" }]);
 });
 
+it("keeps two plugins' views apart even when one holds the other's token", async () => {
+  const views = ["a", "b"] as const;
+  const tokens = { a: "token-a", b: "token-b" };
+  const calls: Record<string, string[]> = { a: [], b: [] };
+  const frames = new Map<string, HTMLIFrameElement>();
+  using stack = new DisposableStack();
+  for (const id of views) {
+    const frame = document.createElement("iframe");
+    frame.setAttribute("sandbox", "allow-scripts");
+    frames.set(id, frame);
+    stack.defer(() => frame.remove());
+    const channel = bindPluginViewChannel({
+      token: tokens[id],
+      source: () => frame.contentWindow,
+      receive: (data) => host.receive(data),
+    });
+    stack.defer(() => channel.dispose());
+    const host = makePluginViewHost({
+      token: tokens[id],
+      post: channel.post,
+      context: () => ({
+        theme: "dark",
+        styles: {},
+        platform: "web",
+        placement: "side-panel",
+        view: { installationId: `inst-${id}`, viewId: "board" },
+        thread: { threadId: `thread-${id}`, projectId: null },
+      }),
+      captureOrigin: () => null,
+      invoke: async (name) => {
+        calls[id]!.push(name);
+        return { data: { owner: id } };
+      },
+      onIntents: () => undefined,
+    });
+  }
+  const frameFor = (id: string) => frames.get(id)!;
+  // Reports what the view's own bridge got back, from inside the view.
+  const report = (id: string) => `<script>
+    t3.ready.then(function () { return t3.invoke("mine"); }).then(function (result) {
+      parent.postMessage({ view: ${JSON.stringify(id)}, data: result.data, context: t3.context }, "*");
+    });</script>`;
+  const reported = (id: string) =>
+    nextMessage((data) =>
+      data.view === id ? { data: data.data, context: data.context } : undefined,
+    );
+
+  // A goes first, so B has no port yet when A hands one over under B's token.
+  frameFor("a").srcdoc = buildPluginViewDocument(
+    `<script>
+      var seen = [], stolen = new MessageChannel();
+      stolen.port1.onmessage = function (e) { seen.push(e.data); };
+      parent.postMessage({ t3Plugin: 1, kind: "connect", token: "token-b" }, "*", [stolen.port2]);
+      stolen.port1.postMessage({ t3Plugin: 1, token: "token-b", kind: "ready" });
+      stolen.port1.postMessage({ t3Plugin: 1, token: "token-b", kind: "invoke", id: 1, name: "steal" });
+      window.addEventListener("message", function (e) {
+        if (e.data && e.data.report) parent.postMessage({ stolenSaw: seen }, "*");
+      });
+    </script>${report("a")}`,
+    tokens.a,
+  );
+  const reportedA = reported("a");
+  document.body.append(frameFor("a"));
+  expect(await reportedA).toEqual({
+    data: { owner: "a" },
+    context: expect.objectContaining({ thread: { threadId: "thread-a", projectId: null } }),
+  });
+
+  frameFor("b").srcdoc = buildPluginViewDocument(report("b"), tokens.b);
+  const reportedB = reported("b");
+  document.body.append(frameFor("b"));
+  expect(await reportedB).toEqual({
+    data: { owner: "b" },
+    context: expect.objectContaining({ thread: { threadId: "thread-b", projectId: null } }),
+  });
+
+  const stolen = nextMessage((data) =>
+    Array.isArray(data.stolenSaw) ? data.stolenSaw : undefined,
+  );
+  frameFor("a").contentWindow!.postMessage({ report: true }, "*");
+  expect(await stolen).toEqual([]);
+  expect(calls).toEqual({ a: ["mine"], b: ["mine"] });
+});
+
 it("relays the mobile view's hand-over and reports only a later load as navigation", async () => {
   const SECRET = "outer-secret";
   const relayed: unknown[] = [];

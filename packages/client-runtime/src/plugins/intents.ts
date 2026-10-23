@@ -61,12 +61,34 @@ export function planPluginIntents(input: {
 }): ReadonlyArray<PluginIntentStep> {
   const stayed = input.currentLocationKey === input.origin.locationKey;
   let navigated = false;
+  // An applied navigation that leaves the origin thread hides its composer, wherever the insert
+  // sits in the list.
+  let leaves = false;
   const navigate = (intent: NavigationIntent, canApply: boolean): PluginIntentStep => {
     const apply = stayed && !navigated && canApply;
-    if (apply) navigated = true;
+    if (apply) {
+      navigated = true;
+      leaves = leavesOrigin(intent);
+    }
     return { kind: "navigate", intent, mode: apply ? "apply" : "offer" };
   };
-  return input.intents.map((intent): PluginIntentStep => {
+  // Mirrors the client opener: side-panel views open beside the origin thread, others as a page.
+  const leavesOrigin = (intent: NavigationIntent): boolean => {
+    switch (intent.type) {
+      case "thread.reveal":
+        return intent.threadId !== input.origin.threadId;
+      case "view.open":
+        return !(
+          input.origin.threadId !== null &&
+          input.manifest.views.some(
+            (view) => view.id === intent.viewId && view.placement === "side-panel",
+          )
+        );
+      case "preview.open":
+        return false;
+    }
+  };
+  const steps = input.intents.map((intent): PluginIntentStep => {
     switch (intent.type) {
       case "composer.insert":
         if (input.origin.composerKey === null) {
@@ -92,6 +114,9 @@ export function planPluginIntents(input: {
         return navigate(intent, input.canOpenPreview && input.origin.threadId !== null);
     }
   });
+  return leaves
+    ? steps.map((step) => (step.kind === "insert" ? { ...step, visible: false } : step))
+    : steps;
 }
 
 /**

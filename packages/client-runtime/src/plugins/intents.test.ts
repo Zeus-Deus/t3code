@@ -60,6 +60,36 @@ describe("planPluginIntents", () => {
     ]);
   });
 
+  it("says where inserted text went when the same result moves the user away from it", () => {
+    const visibility = (intents: Parameters<typeof planPluginIntents>[0]["intents"]) =>
+      planPluginIntents({
+        origin,
+        manifest: {
+          views: [
+            ...manifest.views,
+            { id: "notes", title: "Notes", entry: "notes.html", placement: "side-panel" },
+          ],
+        },
+        intents,
+        currentLocationKey: origin.locationKey,
+        canOpenPreview: true,
+      }).flatMap((step) => (step.kind === "insert" ? [step.visible] : []));
+    const insert = { type: "composer.insert" as const, text: "draft" };
+
+    expect(
+      visibility([{ type: "thread.reveal", threadId: ThreadId.make("thread-b") }, insert]),
+    ).toEqual([false]);
+    expect(visibility([insert, { type: "view.open", viewId: "board" }])).toEqual([false]);
+    // These keep the user on the thread whose composer got the text.
+    expect(
+      visibility([{ type: "thread.reveal", threadId: ThreadId.make("thread-a") }, insert]),
+    ).toEqual([true]);
+    expect(visibility([{ type: "view.open", viewId: "notes" }, insert])).toEqual([true]);
+    expect(
+      visibility([{ type: "preview.open", url: "https://tickets.example/T-1" }, insert]),
+    ).toEqual([true]);
+  });
+
   it("offers a preview link when there is no thread to open it beside", () => {
     const steps = planPluginIntents({
       origin: { ...origin, threadId: null, composerKey: null },

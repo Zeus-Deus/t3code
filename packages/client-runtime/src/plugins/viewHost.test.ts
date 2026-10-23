@@ -34,6 +34,7 @@ function setup(invoke: (name: string, input: unknown) => Promise<PluginInvokeRes
   const posted: unknown[] = [];
   const intents: unknown[] = [];
   const origins: unknown[] = [];
+  const unsupported: number[] = [];
   let location = "/plugins/board";
   const host = makePluginViewHost({
     token: TOKEN,
@@ -41,9 +42,10 @@ function setup(invoke: (name: string, input: unknown) => Promise<PluginInvokeRes
     context: () => context,
     captureOrigin: () => ({ location }),
     invoke,
-    onIntents: (next, origin) => {
+    onIntents: (next, origin, skipped) => {
       intents.push(...next);
       origins.push(origin);
+      unsupported.push(skipped);
     },
   });
   return {
@@ -51,6 +53,7 @@ function setup(invoke: (name: string, input: unknown) => Promise<PluginInvokeRes
     posted,
     intents,
     origins,
+    unsupported,
     moveTo: (next: string) => {
       location = next;
     },
@@ -102,6 +105,28 @@ describe("makePluginViewHost", () => {
     await call.promise;
     await Promise.resolve();
     expect(origins).toEqual([{ location: "/plugins/board" }]);
+  });
+
+  it("tells the client about intents only a newer app understands, even with none it can apply", async () => {
+    const newer = deferred<PluginInvokeResult>();
+    const older = deferred<PluginInvokeResult>();
+    const answers = [newer.promise, older.promise];
+    const { host, posted, intents, origins, unsupported } = setup(() => answers.shift()!);
+    host.receive({ t3Plugin: 1, token: TOKEN, kind: "invoke", id: 1, name: "plan" });
+    host.receive({ t3Plugin: 1, token: TOKEN, kind: "invoke", id: 2, name: "plan" });
+    // What this client's contracts leave of a result whose only intents are from a newer API.
+    newer.resolve({ data: { ok: true }, intents: [], unsupportedIntentCount: 2 });
+    // An older server sends no count and no intents: nothing to tell the user.
+    older.resolve({ message: "done" });
+    await Promise.all([newer.promise, older.promise]);
+    await Promise.resolve();
+    expect(intents).toEqual([]);
+    expect(origins).toEqual([{ location: "/plugins/board" }]);
+    expect(unsupported).toEqual([2]);
+    expect(posted).toEqual([
+      { t3Plugin: 1, kind: "result", id: 1, ok: true, value: { data: { ok: true } } },
+      { t3Plugin: 1, kind: "result", id: 2, ok: true, value: { message: "done" } },
+    ]);
   });
 
   it("ignores messages from a document that does not hold this document's token", () => {
