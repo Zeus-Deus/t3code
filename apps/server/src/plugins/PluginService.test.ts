@@ -4695,6 +4695,173 @@ it.effect(
     }).pipe(Effect.provide(base()), Effect.scoped),
 );
 
+it.effect("review: native-tree-only plugin can explicitly invalidate its declared tree", () =>
+  Effect.gen(function* () {
+    const f = yield* fixture;
+    const capabilities = ["threads.read", "ui.native-trees", "ui.changes"] as const;
+    const extended: PluginManifest = {
+      ...manifest,
+      capabilities,
+      views: [],
+      threadStatus: [],
+      nativeTrees: [{ id: "native", title: "Native" }],
+    };
+    yield* f.fs.writeFileString(
+      f.path.join(f.directory, "t3-plugin.json"),
+      yield* encodeJson(extended),
+    );
+    const installed = yield* f.install();
+    const enabled = yield* f.plugins.consent({
+      installationId: installed.installationId,
+      digest: installed.digest,
+      grants: { capabilities, projectIds: [projectId] },
+    });
+    const changes = yield* Queue.unbounded<import("@t3tools/contracts").PluginChanged>();
+    yield* f.plugins.subscribeChanges(actor).pipe(
+      Stream.runForEach((change) => Queue.offer(changes, change)),
+      Effect.forkChild,
+    );
+    expect((yield* Queue.take(changes)).topic).toBe("tree:native");
+    f.setHandler(() => Effect.succeed({ data: { nodes: [] } }));
+    expect(
+      yield* f.plugins.readTree(
+        {
+          installationId: enabled.installationId,
+          generation: enabled.generation,
+          treeId: "native",
+          operationId: "read",
+        },
+        actor,
+      ),
+    ).toEqual({ nodes: [] });
+    f.setHandler((_input, host) =>
+      host("ui.invalidate", { topics: ["tree:native"] }).pipe(Effect.as({ data: { nodes: [] } })),
+    );
+    yield* f.plugins.readTree(
+      {
+        installationId: enabled.installationId,
+        generation: enabled.generation,
+        treeId: "native",
+        operationId: "invalidate-from-tree",
+      },
+      actor,
+    );
+    yield* TestClock.adjust("25 millis");
+    expect(yield* Queue.size(changes)).toBe(1);
+    expect((yield* Queue.take(changes)).topic).toBe("tree:native");
+    f.setHandler((_input, host) =>
+      host("ui.invalidate", { topics: ["tree:native"] }).pipe(Effect.as({ message: "changed" })),
+    );
+    const result = yield* f.plugins
+      .invoke(
+        {
+          installationId: enabled.installationId,
+          generation: enabled.generation,
+          handler: "action:review",
+          operationId: "invalidate",
+        },
+        actor,
+      )
+      .pipe(Effect.result);
+    expect(result).toMatchObject({ _tag: "Success", success: { message: "changed" } });
+  }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect.each([
+  { missing: "ui.changes", topics: ["tree:native", "view:board"], reason: "permission_denied" },
+  {
+    missing: "ui.native-trees",
+    topics: ["view:board", "tree:native"],
+    reason: "permission_denied",
+  },
+  { missing: "threads.read", topics: ["view:board", "tree:native"], reason: "permission_denied" },
+  { missing: "ui", topics: ["tree:native", "view:board"], reason: "permission_denied" },
+  { missing: "ui", topics: ["tree:native", "status:lane"], reason: "permission_denied" },
+  { missing: null, topics: ["tree:native", "tree:undeclared"], reason: "invalid_handler" },
+] as const)(
+  "rejects the entire invalidation batch $topics with missing grant $missing",
+  ({ missing, topics, reason }) =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      const capabilities = ["threads.read", "ui", "ui.native-trees", "ui.changes"] as const;
+      yield* f.fs.writeFileString(
+        f.path.join(f.directory, "t3-plugin.json"),
+        yield* encodeJson({
+          ...manifest,
+          capabilities,
+          nativeTrees: [{ id: "native", title: "Native" }],
+        }),
+      );
+      const installed = yield* f.install();
+      const granted = capabilities.filter((capability) => capability !== missing);
+      const enabled = yield* f.plugins.consent({
+        installationId: installed.installationId,
+        digest: installed.digest,
+        grants: { capabilities: granted, projectIds: [projectId] },
+      });
+      const changes = yield* Queue.unbounded<import("@t3tools/contracts").PluginChanged>();
+      yield* f.plugins.subscribeChanges(actor).pipe(
+        Stream.runForEach((change) => Queue.offer(changes, change)),
+        Effect.forkChild,
+      );
+      const initialCount =
+        (granted.includes("ui") ? 2 : 0) +
+        (granted.includes("ui.native-trees") && granted.includes("threads.read") ? 1 : 0);
+      for (let index = 0; index < initialCount; index++) yield* Queue.take(changes);
+      f.setHandler((_input, host) =>
+        host("ui.invalidate", { topics }).pipe(Effect.as({ message: "changed" })),
+      );
+      expect(
+        yield* f.plugins
+          .invoke(
+            {
+              installationId: enabled.installationId,
+              generation: enabled.generation,
+              handler: "action:review",
+              operationId: "invalidate",
+            },
+            actor,
+          )
+          .pipe(Effect.result),
+      ).toMatchObject({ _tag: "Failure", failure: { reason } });
+      yield* TestClock.adjust("25 millis");
+      expect(yield* Queue.size(changes)).toBe(0);
+    }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect("invalidates declared views and statuses without native-tree or thread-read grants", () =>
+  Effect.gen(function* () {
+    const f = yield* fixture;
+    const capabilities = ["ui", "ui.changes"] as const;
+    yield* f.fs.writeFileString(
+      f.path.join(f.directory, "t3-plugin.json"),
+      yield* encodeJson({ ...manifest, capabilities }),
+    );
+    const installed = yield* f.install();
+    const enabled = yield* f.plugins.consent({
+      installationId: installed.installationId,
+      digest: installed.digest,
+      grants: { capabilities, projectIds: [projectId] },
+    });
+    f.setHandler((_input, host) =>
+      host("ui.invalidate", { topics: ["view:board", "status:lane"] }).pipe(
+        Effect.as({ message: "changed" }),
+      ),
+    );
+    expect(
+      yield* f.plugins.invoke(
+        {
+          installationId: enabled.installationId,
+          generation: enabled.generation,
+          handler: "action:review",
+          operationId: "invalidate",
+        },
+        actor,
+      ),
+    ).toMatchObject({ message: "changed" });
+  }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
 it.effect("coalesces payload-free contribution invalidations and revokes session callbacks", () =>
   Effect.gen(function* () {
     const f = yield* fixture;

@@ -9,6 +9,7 @@ import {
   PluginChanged,
   PluginInvalidateInput,
   MAX_PLUGIN_CARD_BYTES,
+  MAX_PLUGIN_RESULT_BYTES,
   MAX_PLUGIN_RESULT_IMAGE_BYTES,
   pluginCompatibility,
   pluginRequestedCapabilities,
@@ -322,7 +323,7 @@ const make = Effect.gen(function* () {
     installationId: string,
     generation: string,
     actor: PluginActor,
-    capability: "ui" | "ui.native-trees" | "ui.conversation-cards",
+    capability: "ui" | "ui.native-trees" | "ui.conversation-cards" | "ui.changes",
   ) {
     yield* actor.authorize?.() ?? Effect.void;
     if (!actor.scopes.includes(AuthOrchestrationReadScope)) return yield* pluginPermissionDenied();
@@ -1868,10 +1869,8 @@ const make = Effect.gen(function* () {
                 input.installationId,
                 input.generation,
                 actor,
-                "ui",
+                "ui.changes",
               );
-              if (!pluginCapabilityAllowed(current.record.installation, actor, "ui.changes"))
-                return yield* pluginPermissionDenied();
               const request = yield* decodeInvalidate(value).pipe(
                 Effect.mapError(
                   () =>
@@ -1887,6 +1886,19 @@ const make = Effect.gen(function* () {
                   reason: "invalid_handler",
                   message: "The plugin invalidation topic is not declared.",
                 });
+              if (
+                request.topics.some((topic) =>
+                  topic.startsWith("tree:")
+                    ? !pluginCapabilityAllowed(
+                        current.record.installation,
+                        actor,
+                        "ui.native-trees",
+                      ) ||
+                      !pluginCapabilityAllowed(current.record.installation, actor, "threads.read")
+                    : !pluginCapabilityAllowed(current.record.installation, actor, "ui"),
+                )
+              )
+                return yield* pluginPermissionDenied();
               yield* actor.authorize?.() ?? Effect.void;
               if (!store.isCurrent(current.state)) return yield* pluginPermissionDenied();
               yield* emitChanges(current.record.installation, request.topics);
@@ -1979,7 +1991,7 @@ const make = Effect.gen(function* () {
                 }),
             ),
           ),
-        ) > 128_000
+        ) > MAX_PLUGIN_RESULT_BYTES
       )
         return yield* new PluginError({
           reason: "invalid_result",

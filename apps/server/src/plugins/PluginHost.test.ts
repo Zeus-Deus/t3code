@@ -1064,6 +1064,150 @@ it.effect("waits for core rollback and domain cleanup before releasing a same-ke
     expect(yield* sql`SELECT operation_key FROM plugin_event_reservations`).toHaveLength(2);
   }).pipe(Effect.provide(base()), Effect.scoped),
 );
+it.effect("review: frozen v1 create-only client action still creates with a thread context", () =>
+  Effect.gen(function* () {
+    const f = yield* fixture;
+    yield* f.store.update((state) =>
+      Effect.succeed([
+        undefined,
+        {
+          ...state,
+          installations: state.installations.map((record) => ({
+            ...record,
+            installation: {
+              ...record.installation,
+              manifest: { ...record.installation.manifest, capabilities: ["threads.create"] },
+              grants: { capabilities: ["threads.create"], projectIds: [projectId] },
+            },
+          })),
+        },
+      ] as const),
+    );
+    const result = yield* f.host
+      .call(
+        {
+          ...f.invocation,
+          event: false,
+          context: { threadId: f.shell.id, projectId },
+        },
+        "threads.create",
+        f.request,
+      )
+      .pipe(Effect.result);
+    expect(result).toMatchObject({ _tag: "Success" });
+    expect(f.launches()).toBe(1);
+  }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect.each(
+  (["client", "agent"] as const).flatMap((source) => [
+    ...(["capability", "scope", "source-project", "actor-project"] as const).map(
+      (readAuthority) => ({ source, readAuthority, limited: false }),
+    ),
+    { source, readAuthority: "capability" as const, limited: true },
+  ]),
+)(
+  "uses project defaults without source $readAuthority authority for $source (limited=$limited)",
+  ({ source, readAuthority, limited }) =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      const sourceProject = ProjectId.make("source-project");
+      const capabilities =
+        readAuthority === "capability"
+          ? (["threads.create"] as const)
+          : (["threads.create", "threads.read"] as const);
+      yield* f.store.update((state) =>
+        Effect.succeed([
+          undefined,
+          {
+            ...state,
+            installations: state.installations.map((record) => ({
+              ...record,
+              installation: {
+                ...record.installation,
+                manifest: { ...record.installation.manifest, capabilities },
+                grants: {
+                  capabilities,
+                  projectIds:
+                    readAuthority === "actor-project" ? [projectId, sourceProject] : [projectId],
+                },
+              },
+            })),
+          },
+        ] as const),
+      );
+      yield* f.settings.updateSettings({ defaultRuntimeMode: "full-access" });
+      const modes = limited
+        ? ({ runtimeMode: "approval-required", interactionMode: "plan" } as const)
+        : ({ runtimeMode: "full-access", interactionMode: "default" } as const);
+      f.setEffectModes(modes);
+      const getShell = f.threads.getThreadShell;
+      using _shell = vi.spyOn(f.threads, "getThreadShell").mockImplementation((id) =>
+        id === f.shell.id
+          ? Effect.succeed({
+              ...f.shell,
+              modelSelection: { ...f.shell.modelSelection, model: "source-model" },
+              runtimeMode: "approval-required",
+              interactionMode: "plan",
+              projectId:
+                readAuthority === "source-project" || readAuthority === "actor-project"
+                  ? sourceProject
+                  : projectId,
+            })
+          : getShell(id),
+      );
+      yield* f.host.call(
+        {
+          ...f.invocation,
+          event: false,
+          actor: {
+            ...actor,
+            ...modes,
+            source,
+            ...(source === "agent" ? { threadId: f.shell.id } : {}),
+            ...(readAuthority === "scope" ? { scopes: [AuthOrchestrationOperateScope] } : {}),
+            ...(readAuthority === "actor-project" ? { projectIds: [projectId] } : {}),
+          },
+          context: { threadId: f.shell.id, projectId },
+        },
+        "threads.create",
+        { ...f.request, launchedFrom: { threadId: "forged" } },
+      );
+      expect(f.launchInputs).toHaveLength(1);
+      expect(f.launchInputs[0]).toMatchObject({ modelSelection: f.shell.modelSelection, ...modes });
+      expect(f.launchInputs[0]).not.toHaveProperty("launchedFrom");
+      if (readAuthority === "capability" || readAuthority === "scope")
+        expect(_shell.mock.calls.some(([id]) => id === f.shell.id)).toBe(false);
+    }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect("inherits source defaults and verified provenance with source read authority", () =>
+  Effect.gen(function* () {
+    const f = yield* fixture;
+    const source = {
+      ...f.shell,
+      modelSelection: { ...f.shell.modelSelection, model: "source-model" },
+      runtimeMode: "approval-required" as const,
+      interactionMode: "plan" as const,
+    };
+    const getShell = f.threads.getThreadShell;
+    using _shell = vi
+      .spyOn(f.threads, "getThreadShell")
+      .mockImplementation((id) => (id === source.id ? Effect.succeed(source) : getShell(id)));
+    yield* f.host.call({ ...f.invocation, context: { threadId: source.id } }, "threads.create", {
+      ...f.request,
+      launchedFrom: { threadId: "forged" },
+    });
+    expect(f.launchInputs).toHaveLength(1);
+    expect(f.launchInputs[0]).toMatchObject({
+      modelSelection: source.modelSelection,
+      runtimeMode: source.runtimeMode,
+      interactionMode: source.interactionMode,
+      launchedFrom: { threadId: source.id },
+    });
+  }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
 it.effect("releases a pre-dispatch defect without changing its cause", () =>
   Effect.gen(function* () {
     const f = yield* fixture;

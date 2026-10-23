@@ -607,8 +607,17 @@ const make = Effect.gen(function* () {
         yield* requireCapability("threads.create", request.projectId);
         const sourceThreadId =
           actor.source === "agent" ? actor.threadId : invocation.context?.threadId;
-        const caller = sourceThreadId === undefined ? null : yield* target(sourceThreadId);
-        if (caller !== null) yield* requireCapability("threads.read", caller.projectId);
+        // Source inheritance is optional; v1 create-only plugins use project defaults.
+        const source =
+          sourceThreadId === undefined ||
+          !pluginCapabilityAllowed(installation, actor, "threads.read")
+            ? null
+            : yield* target(sourceThreadId);
+        const caller =
+          source !== null &&
+          pluginCapabilityAllowed(installation, actor, "threads.read", source.projectId)
+            ? source
+            : null;
         const workspaceStrategy = request.workspaceStrategy ?? { type: "root" as const };
         if (workspaceStrategy.type === "worktree")
           yield* requireCapability("worktrees.create", request.projectId);
