@@ -5,10 +5,6 @@ export const pluginChangesSupported = (
   capabilities: ExecutionEnvironmentCapabilities | null | undefined,
 ) => capabilities?.plugins?.changes === true;
 
-export const pluginNativeTreesSupported = (
-  capabilities: ExecutionEnvironmentCapabilities | null | undefined,
-) => capabilities?.plugins?.nativeTrees === true;
-
 export const pluginConversationCardsSupported = (
   capabilities: ExecutionEnvironmentCapabilities | null | undefined,
 ) => capabilities?.plugins?.conversationCards === true;

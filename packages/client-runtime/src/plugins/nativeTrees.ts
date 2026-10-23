@@ -50,9 +50,9 @@ export interface PluginTreeSource {
 export const PLUGIN_TREE_OTHER_SECTION_KEY = "\0plugin-tree-other";
 
 /** Persisted per device: an explicit fold or unfold, which wins over `collapsedByDefault`. */
-export const pluginTreeExpandedFoldKey = (sectionKey: string) => `+${sectionKey}`;
+const pluginTreeExpandedFoldKey = (sectionKey: string) => `+${sectionKey}`;
 
-export function isPluginTreeSectionFolded(
+function isPluginTreeSectionFolded(
   sectionKey: string,
   collapsedByDefault: boolean,
   folds: ReadonlySet<string>,
