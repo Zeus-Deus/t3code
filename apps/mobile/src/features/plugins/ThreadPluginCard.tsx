@@ -24,11 +24,11 @@ export function ThreadPluginCard(props: {
   const navigation = useNavigation();
   const presentations = useAtomValue(environmentPresentations.presentationsAtom);
   const catalogue = usePluginCatalogue(props.environmentId);
+  const capabilities = presentations.get(props.environmentId)?.serverConfig?.environment
+    .capabilities;
   const presentation = resolvePluginCardPresentation({
     card: props.card,
-    supported: pluginConversationCardsSupported(
-      presentations.get(props.environmentId)?.serverConfig?.environment.capabilities,
-    ),
+    supported: capabilities === undefined ? null : pluginConversationCardsSupported(capabilities),
     installations:
       catalogue.availability === "available" && catalogue.loaded ? catalogue.installations : null,
     executionDisabled: catalogue.executionDisabled,

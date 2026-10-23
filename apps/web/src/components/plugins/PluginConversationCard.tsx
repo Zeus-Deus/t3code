@@ -104,11 +104,10 @@ export function PluginConversationCard(props: {
 }) {
   const environment = useEnvironment(props.environmentId);
   const catalogue = usePluginCatalogue(props.environmentId);
+  const capabilities = environment?.serverConfig?.environment.capabilities;
   const presentation = resolvePluginCardPresentation({
     card: props.card,
-    supported: pluginConversationCardsSupported(
-      environment?.serverConfig?.environment.capabilities,
-    ),
+    supported: capabilities === undefined ? null : pluginConversationCardsSupported(capabilities),
     installations:
       catalogue.availability === "available" && catalogue.loaded ? catalogue.installations : null,
     executionDisabled: catalogue.executionDisabled === true,

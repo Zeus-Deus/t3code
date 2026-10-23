@@ -32,11 +32,11 @@ const launcher = (overrides: Partial<PluginInstallation> = {}): PluginInstallati
 
 const present = (
   installations: ReadonlyArray<PluginInstallation> | null,
-  options: { supported?: boolean; executionDisabled?: boolean } = {},
+  options: { supported?: boolean | null; executionDisabled?: boolean } = {},
 ) =>
   resolvePluginCardPresentation({
     card,
-    supported: options.supported ?? true,
+    supported: options.supported === undefined ? true : options.supported,
     installations,
     executionDisabled: options.executionDisabled ?? false,
   });
@@ -88,6 +88,15 @@ describe("resolvePluginCardPresentation", () => {
   it("never matches another installation that happens to share the plugin id", () => {
     const other = launcher({ installationId: "inst-other" });
     expect(present([other])).toMatchObject({ kind: "summary", pluginName: null });
+  });
+
+  it("gives no reason while the environment's capabilities are still unknown", () => {
+    for (const installations of [null, [launcher()]]) {
+      expect(present(installations, { supported: null })).toMatchObject({
+        kind: "summary",
+        reason: null,
+      });
+    }
   });
 
   it("says plugin code is off in safe mode rather than that the plugin is gone", () => {

@@ -25,8 +25,8 @@ export type PluginCardPresentation =
 
 export function resolvePluginCardPresentation(input: {
   readonly card: PluginCardReference;
-  /** The environment serves card views at all. */
-  readonly supported: boolean;
+  /** The environment serves card views at all; null until its capabilities are known. */
+  readonly supported: boolean | null;
   /**
    * The environment's whole catalogue, null until known. Not the runnable subset: safe mode empties
    * that, and the card would then claim its plugin is gone.
@@ -42,6 +42,8 @@ export function resolvePluginCardPresentation(input: {
     pluginName: installation?.manifest.name ?? null,
     reason,
   });
+  if (input.supported === null) return summary(null);
+  // Before the catalogue: an environment without plugin cards may never list one.
   if (!input.supported) return summary("This environment's T3 Code cannot show plugin cards.");
   if (input.installations === null) return summary(null);
   // Before the lookup: safe mode is the reason even where a list of runnable plugins is empty.
