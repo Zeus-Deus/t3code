@@ -48,8 +48,12 @@ type CardCaller = Pick<
 
 interface KeptPluginCard {
   readonly key: string;
-  readonly caller: CardCaller;
   readonly reference: PluginCardReference;
+}
+
+interface ProviderSession {
+  readonly config: McpProviderSessionConfig;
+  readonly cards: ReadonlyArray<KeptPluginCard>;
 }
 
 // Antigravity truncates long HTML arguments to a marked tail of at most 8,000 characters.
@@ -127,31 +131,33 @@ const matchingPageIndex = (
 };
 
 const make = Effect.gen(function* () {
-  const sessions = yield* Ref.make(new Map<ThreadId, McpProviderSessionConfig>());
+  const sessions = yield* Ref.make(new Map<ThreadId, ProviderSession>());
   const htmlRenders = yield* Ref.make(new Map<ThreadId, ReadonlyArray<KeptHtmlRender>>());
-  const pluginCards = yield* Ref.make(new Map<ThreadId, ReadonlyArray<KeptPluginCard>>());
   return McpProviderSessions.of({
     set: Effect.fn("McpProviderSessions.set")(function* (config) {
-      const current = yield* Ref.get(sessions);
-      if (
-        current.get(config.threadId)?.providerSessionId !== config.providerSessionId ||
-        current.get(config.threadId)?.providerInstanceId !== config.providerInstanceId
-      ) {
+      const changed = yield* Ref.modify(sessions, (current) => {
+        const previous = current.get(config.threadId);
+        const changed =
+          previous?.config.providerSessionId !== config.providerSessionId ||
+          previous.config.providerInstanceId !== config.providerInstanceId;
+        return [
+          changed,
+          new Map(current).set(config.threadId, {
+            config,
+            cards: changed ? [] : previous.cards,
+          }),
+        ];
+      });
+      if (changed) {
         yield* Ref.update(htmlRenders, (kept) => {
           const next = new Map(kept);
           next.delete(config.threadId);
           return next;
         });
-        yield* Ref.update(pluginCards, (kept) => {
-          const next = new Map(kept);
-          next.delete(config.threadId);
-          return next;
-        });
       }
-      yield* Ref.update(sessions, (current) => new Map(current).set(config.threadId, config));
     }),
     read: Effect.fn("McpProviderSessions.read")(function (threadId) {
-      return Ref.get(sessions).pipe(Effect.map((current) => current.get(threadId)));
+      return Ref.get(sessions).pipe(Effect.map((current) => current.get(threadId)?.config));
     }),
     clear: Effect.fn("McpProviderSessions.clear")(function (threadId) {
       return Ref.update(sessions, (current) => {
@@ -166,47 +172,40 @@ const make = Effect.gen(function* () {
             return next;
           }),
         ),
-        Effect.andThen(Ref.update(pluginCards, (current) => { const next = new Map(current); next.delete(threadId); return next; })),
       );
     }),
     recordPluginCard: Effect.fn("McpProviderSessions.recordPluginCard")(
       function* (caller, input, reference) {
         const key = cardInvocationKey(input);
-        const session = (yield* Ref.get(sessions)).get(caller.threadId);
-        if (
-          key === undefined ||
-          session?.providerSessionId !== caller.providerSessionId ||
-          session.providerInstanceId !== caller.providerInstanceId
-        )
-          return;
-        yield* Ref.update(pluginCards, (current) =>
-          new Map(current).set(
-            caller.threadId,
-            [
-              ...(current.get(caller.threadId) ?? []).filter((entry) => entry.key !== key),
-              { key, caller, reference },
+        if (key === undefined) return;
+        yield* Ref.update(sessions, (current) => {
+          const session = current.get(caller.threadId);
+          if (
+            session?.config.providerSessionId !== caller.providerSessionId ||
+            session.config.providerInstanceId !== caller.providerInstanceId
+          )
+            return current;
+          return new Map(current).set(caller.threadId, {
+            ...session,
+            cards: [
+              ...session.cards.filter((entry) => entry.key !== key),
+              { key, reference },
             ].slice(-MAX_KEPT_PLUGIN_CARDS),
-          ),
-        );
+          });
+        });
       },
     ),
     takePluginCard: Effect.fn("McpProviderSessions.takePluginCard")(function* (threadId, input) {
       const key = cardInvocationKey(input);
       if (key === undefined) return;
-      const session = (yield* Ref.get(sessions)).get(threadId);
-      return yield* Ref.modify(pluginCards, (current) => {
-        const kept = current.get(threadId) ?? [];
-        const index = kept.findIndex(
-          (entry) =>
-            entry.key === key &&
-            entry.caller.providerSessionId === session?.providerSessionId &&
-            entry.caller.providerInstanceId === session.providerInstanceId,
-        );
+      return yield* Ref.modify(sessions, (current) => {
+        const session = current.get(threadId);
+        if (session === undefined) return [undefined, current];
+        const kept = session.cards;
+        const index = kept.findIndex((entry) => entry.key === key);
         if (index === -1) return [undefined, current];
-        const next = new Map(current);
         const remaining = kept.filter((_, position) => position !== index);
-        if (remaining.length === 0) next.delete(threadId);
-        else next.set(threadId, remaining);
+        const next = new Map(current).set(threadId, { ...session, cards: remaining });
         return [kept[index]!.reference, next];
       });
     }),

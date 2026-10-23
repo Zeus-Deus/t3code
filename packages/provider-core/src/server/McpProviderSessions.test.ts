@@ -1,8 +1,14 @@
 import { expect, it } from "@effect/vitest";
+import { vi } from "vite-plus/test";
 import { EnvironmentId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Deferred from "effect/Deferred";
+import * as Fiber from "effect/Fiber";
+import * as Ref from "effect/Ref";
 
 import * as McpProviderSessions from "./McpProviderSessions.ts";
+
+vi.mock("effect/Ref", { spy: true });
 
 const session = {
   environmentId: EnvironmentId.make("cards-test"),
@@ -27,6 +33,37 @@ const card = {
   summary: "Proposed two tasks.",
   data: { planId: "plan-1" },
 };
+
+it.effect("keeps the current session card when an old recorder finishes after rotation", () =>
+  Effect.gen(function* () {
+    const sessions = yield* McpProviderSessions.McpProviderSessions;
+    yield* sessions.set(session);
+    const checked = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    const update = Ref.update;
+    // Rotate the session before the old recorder commits its cache mutation.
+    using _write = vi
+      .spyOn(Ref, "update")
+      .mockImplementationOnce((ref, modify) =>
+        Deferred.succeed(checked, undefined).pipe(
+          Effect.andThen(Deferred.await(release)),
+          Effect.andThen(update(ref, modify)),
+        ),
+      );
+    const oldRecord = yield* sessions
+      .recordPluginCard(session, request, card)
+      .pipe(Effect.forkChild);
+    yield* Deferred.await(checked);
+    const replacement = { ...session, providerSessionId: "provider-session-2" };
+    const newCard = { ...card, data: { planId: "plan-current-session" } };
+    yield* sessions.set(replacement);
+    yield* sessions.recordPluginCard(replacement, request, newCard);
+    yield* Deferred.succeed(release, undefined);
+    yield* Fiber.join(oldRecord);
+    expect((yield* sessions.read(session.threadId))?.providerSessionId).toBe("provider-session-2");
+    expect(yield* sessions.takePluginCard(session.threadId, request)).toEqual(newCard);
+  }).pipe(Effect.provide(McpProviderSessions.layer)),
+);
 
 it.effect("recovers a plugin card only for its exact completed invocation", () =>
   Effect.gen(function* () {
