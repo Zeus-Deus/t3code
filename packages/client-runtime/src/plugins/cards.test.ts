@@ -89,4 +89,17 @@ describe("resolvePluginCardPresentation", () => {
     const other = launcher({ installationId: "inst-other" });
     expect(present([other])).toMatchObject({ kind: "summary", pluginName: null });
   });
+
+  it("says plugin code is off in safe mode rather than that the plugin is gone", () => {
+    // Safe mode hides runnable installations; the full catalogue still names the plugin.
+    for (const installations of [[], [launcher()]]) {
+      expect(present(installations, { executionDisabled: true })).toMatchObject({
+        kind: "summary",
+        reason: "Plugin code is turned off on this environment.",
+      });
+    }
+    expect(present([launcher()], { executionDisabled: true })).toMatchObject({
+      pluginName: "Task launcher",
+    });
+  });
 });

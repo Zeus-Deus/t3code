@@ -27,7 +27,10 @@ export function resolvePluginCardPresentation(input: {
   readonly card: PluginCardReference;
   /** The environment serves card views at all. */
   readonly supported: boolean;
-  /** Null until the environment's plugins are known. */
+  /**
+   * The environment's whole catalogue, null until known. Not the runnable subset: safe mode empties
+   * that, and the card would then claim its plugin is gone.
+   */
   readonly installations: ReadonlyArray<PluginInstallation> | null;
   readonly executionDisabled: boolean;
 }): PluginCardPresentation {
@@ -41,9 +44,11 @@ export function resolvePluginCardPresentation(input: {
   });
   if (!input.supported) return summary("This environment's T3 Code cannot show plugin cards.");
   if (input.installations === null) return summary(null);
-  if (installation === null)
-    return summary("The plugin that made this card is not installed here.");
+  // Before the lookup: safe mode is the reason even where a list of runnable plugins is empty.
   if (input.executionDisabled) return summary("Plugin code is turned off on this environment.");
+  if (installation === null) {
+    return summary("The plugin that made this card is not installed here.");
+  }
   if (!isPluginActive(installation)) {
     return summary(pluginInactiveReason(installation) ?? "The plugin is not running.");
   }

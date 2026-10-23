@@ -1,6 +1,5 @@
 import {
   pluginConversationCardsSupported,
-  pluginRunnableInstallations,
   resolvePluginCardPresentation,
 } from "@t3tools/client-runtime/plugins";
 import type { EnvironmentId, PluginCardReference, ScopedThreadRef } from "@t3tools/contracts";
@@ -59,9 +58,7 @@ export function PluginConversationCard(props: {
       environment?.serverConfig?.environment.capabilities,
     ),
     installations:
-      catalogue.availability === "available" && catalogue.loaded
-        ? pluginRunnableInstallations(catalogue)
-        : null,
+      catalogue.availability === "available" && catalogue.loaded ? catalogue.installations : null,
     executionDisabled: catalogue.executionDisabled === true,
   });
   if (presentation.kind === "summary") {
