@@ -2,6 +2,7 @@ import {
   isProviderSendTurnSupportedImageMimeType,
   MAX_PLUGIN_CARD_BYTES,
   MAX_PLUGIN_CARD_DATA_BYTES,
+  MAX_PLUGIN_RESULT_BYTES,
   PluginCardReference,
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
 } from "@t3tools/contracts";
@@ -133,9 +134,17 @@ export function readPluginCardReference(value: unknown): PluginCardReference | u
   }
 }
 
-export function compactDynamicToolOutput(value: unknown): CompactToolOutput | undefined {
+export function compactDynamicToolOutput(
+  value: unknown,
+  toolName?: string | null,
+): CompactToolOutput | undefined {
   const budget: ResultReadBudget = {
-    remainingBytes: MAX_PARSED_BYTES,
+    // Plugin results have their own host bound; text-only providers must retain the same card
+    // as structured results. Other tools keep the smaller parsing budget.
+    remainingBytes:
+      resolveT3McpToolId(toolName) === "t3_plugin_invoke"
+        ? MAX_PLUGIN_RESULT_BYTES
+        : MAX_PARSED_BYTES,
     remainingNodes: MAX_ENVELOPE_NODES,
     exceeded: false,
   };
@@ -221,7 +230,7 @@ export function pluginCardFromToolItem(item: {
 }): PluginCardReference | undefined {
   if (item.status !== undefined && item.status !== "completed") return undefined;
   if (resolveT3McpToolId(item.toolName) !== "t3_plugin_invoke") return undefined;
-  const output = compactDynamicToolOutput(item.output);
+  const output = compactDynamicToolOutput(item.output, item.toolName);
   return output?.isError ? undefined : output?.card;
 }
 

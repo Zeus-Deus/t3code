@@ -136,6 +136,34 @@ describe("compactDynamicToolOutput", () => {
 });
 
 describe("plugin card tool output", () => {
+  it("keeps a small valid card in a legal large plugin result from a text-only provider", () => {
+    const card = {
+      installationId: "tasks",
+      generation: "generation-1",
+      dataOwner: "retained-tasks",
+      viewId: "launch",
+      summary: "Proposed two tasks.",
+      data: { planId: "plan-1" },
+    };
+    const result = { card, message: card.summary, data: "x".repeat(20_000) };
+    expect(new TextEncoder().encode(JSON.stringify(result)).byteLength).toBeLessThan(128_000);
+    expect(compactDynamicToolOutput({ structuredContent: result })).toEqual({ card });
+    const textOutput = [{ type: "text", text: JSON.stringify(result) }];
+    expect(compactDynamicToolOutput(textOutput, "t3-code.t3_plugin_invoke")).toEqual({ card });
+    expect(
+      pluginCardFromToolItem({ toolName: "t3-code.t3_plugin_invoke", output: textOutput }),
+    ).toEqual(card);
+    // Arbitrary tools retain the smaller parsing budget.
+    expect(compactDynamicToolOutput(textOutput)).toBeUndefined();
+    expect(compactDynamicToolOutput(textOutput, "mcp__other__t3_plugin_invoke")).toBeUndefined();
+    expect(
+      compactDynamicToolOutput(
+        JSON.stringify({ ...result, data: "x".repeat(128_000) }),
+        "t3-code.t3_plugin_invoke",
+      ),
+    ).toBeUndefined();
+  });
+
   it("preserves a plugin card across provider result envelopes without arbitrary output", () => {
     const card = {
       installationId: "tasks",

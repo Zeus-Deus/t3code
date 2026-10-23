@@ -5142,7 +5142,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           data: { planId: "plan-1" },
         };
         for (const structured of [true, false]) {
-          const result = { card, message: card.summary };
+          const result = { card, message: card.summary, data: "x".repeat(20_000) };
           const item = {
             type: "mcpToolCall",
             id: "plugin-proposal",

@@ -64,9 +64,14 @@ describe("orchestration V2 wire projection", () => {
       data: { planId: "plan-1" },
     };
     for (const output of [
-      { card, message: card.summary, privateValue: "private detail" },
-      { structuredContent: { card, message: card.summary } },
-      [{ type: "text", text: JSON.stringify({ card, message: card.summary }) }],
+      { card, message: card.summary, privateValue: "private detail", data: "x".repeat(20_000) },
+      { structuredContent: { card, message: card.summary, data: "x".repeat(20_000) } },
+      [
+        {
+          type: "text",
+          text: JSON.stringify({ card, message: card.summary, data: "x".repeat(20_000) }),
+        },
+      ],
     ]) {
       const item = { ...base, toolName: "t3-code.t3_plugin_invoke", output };
       const projected = projectTurnItemForWire(item);

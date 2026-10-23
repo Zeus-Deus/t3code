@@ -152,6 +152,7 @@ export const PLUGIN_VIEW_BRIDGE_FEATURES = [
 ] as const;
 export const MAX_PLUGIN_CARD_DATA_BYTES = 2_048;
 export const MAX_PLUGIN_CARD_BYTES = 4_096;
+export const MAX_PLUGIN_RESULT_BYTES = 128_000;
 export const PluginConversationCard = Schema.Struct({
   viewId: identifier,
   summary: text(1_000).check(Schema.isMinLength(1)),

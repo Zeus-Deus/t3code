@@ -4295,14 +4295,16 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           uuid: "plugin-proposal-result",
           session_id: WAKE_NATIVE_SESSION,
           parent_tool_use_id: null,
-          ...(structured ? { tool_use_result: { card, message: card.summary } } : {}),
+          ...(structured
+            ? { tool_use_result: { card, message: card.summary, data: "x".repeat(20_000) } }
+            : {}),
           message: {
             role: "user",
             content: [
               {
                 type: "tool_result",
                 tool_use_id: "plugin-proposal",
-                content: JSON.stringify({ card, message: card.summary }),
+                content: JSON.stringify({ card, message: card.summary, data: "x".repeat(20_000) }),
                 is_error: isError,
               },
             ],
