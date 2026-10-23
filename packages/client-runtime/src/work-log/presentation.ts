@@ -505,6 +505,7 @@ function summaryActionPriority(action: ToolGroupAction | T3McpToolSummaryAction)
     case "attachment-prepare":
     case "attachment-discard":
     case "attachment-send":
+    case "plugin-invoke":
       return 0;
     case "other":
     case "update":

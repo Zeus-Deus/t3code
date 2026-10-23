@@ -4,6 +4,7 @@ import {
   T3_MCP_TOOL_NAMES,
   resolveT3McpSummaryAction,
   resolveT3McpToolDefinition,
+  resolveT3McpToolId,
   resolveT3McpToolPresentation,
 } from "./t3McpToolPresentation.ts";
 
@@ -66,5 +67,20 @@ describe("resolveT3McpSummaryAction", () => {
       "schedule-update",
     );
     expect(resolveT3McpSummaryAction("delegate_task", { task: "x" })).toBe("delegate");
+  });
+});
+
+describe("resolveT3McpToolId", () => {
+  it("identifies plugin tool calls, so their results render as T3 tools and carry cards", () => {
+    for (const name of [
+      "t3_plugin_invoke",
+      "mcp__t3-code__t3_plugin_invoke",
+      "t3-code.t3_plugin_invoke",
+      "t3-code-thread_opencode2-adapter_t3_plugin_invoke",
+    ]) {
+      expect(resolveT3McpToolId(name), name).toBe("t3_plugin_invoke");
+    }
+    expect(resolveT3McpToolId("mcp__t3-code__t3_plugin_list")).toBe("t3_plugin_list");
+    expect(resolveT3McpToolId("mcp__someone-else__t3_plugin_invoke")).toBeNull();
   });
 });

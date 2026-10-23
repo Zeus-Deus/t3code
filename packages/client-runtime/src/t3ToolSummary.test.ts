@@ -80,4 +80,16 @@ describe("summarizeT3ToolCalls", () => {
       failedCount: 0,
     });
   });
+
+  it("counts plugin actions that ran, not ones the plugin refused", () => {
+    expect(
+      summarizeT3ToolCalls("plugin-invoke", [
+        completed({ actionId: "launch" }, { message: "Started" }),
+        completed({ actionId: "launch" }, { isError: true, content: [] }),
+      ]),
+    ).toEqual({ label: "Ran 1 plugin action", failedCount: 1 });
+    expect(summarizeT3ToolCalls("plugin-list", [completed({}, { plugins: [] })]).label).toBe(
+      "Listed plugin actions 1 time",
+    );
+  });
 });

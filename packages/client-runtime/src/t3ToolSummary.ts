@@ -456,6 +456,12 @@ export function summarizeT3ToolCalls(
     case "capabilities":
       label = phrase("Checked", "check", `orchestration capabilities ${times}`);
       break;
+    case "plugin-list":
+      label = phrase("Listed", "list", `plugin actions ${times}`);
+      break;
+    case "plugin-invoke":
+      label = phrase("Ran", "run", quantity(selected.length, "plugin action"));
+      break;
   }
   return { label, failedCount };
 }
