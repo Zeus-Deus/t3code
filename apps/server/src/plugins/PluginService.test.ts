@@ -159,6 +159,7 @@ const fixture = Effect.gen(function* () {
   let stopBarrier: Deferred.Deferred<void> | undefined;
   let afterUpdate: (() => Effect.Effect<void>) | undefined;
   let beforeUpdate: (() => Effect.Effect<void>) | undefined;
+  let beforeRead: (() => Effect.Effect<void>) | undefined;
   const shellReads: Array<string> = [];
   let gitCheckout: Git.PluginGitSource["Service"]["checkout"] = (source) =>
     Effect.succeed({ directory, source: { ...source, ref: source.ref ?? "a".repeat(40) } });
@@ -241,6 +242,11 @@ const fixture = Effect.gen(function* () {
         Effect.map(Store.PluginStore, (store) =>
           Store.PluginStore.of({
             ...store,
+            read: Effect.suspend(() => {
+              const before = beforeRead;
+              beforeRead = undefined;
+              return (before?.() ?? Effect.void).pipe(Effect.andThen(store.read));
+            }),
             update: (f) =>
               Effect.suspend(() => {
                 const before = beforeUpdate;
@@ -372,6 +378,9 @@ const fixture = Effect.gen(function* () {
     beforeUpdate: (hook: typeof beforeUpdate) => {
       beforeUpdate = hook;
     },
+    beforeRead: (hook: typeof beforeRead) => {
+      beforeRead = hook;
+    },
     afterUpdate: (hook: typeof afterUpdate) => {
       afterUpdate = hook;
     },
@@ -485,6 +494,103 @@ it.effect(
           { key: "token" },
         ),
       ).toBe("private-secret");
+    }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect(
+  "isolates coexisting installations' settings, storage, project grants and actor ceilings",
+  () =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      const first = yield* f.enable();
+      const peerDirectory = yield* f.fs.makeTempDirectoryScoped({ prefix: "plugin-peer-source-" });
+      yield* f.fs.writeFileString(
+        f.path.join(peerDirectory, "t3-plugin.json"),
+        yield* encodeJson({ ...manifest, id: "test.peer", name: "Peer workflow" }),
+      );
+      for (const name of ["plugin.mjs", "view.html"])
+        yield* f.fs.copyFile(f.path.join(f.directory, name), f.path.join(peerDirectory, name));
+      const installed = yield* f.plugins.install({
+        source: { kind: "local", directory: peerDirectory },
+      });
+      const peer = yield* f.plugins.consent({
+        installationId: installed.installationId,
+        digest: installed.digest,
+        grants: { capabilities: ["settings", "storage", "threads.send"], projectIds: [] },
+      });
+      const invocation = (item: PluginInstallation) => ({
+        installationId: item.installationId,
+        generation: item.generation,
+        operationId: "same-operation",
+        callId: 1,
+        actor,
+      });
+      yield* Effect.forEach(
+        [first, peer],
+        (item, index) =>
+          f.plugins
+            .updateSettings({
+              installationId: item.installationId,
+              values: { token: `secret-${index}`, auto: index === 0 },
+            })
+            .pipe(
+              Effect.andThen(
+                f.host.call(invocation(item), "storage.set", { key: "board", value: index }),
+              ),
+            ),
+        { concurrency: "unbounded" },
+      );
+      for (const [index, item] of [first, peer].entries()) {
+        expect(yield* f.host.call(invocation(item), "settings.get", { key: "token" })).toBe(
+          `secret-${index}`,
+        );
+        expect(yield* f.host.call(invocation(item), "settings.get", { key: "auto" })).toBe(
+          index === 0,
+        );
+        expect(
+          yield* f.host.call(invocation(item), "storage.get", {
+            key: "board",
+            installationId: index === 0 ? peer.installationId : first.installationId,
+          }),
+        ).toBe(index);
+      }
+      const request = { threadId, text: "Review", idempotencyKey: "same-key" };
+      for (const limited of [
+        invocation(peer),
+        { ...invocation(first), actor: { ...actor, projectIds: [] } },
+        { ...invocation(first), actor: { ...actor, runtimeMode: "approval-required" as const } },
+        { ...invocation(first), actor: { ...actor, interactionMode: "plan" as const } },
+      ]) {
+        expect(
+          (yield* f.host.call(limited, "threads.send", request).pipe(Effect.flip, Effect.orDie))
+            .reason,
+        ).toBe("permission_denied");
+      }
+      expect(f.commands).toHaveLength(0);
+      yield* f.host.call(invocation(first), "threads.send", request);
+      expect(f.commands).toHaveLength(1);
+      const revoked = yield* f.plugins.consent({
+        installationId: peer.installationId,
+        digest: peer.digest,
+        grants: { capabilities: [], projectIds: [] },
+      });
+      expect(
+        (yield* f.host
+          .call(invocation(peer), "storage.get", { key: "board" })
+          .pipe(Effect.flip, Effect.orDie)).reason,
+      ).toBe("stale_generation");
+      expect(
+        (yield* f.host
+          .call(invocation(revoked), "storage.get", { key: "board" })
+          .pipe(Effect.flip, Effect.orDie)).reason,
+      ).toBe("permission_denied");
+      expect(yield* f.host.call(invocation(first), "settings.get", { key: "token" })).toBe(
+        "secret-0",
+      );
+      expect(yield* f.host.call(invocation(first), "storage.get", { key: "board" })).toBe(0);
+      const catalogue = yield* f.plugins.list();
+      expect(catalogue.installations).toHaveLength(2);
+      expect(yield* encodeJson(catalogue)).not.toContain("secret-");
     }).pipe(Effect.provide(base()), Effect.scoped),
 );
 
@@ -640,6 +746,217 @@ it.effect(
           .pipe(Effect.flip, Effect.orDie)).reason,
       ).toBe("stale_generation");
     }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect.each(
+  (["disable", "revoke", "update"] as const).flatMap((transition) =>
+    (["settings.get", "storage.get", "storage.set", "storage.delete"] as const).map((method) => ({
+      transition,
+      method,
+    })),
+  ),
+)(
+  "rejects $method across $transition while the host operation is waiting",
+  ({ transition, method }) =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      const enabled = yield* f.enable();
+      yield* f.plugins.updateSettings({
+        installationId: enabled.installationId,
+        values: { token: "private-before-revocation" },
+      });
+      const invocation = {
+        installationId: enabled.installationId,
+        generation: enabled.generation,
+        operationId: "pending-host-operation",
+        callId: 1,
+        actor,
+      };
+      yield* f.host.call(invocation, "storage.set", { key: "board", value: "before" });
+      let updateDigest = enabled.digest;
+      if (transition === "update") {
+        yield* f.fs.writeFileString(
+          f.path.join(f.directory, "plugin.mjs"),
+          "export function activate() {}\n// updated worker\n",
+        );
+        const staged = yield* f.plugins.refresh({ installationId: enabled.installationId });
+        updateDigest = staged.pendingUpdate!.digest;
+      }
+      const entered = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const writing = method === "storage.set" || method === "storage.delete";
+      const wait = Deferred.succeed(entered, undefined).pipe(
+        Effect.andThen(Deferred.await(release)),
+      );
+      if (writing) f.beforeUpdate(() => wait);
+      let checks = 0;
+      const pending = yield* f.host
+        .call(
+          {
+            ...invocation,
+            actor: {
+              ...actor,
+              authorize: () =>
+                Effect.gen(function* () {
+                  if (++checks === 2 && !writing) yield* wait;
+                }),
+            },
+          },
+          method,
+          method === "settings.get"
+            ? { key: "token" }
+            : { key: "board", ...(method === "storage.set" ? { value: "late write" } : {}) },
+        )
+        .pipe(Effect.result, Effect.forkScoped);
+      yield* Deferred.await(entered);
+      const changed =
+        transition === "disable"
+          ? yield* f.plugins.setEnabled({ installationId: enabled.installationId, enabled: false })
+          : yield* f.plugins.consent({
+              installationId: enabled.installationId,
+              digest: updateDigest,
+              grants:
+                transition === "revoke" ? { capabilities: [], projectIds: [] } : enabled.grants,
+            });
+      expect(changed.generation).not.toBe(enabled.generation);
+      yield* Deferred.succeed(release, undefined);
+      expect(yield* Fiber.join(pending)).toMatchObject({
+        _tag: "Failure",
+        failure: { reason: "stale_generation" },
+      });
+      expect((yield* f.store.read).installations[0]?.storage.board).toBe("before");
+    }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect.each(["settings.get", "storage.get"] as const)(
+  "rejects $0 when the session is revoked while its final catalogue read waits on a commit",
+  (method) =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      const enabled = yield* f.enable();
+      yield* f.plugins.updateSettings({
+        installationId: enabled.installationId,
+        values: { token: "private-session-secret" },
+      });
+      const invocation = {
+        installationId: enabled.installationId,
+        generation: enabled.generation,
+        operationId: "session-read-race",
+        callId: 1,
+        actor,
+      };
+      yield* f.host.call(invocation, "storage.set", { key: "board", value: "private-storage" });
+      const lockEntered = yield* Deferred.make<void>();
+      const releaseLock = yield* Deferred.make<void>();
+      const readEntered = yield* Deferred.make<void>();
+      let checks = 0;
+      let revoked = false;
+      const pending = yield* f.host
+        .call(
+          {
+            ...invocation,
+            actor: {
+              ...actor,
+              authorize: () =>
+                Effect.gen(function* () {
+                  if (++checks === 2) {
+                    // Force a fresh snapshot without changing the invocation's generation.
+                    yield* f.store
+                      .update((state) =>
+                        Effect.succeed([
+                          undefined,
+                          {
+                            ...state,
+                            installations: state.installations.map((record) => ({
+                              ...record,
+                              eventCursor: record.eventCursor + 1,
+                            })),
+                          },
+                        ] as const),
+                      )
+                      .pipe(Effect.orDie);
+                    yield* f.store
+                      .update((state) =>
+                        Deferred.succeed(lockEntered, undefined).pipe(
+                          Effect.andThen(Deferred.await(releaseLock)),
+                          Effect.as([undefined, state] as const),
+                        ),
+                      )
+                      .pipe(Effect.forkChild);
+                    yield* Deferred.await(lockEntered);
+                    f.beforeRead(() => Deferred.succeed(readEntered, undefined));
+                  }
+                  if (revoked)
+                    return yield* new PluginError({
+                      reason: "permission_denied",
+                      message: "The client session has been revoked.",
+                    });
+                }),
+            },
+          },
+          method,
+          { key: method === "settings.get" ? "token" : "board" },
+        )
+        .pipe(Effect.result, Effect.forkScoped);
+      yield* Deferred.await(readEntered);
+      revoked = true;
+      yield* Deferred.succeed(releaseLock, undefined);
+      expect(yield* Fiber.join(pending)).toMatchObject({
+        _tag: "Failure",
+        failure: { reason: "permission_denied" },
+      });
+      expect((yield* f.plugins.list()).installations[0]?.generation).toBe(enabled.generation);
+    }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect("fails closed when both host read authorizations cross catalogue commits", () =>
+  Effect.gen(function* () {
+    const f = yield* fixture;
+    const enabled = yield* f.enable();
+    yield* f.plugins.updateSettings({
+      installationId: enabled.installationId,
+      values: { token: "private-session-secret" },
+    });
+    let checks = 0;
+    const result = yield* f.host
+      .call(
+        {
+          installationId: enabled.installationId,
+          generation: enabled.generation,
+          operationId: "catalogue-churn",
+          callId: 1,
+          actor: {
+            ...actor,
+            authorize: () =>
+              Effect.gen(function* () {
+                if (++checks === 1) return;
+                yield* f.store
+                  .update((state) =>
+                    Effect.succeed([
+                      undefined,
+                      {
+                        ...state,
+                        installations: state.installations.map((record) => ({
+                          ...record,
+                          eventCursor: record.eventCursor + 1,
+                        })),
+                      },
+                    ] as const),
+                  )
+                  .pipe(Effect.orDie);
+              }),
+          },
+        },
+        "settings.get",
+        { key: "token" },
+      )
+      .pipe(Effect.result);
+    expect(result).toMatchObject({
+      _tag: "Failure",
+      failure: { reason: "permission_denied" },
+    });
+    expect(checks).toBe(3);
+  }).pipe(Effect.provide(base()), Effect.scoped),
 );
 
 it.effect(

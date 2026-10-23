@@ -2,7 +2,9 @@ import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -73,6 +75,7 @@ it.effect("an interrupted atomic publish retains committed records and the read 
     yield* store.update((state) =>
       Effect.succeed([undefined, { ...state, installations: [valid] }] as const),
     );
+    const committed = yield* store.read;
     yield* sql`CREATE TRIGGER reject_plugin_commit BEFORE UPDATE ON plugin_records BEGIN SELECT RAISE(ABORT,'fixture'); END`;
     expect(
       (yield* store
@@ -91,7 +94,35 @@ it.effect("an interrupted atomic publish retains committed records and the read 
         .pipe(Effect.flip)).operation,
     ).toBe("write");
     expect((yield* store.read).installations[0]?.installation.error).toBe(null);
+    expect(store.isCurrent(committed)).toBe(true);
     expect((yield* (yield* buildStore).read).installations[0]?.installation.error).toBe(null);
+  }).pipe(Effect.provide(testLayer()), Effect.scoped),
+);
+
+it.effect("validates snapshot identity without waiting for an uncommitted update", () =>
+  Effect.gen(function* () {
+    const store = yield* buildStore;
+    const committed = yield* store.read;
+    const entered = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    const pending = yield* store
+      .update((state) =>
+        Deferred.succeed(entered, undefined).pipe(
+          Effect.andThen(Deferred.await(release)),
+          Effect.as([undefined, { ...state, installations: [valid] }] as const),
+        ),
+      )
+      .pipe(Effect.forkScoped);
+    yield* Deferred.await(entered);
+    expect(store.isCurrent(committed)).toBe(true);
+    yield* Deferred.succeed(release, undefined);
+    yield* Fiber.join(pending);
+    expect(store.isCurrent(committed)).toBe(false);
+    const current = yield* store.read;
+    expect(current.installations).toEqual([valid]);
+    expect(store.isCurrent(current)).toBe(true);
+    yield* store.update((state) => Effect.succeed([undefined, state] as const));
+    expect(store.isCurrent(current)).toBe(true);
   }).pipe(Effect.provide(testLayer()), Effect.scoped),
 );
 it.effect("imports legacy state atomically and keeps incompatible private bytes recoverable", () =>

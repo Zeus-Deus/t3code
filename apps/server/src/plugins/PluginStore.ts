@@ -257,6 +257,7 @@ export class PluginStore extends Context.Service<
   {
     readonly directory: string;
     readonly read: Effect.Effect<PluginState, PluginStoreError>;
+    readonly isCurrent: (state: PluginState) => boolean;
     readonly update: <A, E, R>(
       f: (state: PluginState) => Effect.Effect<readonly [A, PluginState], E, R>,
     ) => Effect.Effect<A, E | PluginStoreError, R>;
@@ -505,6 +506,7 @@ const make = Effect.gen(function* () {
   return PluginStore.of({
     directory,
     read: lock.withPermits(1)(readUnsafe),
+    isCurrent: (state) => cached === state,
     update,
     changes: Stream.fromPubSub(changes),
     subscribeChanges: Effect.map(PubSub.subscribe(changes), Stream.fromSubscription),

@@ -118,7 +118,17 @@ const make = Effect.gen(function* () {
           message: "Plugin execution is disabled for this environment.",
         });
       yield* invocation.actor.authorize?.() ?? Effect.void;
-      const state = yield* store.read;
+      let state = yield* store.read;
+      if (invocation.actor.authorize !== undefined) {
+        yield* invocation.actor.authorize();
+        // Reads can wait on a commit; authorization can suspend across another commit.
+        // Check snapshot identity synchronously, retrying once before failing closed.
+        if (!store.isCurrent(state)) {
+          state = yield* store.read;
+          yield* invocation.actor.authorize();
+          if (!store.isCurrent(state)) return yield* pluginPermissionDenied();
+        }
+      }
       const record = state.installations.find(
         (r) => r.installation.installationId === invocation.installationId,
       );
@@ -133,7 +143,6 @@ const make = Effect.gen(function* () {
         assertPluginActive(installation, invocation.generation);
       if (inactive) return yield* inactive;
       const actor = invocation.actor;
-      yield* actor.authorize?.() ?? Effect.void;
       const requireCapability = (
         capability: Parameters<typeof pluginCapabilityAllowed>[2],
         projectId?: ProjectId,

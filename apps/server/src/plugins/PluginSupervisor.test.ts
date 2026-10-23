@@ -63,6 +63,20 @@ const fixture = Effect.gen(function* () {
         await new Promise(() => {});
       });
       ctx.handle("action:crash", () => { process.exit(42); });
+      ctx.handle("action:fault", async mode => {
+        await ctx.storage.get("fault-armed");
+        if (mode === "throw") throw new Error("Isolated handler failure");
+        if (mode === "hang") await new Promise(() => {});
+        if (mode === "spin") while (true) {}
+        if (mode === "crash") process.exit(42);
+        if (mode === "malformed") process.send({type: "log", level: "invalid", message: "invalid protocol"});
+        if (mode === "flood") {
+          for (let index = 0; index < 10001; index++) {
+            process.send({type: "log", level: "debug", message: "bounded adversarial IPC"});
+          }
+        }
+        return {};
+      });
       ctx.handle("action:throw", input => {
         const error = new Error(input ?? "ordinary handler failure");
         error.stack = "PRIVATE HANDLER STACK";
@@ -157,6 +171,73 @@ const provide = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   effect.pipe(Effect.provide(Layer.merge(runtimeLayer, NodeServices.layer)), Effect.scoped);
 
 describe("PluginSupervisor real child", () => {
+  it.effect.each([
+    { mode: "throw", reason: "operation_failed", workerFault: false },
+    { mode: "hang", reason: "timeout", workerFault: false },
+    { mode: "spin", reason: "timeout", workerFault: true },
+    { mode: "crash", reason: "crashed", workerFault: true },
+    { mode: "malformed", reason: "invalid_result", workerFault: true },
+    { mode: "flood", reason: "invalid_result", workerFault: true },
+  ])("isolates $mode faults from another installation's actual worker", (testCase) =>
+    provide(
+      Effect.gen(function* () {
+        const supervisor = yield* PluginSupervisor.PluginSupervisor;
+        const faulty = yield* fixture;
+        const healthy = { ...(yield* fixture), installationId: "healthy.plugin" };
+        const faultyPid = yield* supervisor.invoke(
+          { ...faulty, handler: "action:pid" },
+          () => Effect.void,
+        );
+        const healthyPid = yield* supervisor.invoke(
+          { ...healthy, handler: "action:pid" },
+          () => Effect.void,
+        );
+        expect(healthyPid.data).not.toBe(faultyPid.data);
+        const healthyEntered = yield* Deferred.make<void>();
+        const releaseHealthy = yield* Deferred.make<string>();
+        const held = yield* supervisor
+          .invoke({ ...healthy, handler: "action:hold", operationId: "healthy-held" }, () =>
+            Deferred.succeed(healthyEntered, undefined).pipe(
+              Effect.andThen(Deferred.await(releaseHealthy)),
+            ),
+          )
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(healthyEntered);
+        const faultyEntered = yield* Deferred.make<void>();
+        const failing = yield* supervisor
+          .invoke({ ...faulty, handler: "action:fault", input: testCase.mode }, () =>
+            Deferred.succeed(faultyEntered, undefined),
+          )
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(faultyEntered);
+        const duringFault = yield* supervisor.invoke(
+          { ...healthy, input: "during-fault", operationId: "healthy-during" },
+          (method) => Effect.succeed(method === "settings.get" ? "healthy caller" : null),
+        );
+        expect(duringFault.data).toMatchObject({
+          input: "during-fault",
+          caller: "healthy caller",
+          operationId: "healthy-during",
+        });
+        yield* Deferred.succeed(releaseHealthy, "healthy held call completed");
+        expect(yield* Fiber.await(held)).toEqual(
+          Exit.succeed({ data: "healthy held call completed" }),
+        );
+        if (testCase.reason === "timeout")
+          yield* TestClock.adjust(testCase.workerFault ? 10_500 : 10_000);
+        const failure = yield* Fiber.join(failing).pipe(Effect.flip);
+        expect(failure.reason).toBe(testCase.reason);
+        expect(PluginSupervisor.isPluginWorkerFault(failure)).toBe(testCase.workerFault);
+        yield* supervisor.stop(faulty.installationId);
+        const afterFault = yield* supervisor.invoke(
+          { ...healthy, handler: "action:pid" },
+          () => Effect.void,
+        );
+        expect(afterFault.data).toBe(healthyPid.data);
+      }),
+    ),
+  );
+
   it.effect("delivers the host caller and data directory and returns named images", () =>
     provide(
       Effect.gen(function* () {
