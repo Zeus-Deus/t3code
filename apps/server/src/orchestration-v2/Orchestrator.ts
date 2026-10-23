@@ -2541,6 +2541,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         rootThreadId: command.threadId,
       },
       forkedFrom: null,
+      ...(command.launchedFrom === undefined ? {} : { launchedFrom: command.launchedFrom }),
       createdAt: now,
       updatedAt: now,
       archivedAt: null,

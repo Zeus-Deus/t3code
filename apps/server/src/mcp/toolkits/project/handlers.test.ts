@@ -3,6 +3,9 @@ import {
   EnvironmentId,
   ProjectId,
   ProviderInstanceId,
+  RunId,
+  ThreadId,
+  type OrchestrationV2ThreadShell,
   type Project as ProjectRecord,
   type ModelSelection,
   type RuntimeMode,
@@ -33,9 +36,11 @@ import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import * as ProjectHandlers from "./handlers.ts";
 import { ProjectToolkit } from "./tools.ts";
+import { v2PullRequestThread } from "../../../orchestration-v2/testkit/pullRequestFixtures.ts";
 
 const clientLaunchHarness = (input: {
   readonly runtimeModeCeiling: RuntimeMode;
+  readonly caller?: OrchestrationV2ThreadShell;
   readonly defaultRuntimeMode?: RuntimeMode;
   /** Where Settings saves a project's model; the legacy project field stays null. */
   readonly overrideModel?: ModelSelection;
@@ -70,18 +75,29 @@ const clientLaunchHarness = (input: {
     Layer.succeed(McpInvocationContext.McpInvocationContext, {
       environmentId: EnvironmentId.make("environment"),
       requestNamespace: "client:session-1",
-      thread: undefined,
-      client: {
-        sessionId: "session-1",
-        label: "Claude Code",
-        access: input.runtimeModeCeiling,
-      },
+      thread:
+        input.caller === undefined
+          ? undefined
+          : {
+              threadId: input.caller.id,
+              providerSessionId: "caller-session",
+              providerInstanceId: input.caller.providerInstanceId,
+            },
+      client:
+        input.caller === undefined
+          ? {
+              sessionId: "session-1",
+              label: "Claude Code",
+              access: input.runtimeModeCeiling,
+            }
+          : undefined,
       issuedAt: 0,
       capabilities: new Set(["orchestration" as const]),
     }),
     Layer.mock(ThreadManagement.ThreadManagementService)({
       // A thread exists once a launch started it.
       getThreadShell: (threadId) => {
+        if(input.caller?.id === threadId) return Effect.succeed(input.caller);
         const launch = input.launched.find((candidate) => candidate.threadId === threadId);
         return Effect.succeed(
           launch === undefined
@@ -462,4 +478,49 @@ it.effect("a retried worktree launch replays after its base ref is gone", () =>
       launched[0]?.threadId,
     ]);
   }),
+);
+
+it.effect(
+  "normal MCP launches derive provenance from the verified caller, including empty launches",
+  () =>
+    Effect.gen(function* () {
+      const launched: Array<ThreadLaunch.ThreadLaunchInput> = [];
+      const caller = {
+        ...v2PullRequestThread({
+          id: ThreadId.make("calling-thread"),
+          projectId: ProjectId.make("project:caller"),
+          title: "Caller",
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "test" },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          pullRequests: [],
+          latestUserMessageAt: null,
+          createdAt: "2026-10-23T12:00:00.000Z",
+          updatedAt: "2026-10-23T12:00:00.000Z",
+          archivedAt: null,
+          settledAt: null,
+          settledOverride: null,
+        }),
+        activeRunId: RunId.make("caller-run"),
+        status: "running" as const,
+      };
+      const harness = clientLaunchHarness({ runtimeModeCeiling: "full-access", launched, caller });
+      yield* Effect.gen(function* () {
+        const toolkit = yield* ProjectToolkit;
+        yield* toolkit
+          .handle("t3_thread_launch", { title: "Independent", projectId: harness.projectId })
+          .pipe(Stream.unwrap, Stream.runCollect);
+      }).pipe(
+        Effect.provide(
+          McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(
+            Layer.provideMerge(harness.dependencies),
+          ),
+        ),
+      );
+      expect(launched).toHaveLength(1);
+      expect(launched[0]).toHaveProperty("launchedFrom", { threadId: caller.id });
+      expect(launched[0]?.initialMessage).toBeUndefined();
+    }).pipe(Effect.scoped),
 );

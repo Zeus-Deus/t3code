@@ -397,3 +397,40 @@ it.effect("ends a runless root turn's items when its node already ended", () =>
     );
   }),
 );
+
+it.each(
+  (["provider", "mcp"] as const).flatMap((creationSource) =>
+    [false, true].map((present) => ({ creationSource, present })),
+  ),
+)(
+  "$creationSource subagents do not inherit independent launch provenance (present=$present)",
+  ({ creationSource, present }) => {
+    const parentThread = {
+      ...makeParentThread(),
+      ...(present
+        ? { launchedFrom: { threadId: ThreadId.make("independent-launch-source") } }
+        : {}),
+    };
+    const parentNodeId = NodeId.make("owned-subagent-node");
+    const child = makeSubagentChildThread({
+      parentThread,
+      childThreadId,
+      parentNodeId,
+      activeProviderThreadId: null,
+      providerInstanceId: childProviderInstanceId,
+      modelSelection: childModelSelection,
+      title: "Owned child",
+      now: childCreatedAt,
+      createdBy: "agent",
+      creationSource,
+    });
+    assert.isUndefined(child.launchedFrom);
+    assert.equal(child.creationSource, creationSource);
+    assert.deepEqual(child.lineage, {
+      parentThreadId,
+      relationshipToParent: "subagent",
+      rootThreadId: parentThreadId,
+    });
+    assert.deepEqual(child.forkedFrom, { type: "node", nodeId: parentNodeId });
+  },
+);

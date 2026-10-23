@@ -242,3 +242,34 @@ it.effect("rejects in-progress and rolled-back fork sources", () =>
     }
   }),
 );
+
+it.effect.each([false, true])(
+  "forks do not inherit independent launch provenance (present=%s)",
+  (present) =>
+    Effect.gen(function* () {
+      const run = makeSourceRun("completed");
+      const source = makeSourceProjection(run);
+      const { targetThread } = yield* planFork(run, {
+        ...source,
+        thread: {
+          ...source.thread,
+          ...(present
+            ? { launchedFrom: { threadId: ThreadId.make("independent-launch-source") } }
+            : {}),
+        },
+      });
+      assert.isUndefined(targetThread.launchedFrom);
+      assert.deepEqual(targetThread.lineage, {
+        parentThreadId: sourceThreadId,
+        relationshipToParent: "fork",
+        rootThreadId: sourceThreadId,
+      });
+      assert.deepEqual(targetThread.forkedFrom, {
+        type: "run",
+        threadId: sourceThreadId,
+        runId: sourceRunId,
+      });
+      assert.equal(targetThread.archivedAt, null);
+      assert.equal(targetThread.settledAt, null);
+    }),
+);

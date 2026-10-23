@@ -61,6 +61,7 @@ import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ThreadLaunch from "./ThreadLaunchService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as ThreadManagement from "./ThreadManagementService.ts";
+import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ThreadTitleRegeneration from "./ThreadTitleRegenerationService.ts";
 import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
 import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
@@ -2287,3 +2288,74 @@ it.effect("replays an accepted send after the project disables the instance", ()
     }
   }).pipe(Effect.provide(Layer.mergeAll(harness.layer, layerFiles)));
 });
+
+it.effect(
+  "persists independent launch provenance through receipts and shell reads without adopting its source",
+  () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const source = yield* launches.launch(
+        launchInput({ command: "source:create", thread: "source" }),
+      );
+      const input = {
+        ...launchInput({ command: "related:create", thread: "related" }),
+        launchedFrom: { threadId: source.threadId },
+      };
+      const created = yield* launches.launch(input);
+      assert.deepEqual(created.projection.thread, {
+        ...created.projection.thread,
+        launchedFrom: { threadId: source.threadId },
+      });
+      assert.deepEqual(created.projection.thread.lineage, {
+        parentThreadId: null,
+        relationshipToParent: null,
+        rootThreadId: created.threadId,
+      });
+      assert.equal(created.projection.thread.forkedFrom, null);
+      const retried = yield* launches.launch({
+        ...input,
+        launchedFrom: { threadId: ThreadId.make("different-source") },
+      });
+      assert.equal(retried.resumed, true);
+      const expected = { launchedFrom: { threadId: source.threadId } };
+      assert.deepEqual(retried.projection.thread, { ...retried.projection.thread, ...expected });
+      const shell = yield* threads.getThreadShell(created.threadId);
+      assert.deepEqual(shell?.launchedFrom, expected.launchedFrom);
+      for (const id of [source.threadId, created.threadId]) {
+        yield* threads.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make(`${id}:start`),
+          threadId: id,
+          messageId: MessageId.make(`${id}:message`),
+          text: "Work independently",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+      }
+      const active = yield* threads.getThreadProjection(created.threadId);
+      const stored = yield* threads
+        .streamStoredEventsFrom({ threadId: created.threadId, eventType: "thread.created" })
+        .pipe(Stream.take(1), Stream.runCollect);
+      const replayed = yield* Effect.gen(function* () {
+        const projections = yield* ProjectionStore.ProjectionStoreV2;
+        for (const entry of stored) yield* projections.apply(entry.event);
+        return yield* projections.getThreadShell(created.threadId);
+      }).pipe(Effect.provide(ProjectionStore.layerMemory));
+      assert.deepEqual(replayed?.launchedFrom, { threadId: source.threadId });
+      yield* threads.dispatch({
+        type: "thread.stop",
+        commandId: CommandId.make("source:stop"),
+        threadId: source.threadId,
+      });
+      const independent = yield* threads.getThreadProjection(created.threadId);
+      assert.equal(independent.thread.deletedAt, null);
+      assert.deepEqual(independent.subagents, []);
+      assert.deepEqual(independent.runs, active.runs);
+      assert.isNotEmpty(independent.runs);
+    }).pipe(Effect.provide(harness.layer), Effect.scoped);
+  },
+);

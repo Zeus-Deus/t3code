@@ -5,6 +5,7 @@ import * as Schema from "effect/Schema";
 import { NodeId, RunAttemptId, TrimmedNonEmptyString } from "./index.ts";
 import {
   latestProviderTurnForAttempt,
+  OrchestrationV2AppThreadJson,
   OrchestrationV2ProviderCapabilities,
   OrchestrationV2ProviderThread,
   OrchestrationV2ProviderThreadJson,
@@ -638,4 +639,32 @@ describe("latestProviderTurnForAttempt", () => {
     expect(latestProviderTurnForAttempt(turns, RunAttemptId.make("goal-attempt"))?.id).toBe("last");
     expect(latestProviderTurnForAttempt(turns, null)).toBeUndefined();
   });
+});
+
+it("decodes old thread history without independent launch provenance and preserves new provenance", () => {
+  const decode = Schema.decodeUnknownSync(OrchestrationV2AppThreadJson);
+  const thread = {
+    createdBy: "system",
+    creationSource: "server",
+    id: "independent",
+    projectId: "project",
+    title: "Independent",
+    providerInstanceId: "codex",
+    modelSelection: { instanceId: "codex", model: "test" },
+    runtimeMode: "approval-required",
+    interactionMode: "default",
+    branch: null,
+    worktreePath: null,
+    activeProviderThreadId: null,
+    lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: "independent" },
+    forkedFrom: null,
+    createdAt: "2026-10-23T12:00:00.000Z",
+    updatedAt: "2026-10-23T12:00:00.000Z",
+    archivedAt: null,
+    deletedAt: null,
+  };
+  expect(decode(thread)).not.toHaveProperty("launchedFrom");
+  const related = decode({ ...thread, launchedFrom: { threadId: "source" } });
+  expect(related).toHaveProperty("launchedFrom", { threadId: "source" });
+  expect(related.lineage).toEqual(thread.lineage);
 });
