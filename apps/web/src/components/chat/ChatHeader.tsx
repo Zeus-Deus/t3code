@@ -428,9 +428,7 @@ export const ChatHeader = memo(function ChatHeader({
         </WorkspaceBreadcrumbItem>
       </WorkspaceBreadcrumb>
       {isServerThread ? <GuestShareIndicator threadRef={activeThreadRef} /> : null}
-      {isServerThread && showPluginStatuses ? (
-        <PluginThreadStatuses threadRef={activeThreadRef} />
-      ) : null}
+      {isServerThread && showPluginStatuses ? <PluginThreadStatuses /> : null}
     </div>
   );
 });

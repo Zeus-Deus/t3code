@@ -182,9 +182,7 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
             </ThreadDetailsSection>
           ) : null}
 
-          {props.isServerThread && !props.draftId ? (
-            <ThreadDetailsPluginStatuses threadRef={activeThreadRef} />
-          ) : null}
+          <ThreadDetailsPluginStatuses />
 
           {density === "full" && !props.draftId ? (
             <ThreadServersPanel environmentId={props.environmentId} threadId={props.threadId} />

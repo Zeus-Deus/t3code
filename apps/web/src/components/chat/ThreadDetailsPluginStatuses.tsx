@@ -4,13 +4,16 @@ import type { PluginThreadStatus, ScopedThreadRef } from "@t3tools/contracts";
 import { cn } from "../../lib/utils";
 import {
   pluginThreadStatusDescription,
+  usePluginThreadStatusesContext,
   usePluginThreadStatusOpener,
-  usePluginThreadStatuses,
 } from "../plugins/PluginThreadStatuses";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { ThreadDetailsControl } from "./ThreadDetailsControl";
 import { ThreadDetailsSection } from "./ThreadDetailsSection";
-import { THREAD_DETAILS_PANEL_LABEL_CLASS } from "./threadDetailsPanelStyles";
+import {
+  THREAD_DETAILS_PANEL_LABEL_CLASS,
+  THREAD_DETAILS_PANEL_LOCKED_ROW_CLASS,
+} from "./threadDetailsPanelStyles";
 
 const TONE_DOT_CLASS = {
   neutral: "bg-muted-foreground/40",
@@ -26,36 +29,58 @@ function PluginStatusRow(props: {
 }) {
   const open = usePluginThreadStatusOpener(props.threadRef, props.value);
   const description = pluginThreadStatusDescription(props.value);
+  const content = (
+    <>
+      <span aria-hidden className="inline-flex size-4 shrink-0 items-center justify-center">
+        <span className={cn("size-2 rounded-full", TONE_DOT_CLASS[props.value.status.tone])} />
+      </span>
+      <span className={cn("min-w-0 flex-1 truncate text-left", THREAD_DETAILS_PANEL_LABEL_CLASS)}>
+        {props.value.status.label}
+      </span>
+    </>
+  );
   return (
     <Tooltip>
-      <TooltipTrigger
-        render={
-          <ThreadDetailsControl
-            variant="ghost"
-            size="sm"
-            part="row"
-            disabled={open === undefined}
-            aria-description={description}
-            onClick={open}
-          />
-        }
-      >
-        <span aria-hidden className="inline-flex size-4 shrink-0 items-center justify-center">
-          <span className={cn("size-2 rounded-full", TONE_DOT_CLASS[props.value.status.tone])} />
-        </span>
-        <span className={cn("min-w-0 flex-1 truncate text-left", THREAD_DETAILS_PANEL_LABEL_CLASS)}>
-          {props.value.status.label}
-        </span>
-      </TooltipTrigger>
+      {open === undefined ? (
+        // A status without a panel still needs a focus target so its detail stays reachable.
+        <TooltipTrigger
+          render={
+            <div
+              tabIndex={0}
+              className={cn(
+                "flex items-center outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+                THREAD_DETAILS_PANEL_LOCKED_ROW_CLASS,
+              )}
+            />
+          }
+        >
+          {content}
+          <span className="sr-only">{`, ${description}`}</span>
+        </TooltipTrigger>
+      ) : (
+        <TooltipTrigger
+          render={
+            <ThreadDetailsControl
+              variant="ghost"
+              size="sm"
+              part="row"
+              aria-description={description}
+              onClick={open}
+            />
+          }
+        >
+          {content}
+        </TooltipTrigger>
+      )}
       <TooltipPopup side="left">{description}</TooltipPopup>
     </Tooltip>
   );
 }
 
 /** Plugin-provided statuses for the thread, such as "Realm live", as rows in its details card. */
-export function ThreadDetailsPluginStatuses(props: { readonly threadRef: ScopedThreadRef }) {
-  const statuses = usePluginThreadStatuses(props.threadRef);
-  if (statuses.length === 0) return null;
+export function ThreadDetailsPluginStatuses() {
+  const context = usePluginThreadStatusesContext();
+  if (context === null || context.statuses.length === 0) return null;
   return (
     <ThreadDetailsSection
       headingId="thread-details-plugin-status-heading"
@@ -63,8 +88,8 @@ export function ThreadDetailsPluginStatuses(props: { readonly threadRef: ScopedT
       showHeading={false}
     >
       <div className="flex flex-col">
-        {statuses.map((value) => (
-          <PluginStatusRow key={value.key} threadRef={props.threadRef} value={value} />
+        {context.statuses.map((value) => (
+          <PluginStatusRow key={value.key} threadRef={context.threadRef} value={value} />
         ))}
       </div>
     </ThreadDetailsSection>

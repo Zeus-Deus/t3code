@@ -147,6 +147,7 @@ import { subscribeSnapShotComposerFocus } from "../lib/desktopSnapShot";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { FileMetadataThreadProvider } from "../hooks/FileMetadataThreadProvider";
 import { RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY } from "../rightPanelLayout";
+import { PluginThreadStatusesProvider } from "./plugins/PluginThreadStatuses";
 import { PopoverCreateHandle } from "./ui/popover";
 import {
   selectActiveRightPanel,
@@ -3786,7 +3787,9 @@ export default function ChatView(props: ChatViewProps) {
       cwd={activeWorkspaceRoot}
       checkpoints={serverProjection?.checkpoints}
     >
-      {content}
+      <PluginThreadStatusesProvider threadRef={isServerThread ? activeThreadRef : null}>
+        {content}
+      </PluginThreadStatusesProvider>
     </FileMetadataThreadProvider>
   );
 }

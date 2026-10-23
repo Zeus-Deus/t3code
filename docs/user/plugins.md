@@ -32,8 +32,8 @@ action. An agent's invocation returns these requests as data and does not change
 another person's interface.
 
 A plugin can also show a short status for the open thread, such as **Realm live**,
-in the thread header (above the composer on mobile); select it to open that
-plugin's panel for the thread.
+in the thread details card (in the thread header while the card is closed, and
+above the composer on mobile); select it to open that plugin's panel for the thread.
 
 A plugin can offer another sidebar layout, such as threads grouped by project.
 Once one is available, a switch appears beside the sidebar search (and in the

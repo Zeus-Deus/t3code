@@ -12,7 +12,15 @@ import {
   type PluginThreadStatus,
   type ScopedThreadRef,
 } from "@t3tools/contracts";
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import {
+  createContext,
+  use,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from "react";
 
 import { useThreadShell } from "../../state/entities";
 import { pluginEnvironment, usePluginCatalogue } from "../../state/plugins";
@@ -40,28 +48,25 @@ const subscribeVisibility = (listener: () => void) => {
 };
 const documentVisible = () => document.visibilityState === "visible";
 
-/**
- * The open thread's plugin statuses; asked only while this document is visible. Mount one
- * consumer per thread at a time: each runs its own poller.
- */
-export function usePluginThreadStatuses(
-  threadRef: ScopedThreadRef,
+/** The open thread's plugin statuses; asked only while this document is visible. */
+function usePluginThreadStatuses(
+  threadRef: ScopedThreadRef | null,
 ): ReadonlyArray<PluginThreadStatusValue> {
-  const catalogue = usePluginCatalogue(threadRef.environmentId);
+  const environmentId = threadRef?.environmentId ?? null;
+  const catalogue = usePluginCatalogue(environmentId);
   // The server answers statuses only to sessions that may operate the environment.
-  const canOperate = useEnvironmentScope(threadRef.environmentId, AuthOrchestrationOperateScope);
+  const canOperate = useEnvironmentScope(environmentId, AuthOrchestrationOperateScope);
   const projectId = useThreadShell(threadRef)?.projectId ?? null;
   const invoke = useAtomCommand(pluginEnvironment.invoke, { reportFailure: false });
   const visible = useSyncExternalStore(subscribeVisibility, documentVisible);
   const entries =
-    canOperate && catalogue.availability === "available"
+    threadRef !== null && canOperate && catalogue.availability === "available"
       ? pluginThreadStatusEntries(pluginRunnableInstallations(catalogue))
       : [];
-  const target = {
-    environmentId: threadRef.environmentId,
-    threadId: threadRef.threadId,
-    projectId,
-  };
+  const target =
+    threadRef === null
+      ? null
+      : { environmentId: threadRef.environmentId, threadId: threadRef.threadId, projectId };
 
   const latestInvoke = useRef(invoke);
   useEffect(() => {
@@ -147,18 +152,45 @@ function PluginThreadStatusChip(props: {
   );
 }
 
+interface PluginThreadStatusesValue {
+  readonly threadRef: ScopedThreadRef;
+  readonly statuses: ReadonlyArray<PluginThreadStatusValue>;
+}
+
+const PluginThreadStatusesContext = createContext<PluginThreadStatusesValue | null>(null);
+
+/**
+ * Polls the thread's plugin statuses once for everything below it. The header and the thread
+ * details card take turns showing them, so the poller and its last answers outlive either.
+ * Pass `null` for a thread the server does not know yet.
+ */
+export function PluginThreadStatusesProvider(props: {
+  readonly threadRef: ScopedThreadRef | null;
+  readonly children: ReactNode;
+}) {
+  const { threadRef } = props;
+  const statuses = usePluginThreadStatuses(threadRef);
+  const value = threadRef === null ? null : { threadRef, statuses };
+  return <PluginThreadStatusesContext value={value}>{props.children}</PluginThreadStatusesContext>;
+}
+
+/** The statuses polled by the nearest provider; empty outside one. */
+export function usePluginThreadStatusesContext(): PluginThreadStatusesValue | null {
+  return use(PluginThreadStatusesContext);
+}
+
 /**
  * Compact plugin-provided statuses for the open thread, such as "Realm live", for the header
  * while the thread details card is closed. Nothing renders until a plugin reports one, and a
  * failing plugin stays quiet.
  */
-export function PluginThreadStatuses(props: { readonly threadRef: ScopedThreadRef }) {
-  const statuses = usePluginThreadStatuses(props.threadRef);
-  if (statuses.length === 0) return null;
+export function PluginThreadStatuses() {
+  const context = usePluginThreadStatusesContext();
+  if (context === null || context.statuses.length === 0) return null;
   return (
     <div role="group" aria-label="Plugin status" className="flex shrink-0 items-center gap-1">
-      {statuses.map((value) => (
-        <PluginThreadStatusChip key={value.key} threadRef={props.threadRef} value={value} />
+      {context.statuses.map((value) => (
+        <PluginThreadStatusChip key={value.key} threadRef={context.threadRef} value={value} />
       ))}
     </div>
   );
