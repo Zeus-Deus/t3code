@@ -59,6 +59,15 @@ package updates. Keep runtime-generated files out of the installed snapshot.
 The initial `threads.read` API returns the latest 30 messages, with each message
 limited to 4,096 characters. It is a bounded snapshot, not a full-history export.
 
+For metadata-only discovery, require `workflow.query` alongside `threads.read`
+and use `projects.list`, `threads.list`, `threads.metadata`, and `models.list`.
+Lists are paged; they do not promise a snapshot across concurrent edits. These
+methods retain the caller's project restrictions and do not expose transcripts.
+`threads.create` accepts a model, runtime and interaction modes, and a root or
+worktree workspace. Worktrees also require `worktrees.create` and an explicit
+base ref. The host enforces the caller's mode limits and records launch origin;
+an independent launch is not an owned subagent and does not inherit cancellation.
+
 Every `send` or `create` call requires an `idempotencyKey`, a stable name for
 that effect within the invocation. For example:
 
@@ -110,6 +119,23 @@ Declare a named page or side-panel view, then register its handlers as
 own plugin's handlers. See Workflow Board's `view.html` for the bridge handshake
 and error handling. The page has no app stores, native bridge, or bearer token.
 Use client intents to open links; navigating the frame stops its bridge.
+
+Detect optional bridge features through `t3.features`. With `changes`, register
+`t3.onChanged` and reread your snapshot when notified; retain a manual refresh
+fallback for older clients. `ctx.ui.invalidate` can notify declared view, tree,
+or status topics from an active handler with `ui.changes` and the corresponding
+contribution permissions granted.
+Notifications carry no plugin data. Local navigation uses `t3.intent` when
+`local-intents` is present; it has the same client restrictions as returned intents.
+
+An action with `ui.conversation-cards` can return a `card` naming a declared
+`conversation` view, a plain historical summary, and small JSON reference data.
+Keep the actual workflow in versioned plugin storage. T3 stamps the reference's
+ownership; card data itself grants no authority. Check the current thread and
+project before returning or changing stored state. Unsupported clients retain
+the normal tool-call history, and unavailable cards show their recorded summary.
+Conversation views receive `t3.context.card` when `card-context` is present and
+can request a bounded height with `t3.resize` when `resize` is present.
 
 A handler can return PNG or JPEG images by naming files inside
 `ctx.dataDirectory`. The host verifies the paths, size and image signatures
@@ -167,6 +193,15 @@ List `ui.sidebar-views` in `capabilities` when the view is the plugin's purpose,
 so older hosts refuse to install it. List it in `optionalCapabilities` if the
 plugin is useful without it. Clients without support ignore the declaration,
 and the mobile thread list keeps Activity.
+
+For programmable grouping, declare `nativeTrees` with `ui.native-trees` and
+register `ctx.trees.register(id, handler)`. Return a full, bounded snapshot of
+groups and project or thread references. Use `workflow.query` and `threads.read`
+to discover references through the public API. T3 checks their access, supplies
+native titles and status, and keeps omitted threads reachable. Tree handlers run
+on selection and semantic changes rather than on row renders or search input.
+See the SDK for snapshot limits; do not send transcripts or copy live status
+into group labels to force frequent refreshes.
 
 ## Develop and verify
 
