@@ -99,6 +99,23 @@ const make = Effect.gen(function* () {
   const launch = yield* ThreadLaunch.ThreadLaunchService;
   const projects = yield* ProjectService.ProjectService;
   const settings = yield* ServerSettings.ServerSettingsService;
+  const readAuthorizedState = Effect.fn("PluginHost.readAuthorizedState")(function* (
+    actor: PluginActor,
+  ) {
+    yield* actor.authorize?.() ?? Effect.void;
+    let state = yield* store.read;
+    if (actor.authorize !== undefined) {
+      yield* actor.authorize();
+      // Reads can wait on a commit; authorization can suspend across another commit.
+      // Check snapshot identity synchronously, retrying once before failing closed.
+      if (!store.isCurrent(state)) {
+        state = yield* store.read;
+        yield* actor.authorize();
+        if (!store.isCurrent(state)) return yield* pluginPermissionDenied();
+      }
+    }
+    return state;
+  });
   const decode = <A, I>(schema: Schema.Codec<A, I>, input: unknown) =>
     Schema.decodeUnknownEffect(schema)(input).pipe(
       Effect.mapError(
@@ -117,18 +134,7 @@ const make = Effect.gen(function* () {
           code: "safe_mode",
           message: "Plugin execution is disabled for this environment.",
         });
-      yield* invocation.actor.authorize?.() ?? Effect.void;
-      let state = yield* store.read;
-      if (invocation.actor.authorize !== undefined) {
-        yield* invocation.actor.authorize();
-        // Reads can wait on a commit; authorization can suspend across another commit.
-        // Check snapshot identity synchronously, retrying once before failing closed.
-        if (!store.isCurrent(state)) {
-          state = yield* store.read;
-          yield* invocation.actor.authorize();
-          if (!store.isCurrent(state)) return yield* pluginPermissionDenied();
-        }
-      }
+      const state = yield* readAuthorizedState(invocation.actor);
       const record = state.installations.find(
         (r) => r.installation.installationId === invocation.installationId,
       );
@@ -143,6 +149,18 @@ const make = Effect.gen(function* () {
         assertPluginActive(installation, invocation.generation);
       if (inactive) return yield* inactive;
       const actor = invocation.actor;
+      const readCurrent = Effect.fn("PluginHost.readCurrent")(function* () {
+        const state = yield* readAuthorizedState(actor);
+        const current = state.installations.find(
+          (r) => !r.removed && r.installation.installationId === invocation.installationId,
+        );
+        if (!current) return yield* pluginPermissionDenied();
+        const denied =
+          PluginStore.assertMutablePluginRecord(current) ??
+          assertPluginActive(current.installation, invocation.generation);
+        if (denied) return yield* denied;
+        return { state, installation: current.installation };
+      });
       const requireCapability = (
         capability: Parameters<typeof pluginCapabilityAllowed>[2],
         projectId?: ProjectId,
@@ -166,24 +184,20 @@ const make = Effect.gen(function* () {
           commandKey,
           Effect.gen(function* () {
             const revalidate = Effect.fn("PluginHost.revalidate")(function* () {
-              yield* actor.authorize?.() ?? Effect.void;
-              const current = (yield* store.read).installations.find(
-                (r) => !r.removed && r.installation.installationId === invocation.installationId,
-              );
-              if (!current) return yield* pluginPermissionDenied();
-              const denied =
-                PluginStore.assertMutablePluginRecord(current) ??
-                assertPluginActive(current.installation, invocation.generation);
-              if (denied) return yield* denied;
+              const current = yield* readCurrent();
               yield* authorizeTarget(current.installation);
+              yield* actor.authorize?.() ?? Effect.void;
+              // Target lookup is domain IO and can cross a grant or generation change.
+              if (!store.isCurrent(current.state)) return yield* pluginPermissionDenied();
               return current.installation;
             });
             const canDisclose = Effect.fn("PluginHost.canDisclose")(
-              function* (threadId: ThreadId, current: typeof installation) {
+              function* (threadId: ThreadId) {
                 const shell = yield* target(threadId);
+                const current = yield* readCurrent();
                 return (
                   (method === "threads.create" || method === "threads.send") &&
-                  pluginCapabilityAllowed(current, actor, method, shell.projectId) &&
+                  pluginCapabilityAllowed(current.installation, actor, method, shell.projectId) &&
                   pluginTargetWithinCeiling(actor, shell)
                 );
               },
@@ -203,10 +217,10 @@ const make = Effect.gen(function* () {
                   PluginError: (error) =>
                     Effect.gen(function* () {
                       if (error.code !== "idempotency_conflict") return yield* error;
-                      const current = yield* revalidate();
+                      yield* revalidate();
                       const disclose =
                         error.priorEffect !== undefined &&
-                        (yield* canDisclose(error.priorEffect.threadId, current));
+                        (yield* canDisclose(error.priorEffect.threadId));
                       return yield* new PluginError({
                         reason: error.reason,
                         message: error.message,
@@ -219,9 +233,9 @@ const make = Effect.gen(function* () {
                 }),
               );
             if ("result" in previous) {
-              const current = yield* revalidate();
+              yield* revalidate();
               const effect = decodeEffectHandle(previous.result);
-              if (effect._tag === "Some" && !(yield* canDisclose(effect.value.threadId, current)))
+              if (effect._tag === "Some" && !(yield* canDisclose(effect.value.threadId)))
                 return yield* pluginPermissionDenied();
               return previous.result;
             }
@@ -233,9 +247,9 @@ const make = Effect.gen(function* () {
               }),
             );
             yield* receipts.complete(commandKey, result);
-            const latest = yield* revalidate();
+            yield* revalidate();
             const effect = decodeEffectHandle(result);
-            if (effect._tag === "Some" && !(yield* canDisclose(effect.value.threadId, latest)))
+            if (effect._tag === "Some" && !(yield* canDisclose(effect.value.threadId)))
               return yield* pluginPermissionDenied();
             return result;
           }).pipe(
@@ -350,13 +364,9 @@ const make = Effect.gen(function* () {
           rowLimit: 30,
           userTurnLimit: 10,
         });
-        yield* actor.authorize?.() ?? Effect.void;
-        const latest = (yield* store.read).installations.find(
-          (r) => !r.removed && r.installation.installationId === invocation.installationId,
-        );
-        if (!latest) return yield* pluginPermissionDenied();
-        const revoked = assertPluginActive(latest.installation, invocation.generation);
-        if (revoked) return yield* revoked;
+        const latest = yield* readCurrent();
+        if (!pluginCapabilityAllowed(latest.installation, actor, "threads.read", shell.projectId))
+          return yield* pluginPermissionDenied();
         if (records.thread.projectId !== shell.projectId) return yield* pluginPermissionDenied();
         return {
           threadId: shell.id,

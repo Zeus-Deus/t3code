@@ -2,9 +2,12 @@ import { expect, it, vi } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   AuthOrchestrationOperateScope,
+  AuthOrchestrationReadScope,
   CommandId,
+  MessageId,
   ProjectId,
   ProviderInstanceId,
+  RunId,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -15,15 +18,20 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import * as CoreReceipts from "../persistence/OrchestrationCommandReceipts.ts";
 import * as Config from "../config.ts";
 import * as Sqlite from "../persistence/Sqlite.ts";
 import * as Threads from "../orchestration-v2/ThreadManagementService.ts";
+import {
+  DispatchModeLimit,
+  type DispatchModeLimitValue,
+} from "../orchestration-v2/DispatchModeLimit.ts";
 import * as Launch from "../orchestration-v2/ThreadLaunchService.ts";
 import * as Projects from "../project/ProjectService.ts";
 import * as Settings from "../serverSettings.ts";
 import { v2PullRequestThread } from "../orchestration-v2/testkit/pullRequestFixtures.ts";
-import type { PluginActor } from "./PluginAuthority.ts";
+import { pluginPermissionDenied, type PluginActor } from "./PluginAuthority.ts";
 import * as Database from "./PluginDatabase.ts";
 import * as Store from "./PluginStore.ts";
 import * as Receipts from "./PluginReceipts.ts";
@@ -34,7 +42,7 @@ const actor: PluginActor = {
   principalId: "client",
   source: "client",
   runtimeMode: "full-access",
-  scopes: [AuthOrchestrationOperateScope],
+  scopes: [AuthOrchestrationOperateScope, AuthOrchestrationReadScope],
 };
 const base = () =>
   Database.layer.pipe(
@@ -67,17 +75,110 @@ const fixture = Effect.gen(function* () {
     settledAt: null,
   });
   let effectProject = projectId;
+  let effectModes = { runtimeMode: shell.runtimeMode, interactionMode: shell.interactionMode };
   let launches = 0;
+  const sends: Array<Threads.ThreadManagementSendInput> = [];
+  const limits: Array<DispatchModeLimitValue | undefined> = [];
+  let beforeRead: (() => Effect.Effect<void>) | undefined;
+  const projection = (id: ThreadId) => ({
+    thread: { ...shell, id, projectId: effectProject, lastVisitedAt: null },
+    runs: [],
+    messages: [
+      {
+        id: MessageId.make("private-message"),
+        threadId: id,
+        runId: null,
+        nodeId: null,
+        role: "assistant" as const,
+        text: "private transcript",
+        attachments: [],
+        streaming: false,
+        createdAt: shell.createdAt,
+        updatedAt: shell.updatedAt,
+        createdBy: "system" as const,
+        creationSource: "server" as const,
+      },
+    ] as const,
+    turnItems: [],
+    attempts: [],
+    nodes: [],
+    subagents: [],
+    providerSessions: [],
+    providerThreads: [],
+    providerTurns: [],
+    runtimeRequests: [],
+    plans: [],
+    checkpointScopes: [],
+    checkpoints: [],
+    contextHandoffs: [],
+    contextTransfers: [],
+    visibleTurnItems: [],
+    updatedAt: shell.updatedAt,
+  });
+  const domain = Layer.mock(Threads.ThreadManagementService)({
+    getThreadShell: (id) =>
+      Effect.sync(() => ({ ...shell, ...effectModes, id, projectId: effectProject })),
+    ensureLegacyTranscript: () => Effect.void,
+    getThreadSnapshotWindow: (id) =>
+      Effect.sync(() => ({ schemaVersion: 1, snapshotSequence: 1, projection: projection(id) })),
+    sendToThread: (input) =>
+      Effect.gen(function* () {
+        limits.push(yield* DispatchModeLimit);
+        sends.push(input);
+        const run = {
+          id: RunId.make("run"),
+          threadId: input.threadId,
+          ordinal: 1,
+          providerInstanceId: shell.providerInstanceId,
+          modelSelection: shell.modelSelection,
+          providerThreadId: null,
+          userMessageId: input.messageId,
+          rootNodeId: null,
+          activeAttemptId: null,
+          status: "queued" as const,
+          requestedAt: shell.createdAt,
+          startedAt: null,
+          completedAt: null,
+          checkpointId: null,
+          contextHandoffId: null,
+        };
+        const message = {
+          ...projection(input.threadId).messages[0],
+          id: input.messageId,
+          role: "user" as const,
+          runId: run.id,
+          text: input.text,
+        };
+        return {
+          dispatch: { sequence: 1, storedEvents: [] },
+          projection: { ...projection(input.threadId), runs: [run], messages: [message] },
+          message,
+          run,
+          turnItem: null,
+          delivery: "queued" as const,
+        };
+      }),
+  });
   let beforeLaunch: (commandId: CommandId) => Effect.Effect<void, Launch.ThreadLaunchError> = () =>
     Effect.void;
   const layer = Host.layer.pipe(
-    Layer.provideMerge(Store.layer),
-    Layer.provideMerge(Receipts.layer),
-    Layer.provide(
-      Layer.mock(Threads.ThreadManagementService)({
-        getThreadShell: (id) => Effect.succeed({ ...shell, id, projectId: effectProject }),
-      }),
+    Layer.provideMerge(
+      Layer.effect(
+        Store.PluginStore,
+        Effect.map(Store.PluginStore, (store) =>
+          Store.PluginStore.of({
+            ...store,
+            read: Effect.suspend(() => {
+              const before = beforeRead;
+              beforeRead = undefined;
+              return (before?.() ?? Effect.void).pipe(Effect.andThen(store.read));
+            }),
+          }),
+        ),
+      ).pipe(Layer.provide(Store.layer)),
     ),
+    Layer.provideMerge(Receipts.layer),
+    Layer.provideMerge(domain),
     Layer.provide(
       Layer.mock(Launch.ThreadLaunchService)({
         launch: (input) =>
@@ -87,26 +188,7 @@ const fixture = Effect.gen(function* () {
             const launchedThreadId = input.threadId ?? ThreadId.make("fixture-thread");
             return {
               threadId: launchedThreadId,
-              projection: {
-                thread: { ...shell, id: launchedThreadId, lastVisitedAt: null },
-                runs: [],
-                messages: [],
-                turnItems: [],
-                attempts: [],
-                nodes: [],
-                subagents: [],
-                providerSessions: [],
-                providerThreads: [],
-                providerTurns: [],
-                runtimeRequests: [],
-                plans: [],
-                checkpointScopes: [],
-                checkpoints: [],
-                contextHandoffs: [],
-                contextTransfers: [],
-                visibleTurnItems: [],
-                updatedAt: shell.updatedAt,
-              },
+              projection: projection(launchedThreadId),
               resumed: false,
             };
           }),
@@ -154,7 +236,7 @@ const fixture = Effect.gen(function* () {
                 version: "1.0.0",
                 apiVersion: 1,
                 entry: "plugin.mjs",
-                capabilities: ["threads.create"],
+                capabilities: ["threads.create", "threads.read", "threads.send"],
                 actions: [],
                 views: [],
                 settings: [],
@@ -166,7 +248,10 @@ const fixture = Effect.gen(function* () {
               status: "idle",
               error: null,
               settings: {},
-              grants: { capabilities: ["threads.create"], projectIds: [projectId] },
+              grants: {
+                capabilities: ["threads.create", "threads.read", "threads.send"],
+                projectIds: [projectId],
+              },
               updatedAt: "2026-10-23T12:00:00.000Z",
             },
           },
@@ -187,9 +272,18 @@ const fixture = Effect.gen(function* () {
     host,
     store,
     receipts,
+    threads: Context.get(context, Threads.ThreadManagementService),
+    beforeRead: (value: NonNullable<typeof beforeRead>) => {
+      beforeRead = value;
+    },
     invocation,
     request,
     launches: () => launches,
+    sends,
+    limits,
+    setEffectModes: (value: typeof effectModes) => {
+      effectModes = value;
+    },
     setBeforeLaunch: (value: typeof beforeLaunch) => {
       beforeLaunch = value;
     },
@@ -198,6 +292,478 @@ const fixture = Effect.gen(function* () {
     },
   };
 });
+it.effect.each([false, true])("reads a transcript with a stable actor (live=%s)", (live) =>
+  Effect.gen(function* () {
+    const f = yield* fixture;
+    const result = yield* f.host.call(
+      { ...f.invocation, actor: { ...actor, ...(live ? { authorize: () => Effect.void } : {}) } },
+      "threads.read",
+      { threadId: ThreadId.make("thread") },
+    );
+    expect(result).toMatchObject({
+      projectId,
+      messages: [{ text: "private transcript" }],
+    });
+  }).pipe(Effect.provide(base()), Effect.scoped),
+);
+it.effect.each([false, true])(
+  "sends with a stable actor and preserves its mode ceiling (live=%s)",
+  (live) =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      const modes = { runtimeMode: "approval-required", interactionMode: "plan" } as const;
+      f.setEffectModes(modes);
+      const result = yield* f.host.call(
+        {
+          ...f.invocation,
+          actor: { ...actor, ...modes, ...(live ? { authorize: () => Effect.void } : {}) },
+        },
+        "threads.send",
+        { ...f.request, threadId: ThreadId.make("thread") },
+      );
+      expect(result).toMatchObject({ threadId: "thread", delivery: "queued" });
+      expect(f.sends).toHaveLength(1);
+      expect(f.limits).toEqual([modes]);
+    }).pipe(Effect.provide(base()), Effect.scoped),
+);
+it.effect("denies a transcript when the session is revoked during its final catalogue wait", () =>
+  Effect.gen(function* () {
+    const f = yield* fixture;
+    const snapshotEntered = yield* Deferred.make<void>();
+    const releaseSnapshot = yield* Deferred.make<void>();
+    const lockEntered = yield* Deferred.make<void>();
+    const releaseLock = yield* Deferred.make<void>();
+    const readEntered = yield* Deferred.make<void>();
+    const snapshot = f.threads.getThreadSnapshotWindow;
+    using _snapshot = vi
+      .spyOn(f.threads, "getThreadSnapshotWindow")
+      .mockImplementationOnce((...args) =>
+        snapshot(...args).pipe(
+          Effect.tap(() =>
+            Deferred.succeed(snapshotEntered, undefined).pipe(
+              Effect.andThen(Deferred.await(releaseSnapshot)),
+            ),
+          ),
+        ),
+      );
+    let revoked = false;
+    const pending = yield* f.host
+      .call(
+        {
+          ...f.invocation,
+          actor: {
+            ...actor,
+            authorize: () =>
+              Effect.suspend(() => (revoked ? Effect.fail(pluginPermissionDenied()) : Effect.void)),
+          },
+        },
+        "threads.read",
+        { threadId: ThreadId.make("thread") },
+      )
+      .pipe(Effect.result, Effect.forkChild);
+    yield* Deferred.await(snapshotEntered);
+    const lock = yield* f.store
+      .update((state) =>
+        Deferred.succeed(lockEntered, undefined).pipe(
+          Effect.andThen(Deferred.await(releaseLock)),
+          Effect.as([undefined, state] as const),
+        ),
+      )
+      .pipe(Effect.forkChild);
+    yield* Deferred.await(lockEntered);
+    f.beforeRead(() => Deferred.succeed(readEntered, undefined));
+    yield* Deferred.succeed(releaseSnapshot, undefined);
+    yield* Deferred.await(readEntered);
+    revoked = true;
+    yield* Deferred.succeed(releaseLock, undefined);
+    yield* Fiber.join(lock);
+    expect(yield* Fiber.join(pending)).toMatchObject({
+      _tag: "Failure",
+      failure: { reason: "permission_denied" },
+    });
+  }).pipe(Effect.provide(base()), Effect.scoped),
+);
+it.effect.each(["project-grant", "generation"] as const)(
+  "denies a transcript after its %s changes during snapshot IO",
+  (change) =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      const entered = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const snapshot = f.threads.getThreadSnapshotWindow;
+      using _snapshot = vi
+        .spyOn(f.threads, "getThreadSnapshotWindow")
+        .mockImplementationOnce((...args) =>
+          snapshot(...args).pipe(
+            Effect.tap(() =>
+              Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(release))),
+            ),
+          ),
+        );
+      const pending = yield* f.host
+        .call(f.invocation, "threads.read", { threadId: ThreadId.make("thread") })
+        .pipe(Effect.result, Effect.forkChild);
+      yield* Deferred.await(entered);
+      yield* f.store.update((state) =>
+        Effect.succeed([
+          undefined,
+          {
+            ...state,
+            installations: state.installations.map((record) => ({
+              ...record,
+              installation: {
+                ...record.installation,
+                ...(change === "generation"
+                  ? { generation: "two" }
+                  : {
+                      grants: { ...record.installation.grants, projectIds: [] },
+                    }),
+              },
+            })),
+          },
+        ] as const),
+      );
+      yield* Deferred.succeed(release, undefined);
+      expect(yield* Fiber.join(pending)).toMatchObject({
+        _tag: "Failure",
+        failure: { reason: change === "generation" ? "stale_generation" : "permission_denied" },
+      });
+    }).pipe(Effect.provide(base()), Effect.scoped),
+);
+it.effect(
+  "does not create a thread after session revocation during its pre-dispatch catalogue wait",
+  () =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      const lockEntered = yield* Deferred.make<void>();
+      const releaseLock = yield* Deferred.make<void>();
+      const readEntered = yield* Deferred.make<void>();
+      const reserve = f.receipts.reserve;
+      using _reserve = vi.spyOn(f.receipts, "reserve").mockImplementationOnce((input) =>
+        reserve(input).pipe(
+          Effect.tap(() =>
+            Effect.gen(function* () {
+              yield* f.store
+                .update((state) =>
+                  Deferred.succeed(lockEntered, undefined).pipe(
+                    Effect.andThen(Deferred.await(releaseLock)),
+                    Effect.as([undefined, state] as const),
+                  ),
+                )
+                .pipe(Effect.forkChild);
+              yield* Deferred.await(lockEntered);
+              f.beforeRead(() => Deferred.succeed(readEntered, undefined));
+            }),
+          ),
+        ),
+      );
+      let revoked = false;
+      const pending = yield* f.host
+        .call(
+          {
+            ...f.invocation,
+            actor: {
+              ...actor,
+              authorize: () =>
+                Effect.suspend(() =>
+                  revoked ? Effect.fail(pluginPermissionDenied()) : Effect.void,
+                ),
+            },
+          },
+          "threads.create",
+          f.request,
+        )
+        .pipe(Effect.result, Effect.forkChild);
+      yield* Deferred.await(readEntered);
+      revoked = true;
+      yield* Deferred.succeed(releaseLock, undefined);
+      expect(yield* Fiber.join(pending)).toMatchObject({
+        _tag: "Failure",
+        failure: { reason: "permission_denied" },
+      });
+      expect(f.launches()).toBe(0);
+      expect(
+        yield* (yield* SqlClient.SqlClient)`SELECT operation_key FROM plugin_operation_receipts`,
+      ).toEqual([]);
+    }).pipe(Effect.provide(base()), Effect.scoped),
+);
+it.effect.each(
+  (["new-result", "cached-result", "prior-effect"] as const).flatMap((response) =>
+    (["session", "project-grant", "generation"] as const).map((change) => ({ response, change })),
+  ),
+)(
+  "does not disclose $response after $change revocation during effect target IO",
+  ({ response, change }) =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      if (response !== "new-result") yield* f.host.call(f.invocation, "threads.create", f.request);
+      const entered = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const getShell = f.threads.getThreadShell;
+      using _shell = vi
+        .spyOn(f.threads, "getThreadShell")
+        .mockImplementationOnce((id) =>
+          getShell(id).pipe(
+            Effect.tap(() =>
+              Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(release))),
+            ),
+          ),
+        );
+      let revoked = false;
+      const pending = yield* f.host
+        .call(
+          {
+            ...f.invocation,
+            actor: {
+              ...actor,
+              authorize: () =>
+                Effect.suspend(() =>
+                  revoked ? Effect.fail(pluginPermissionDenied()) : Effect.void,
+                ),
+            },
+          },
+          "threads.create",
+          response === "prior-effect" ? { ...f.request, text: "Changed" } : f.request,
+        )
+        .pipe(Effect.result, Effect.forkChild);
+      yield* Deferred.await(entered);
+      if (change === "session") revoked = true;
+      else
+        yield* f.store.update((state) =>
+          Effect.succeed([
+            undefined,
+            {
+              ...state,
+              installations: state.installations.map((record) => ({
+                ...record,
+                installation: {
+                  ...record.installation,
+                  ...(change === "generation"
+                    ? { generation: "two" }
+                    : {
+                        grants: { ...record.installation.grants, projectIds: [] },
+                      }),
+                },
+              })),
+            },
+          ] as const),
+        );
+      yield* Deferred.succeed(release, undefined);
+      const result = yield* Fiber.join(pending);
+      expect(result._tag).toBe("Failure");
+      if (result._tag === "Failure") {
+        expect(result.failure.priorEffect).toBeUndefined();
+        if (response !== "prior-effect") expect(result.failure.reason).toBe("permission_denied");
+      }
+      expect(f.launches()).toBe(1);
+    }).pipe(Effect.provide(base()), Effect.scoped),
+);
+it.effect.each(["session", "project-grant", "generation"] as const)(
+  "does not send after %s revocation during pre-dispatch target IO",
+  (change) =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      const entered = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      let reserved = false;
+      const reserve = f.receipts.reserve;
+      using _reserve = vi.spyOn(f.receipts, "reserve").mockImplementationOnce((input) =>
+        reserve(input).pipe(
+          Effect.tap(() =>
+            Effect.sync(() => {
+              reserved = true;
+            }),
+          ),
+        ),
+      );
+      const getShell = f.threads.getThreadShell;
+      using _shell = vi.spyOn(f.threads, "getThreadShell").mockImplementation((id) =>
+        getShell(id).pipe(
+          Effect.tap(() => {
+            if (!reserved) return Effect.void;
+            reserved = false;
+            return Deferred.succeed(entered, undefined).pipe(
+              Effect.andThen(Deferred.await(release)),
+            );
+          }),
+        ),
+      );
+      let revoked = false;
+      const pending = yield* f.host
+        .call(
+          {
+            ...f.invocation,
+            actor: {
+              ...actor,
+              authorize: () =>
+                Effect.suspend(() =>
+                  revoked ? Effect.fail(pluginPermissionDenied()) : Effect.void,
+                ),
+            },
+          },
+          "threads.send",
+          { ...f.request, threadId: ThreadId.make("thread") },
+        )
+        .pipe(Effect.result, Effect.forkChild);
+      yield* Deferred.await(entered);
+      if (change === "session") revoked = true;
+      else
+        yield* f.store.update((state) =>
+          Effect.succeed([
+            undefined,
+            {
+              ...state,
+              installations: state.installations.map((record) => ({
+                ...record,
+                installation: {
+                  ...record.installation,
+                  ...(change === "generation"
+                    ? { generation: "two" }
+                    : {
+                        grants: { ...record.installation.grants, projectIds: [] },
+                      }),
+                },
+              })),
+            },
+          ] as const),
+        );
+      yield* Deferred.succeed(release, undefined);
+      expect(yield* Fiber.join(pending)).toMatchObject({
+        _tag: "Failure",
+        failure: { reason: "permission_denied" },
+      });
+      expect(f.sends).toEqual([]);
+      expect(
+        yield* (yield* SqlClient.SqlClient)`SELECT operation_key FROM plugin_operation_receipts`,
+      ).toEqual([]);
+    }).pipe(Effect.provide(base()), Effect.scoped),
+);
+it.effect.each(
+  (["threads.create", "threads.send"] as const).flatMap((method) =>
+    (["session", "generation"] as const).map((change) => ({ method, change })),
+  ),
+)(
+  "revalidates $method after $change revocation while waiting for its command lock",
+  ({ method, change }) =>
+    Effect.gen(function* () {
+      const waiting = yield* Deferred.make<void>();
+      const makeLock = KeyedLock.make;
+      let attempts = 0;
+      using _lock = vi.spyOn(KeyedLock, "make").mockImplementationOnce(function <Key>() {
+        return makeLock<Key>().pipe(
+          Effect.map(
+            (lock) =>
+              ({
+                ...lock,
+                withLock: (key, effect) =>
+                  Effect.suspend(() => {
+                    const entered =
+                      ++attempts === 2 ? Deferred.succeed(waiting, undefined) : Effect.void;
+                    return entered.pipe(Effect.andThen(lock.withLock(key, effect)));
+                  }),
+              }) satisfies KeyedLock.KeyedLock<Key>,
+          ),
+        );
+      });
+      const f = yield* fixture;
+      const entered = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const wait = Deferred.succeed(entered, undefined).pipe(
+        Effect.andThen(Deferred.await(release)),
+      );
+      f.setBeforeLaunch(() => wait);
+      const send = f.threads.sendToThread;
+      using _send = vi
+        .spyOn(f.threads, "sendToThread")
+        .mockImplementationOnce((input) => wait.pipe(Effect.andThen(send(input))));
+      const request =
+        method === "threads.create"
+          ? f.request
+          : { ...f.request, threadId: ThreadId.make("thread") };
+      const first = yield* f.host
+        .call(f.invocation, method, request)
+        .pipe(Effect.result, Effect.forkChild);
+      yield* Deferred.await(entered);
+      let revoked = false;
+      const second = yield* f.host
+        .call(
+          {
+            ...f.invocation,
+            actor: {
+              ...actor,
+              authorize: () =>
+                Effect.suspend(() =>
+                  revoked ? Effect.fail(pluginPermissionDenied()) : Effect.void,
+                ),
+            },
+          },
+          method,
+          request,
+        )
+        .pipe(Effect.result, Effect.forkChild);
+      yield* Deferred.await(waiting);
+      if (change === "session") revoked = true;
+      else
+        yield* f.store.update((state) =>
+          Effect.succeed([
+            undefined,
+            {
+              ...state,
+              installations: state.installations.map((record) => ({
+                ...record,
+                installation: { ...record.installation, generation: "two" },
+              })),
+            },
+          ] as const),
+        );
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(first);
+      expect(yield* Fiber.join(second)).toMatchObject({
+        _tag: "Failure",
+        failure: { reason: change === "generation" ? "stale_generation" : "permission_denied" },
+      });
+      expect(f.launches() + f.sends.length).toBe(1);
+    }).pipe(Effect.provide(base()), Effect.scoped),
+);
+it.effect.each(["runtime", "interaction"] as const)(
+  "rechecks a send target's %s mode before dispatch after a domain wait",
+  (mode) =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      const modes = { runtimeMode: "approval-required", interactionMode: "plan" } as const;
+      f.setEffectModes(modes);
+      const entered = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const reserve = f.receipts.reserve;
+      using _reserve = vi
+        .spyOn(f.receipts, "reserve")
+        .mockImplementationOnce((input) =>
+          reserve(input).pipe(
+            Effect.tap(() =>
+              Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(release))),
+            ),
+          ),
+        );
+      const pending = yield* f.host
+        .call({ ...f.invocation, actor: { ...actor, ...modes } }, "threads.send", {
+          ...f.request,
+          threadId: ThreadId.make("thread"),
+        })
+        .pipe(Effect.result, Effect.forkChild);
+      yield* Deferred.await(entered);
+      f.setEffectModes(
+        mode === "runtime"
+          ? { ...modes, runtimeMode: "full-access" }
+          : { ...modes, interactionMode: "default" },
+      );
+      yield* Deferred.succeed(release, undefined);
+      expect(yield* Fiber.join(pending)).toMatchObject({
+        _tag: "Failure",
+        failure: { reason: "permission_denied" },
+      });
+      expect(f.sends).toEqual([]);
+    }).pipe(Effect.provide(base()), Effect.scoped),
+);
 it.effect("uses one effect key across revisions while separating actor namespaces", () =>
   Effect.gen(function* () {
     const f = yield* fixture;
