@@ -54,6 +54,7 @@ import {
   type OrchestrationV2IdleCompaction,
   type WorktreeSetupSnapshot,
   type OrchestrationV2ProjectedTurnItem,
+  type PluginCardReference,
   type RunAttemptId,
   type RuntimeRequestId,
   RunId,
@@ -81,7 +82,9 @@ function timelineEntryRunId(entry: TimelineEntry): RunId | null {
   if (entry.kind === "proposed-plan") {
     return entry.proposedPlan.runId;
   }
-  if (entry.kind === "html-render" || entry.kind === "mcp-app") return entry.runId;
+  if (entry.kind === "html-render" || entry.kind === "mcp-app" || entry.kind === "plugin-card") {
+    return entry.runId;
+  }
   return entry.kind === "work" ? (entry.entry.runId ?? null) : null;
 }
 
@@ -632,6 +635,12 @@ type MessagesTimelineRowContent =
       itemId: TurnItemId;
       revision: string;
       mcpApp: McpAppReference;
+    }
+  | {
+      kind: "plugin-card";
+      id: string;
+      createdAt: string;
+      card: PluginCardReference;
     };
 
 export interface StableMessagesTimelineRowsState {
@@ -788,6 +797,7 @@ function deriveSupersededAttemptFolds(
       (entry.kind === "event" && entry.projectedItem.item.type === "handoff") ||
       entry.kind === "html-render" ||
       entry.kind === "mcp-app" ||
+      entry.kind === "plugin-card" ||
       timelineEntryIsPersistentResourceCard(entry) ||
       liveSubagentEntryIds.has(entry.id) ||
       (entry.kind === "work" && entry.entry.itemType === "system_notice")
@@ -1943,6 +1953,16 @@ export function deriveMessagesTimelineRows(input: {
       continue;
     }
 
+    if (timelineEntry.kind === "plugin-card") {
+      nextRows.push({
+        kind: "plugin-card",
+        id: timelineEntry.id,
+        createdAt: timelineEntry.createdAt,
+        card: timelineEntry.card,
+      });
+      continue;
+    }
+
     if (timelineEntry.kind === "event") {
       const previous = nextRows.at(-1);
       if (
@@ -2401,6 +2421,12 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
         a.revision === bm.revision &&
         mcpAppReferencesEqual(a.mcpApp, bm.mcpApp)
       );
+    }
+
+    case "plugin-card": {
+      // A recorded card never changes; an equal one keeps its mounted frame and state.
+      const bc = b as typeof a;
+      return a.createdAt === bc.createdAt && JSON.stringify(a.card) === JSON.stringify(bc.card);
     }
 
     case "event":

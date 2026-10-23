@@ -117,6 +117,7 @@ import {
   ProposedPlanTimelineRow,
   HtmlRenderTimelineRow,
   McpAppTimelineRow,
+  PluginCardTimelineRow,
 } from "./TimelineAssistantRows";
 import { V2EventTimelineRow } from "./TimelineV2EventRow";
 import { startTimelinePositionRestore } from "./useTimelinePositionRestore";
@@ -1440,7 +1441,8 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
                 row.kind === "event" ||
                 row.kind === "attempt-fold" ||
                 row.kind === "html-render" ||
-                row.kind === "mcp-app"
+                row.kind === "mcp-app" ||
+                row.kind === "plugin-card"
               ? "pb-2"
               : "pb-4",
         (row.kind === "message" && row.message.role === "assistant") ||
@@ -1490,6 +1492,7 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
       {row.kind === "proposed-plan" ? <ProposedPlanTimelineRow row={row} /> : null}
       {row.kind === "html-render" ? <HtmlRenderTimelineRow row={row} /> : null}
       {row.kind === "mcp-app" ? <McpAppTimelineRow row={row} /> : null}
+      {row.kind === "plugin-card" ? <PluginCardTimelineRow row={row} /> : null}
       {row.kind === "working" ? <WorkingTimelineRow row={row} /> : null}
       {row.kind === "worktree-setup" ? <WorktreeSetupTimelineRow row={row} /> : null}
       {row.kind === "event" ? <V2EventTimelineRow row={row} /> : null}

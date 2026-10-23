@@ -22,6 +22,7 @@ import { formatChatTimestampTooltip, formatDayAwareTimestamp } from "../../times
 import { useV2ItemSupport } from "../../state/v2ItemSupport";
 import { TimelineRowCtx, TimelineRowActivityCtx, type TimelineRow } from "./timelineRowContext";
 import { MESSAGE_HEADING_LEVEL, MessageAuthorHeading } from "./TimelineRowParts";
+import { PluginConversationCard } from "../plugins/PluginConversationCard";
 
 export function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);
@@ -280,6 +281,23 @@ export function McpAppTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "
         onSendMessage={ctx.onSendAppMessage}
         awaitingUser={awaitingUser}
         onFullscreenChange={(fullscreen) => ctx.onAppFullscreenChange(row.id, fullscreen)}
+      />
+    </div>
+  );
+}
+
+export function PluginCardTimelineRow({
+  row,
+}: {
+  row: Extract<TimelineRow, { kind: "plugin-card" }>;
+}) {
+  const ctx = use(TimelineRowCtx);
+  return (
+    <div className="min-w-0 px-1">
+      <PluginConversationCard
+        environmentId={ctx.activeThreadEnvironmentId}
+        threadRef={ctx.threadRef ?? null}
+        card={row.card}
       />
     </div>
   );

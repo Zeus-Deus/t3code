@@ -362,7 +362,7 @@ export function PluginViewFrame(props: {
       }}
       className={cn(
         "block w-full border-0 bg-transparent",
-        props.placement === "conversation" ? "h-24" : "h-full",
+        props.placement === "conversation" ? "h-24 rounded-lg border border-border" : "h-full",
       )}
       style={{
         colorScheme: theme.appearance,

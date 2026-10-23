@@ -1329,6 +1329,31 @@ describe("HTML renders in the timeline", () => {
     expect(rowsFor(entries, true)).toEqual(["message", "turn-fold", "attempt-fold", "html-render"]);
   });
 
+  it("shows a plugin card in place of its tool call, only for T3's plugin tool", () => {
+    const card = {
+      installationId: "inst-launcher",
+      generation: "gen-1",
+      dataOwner: "owner-1",
+      viewId: "task",
+      summary: "Launch plan: fix login",
+      data: { planId: "plan-1" },
+    };
+    const invoke = (toolName: string, output: unknown) => {
+      const call = renderCall("completed", output);
+      return turn(call.type === "dynamic_tool" ? { ...call, toolName } : call);
+    };
+    const entries = invoke("mcp__t3-code__t3_plugin_invoke", { structuredContent: { card } });
+    expect(entries.find((entry) => entry.kind === "plugin-card")).toMatchObject({ card });
+    expect(rowsFor(entries, false)).toEqual(["message", "turn-fold", "plugin-card", "message"]);
+    // A refused call, or another server's tool imitating the shape, stays a tool row.
+    for (const refused of [
+      invoke("mcp__t3-code__t3_plugin_invoke", { structuredContent: { card }, isError: true }),
+      invoke("mcp__other__t3_plugin_invoke", { structuredContent: { card } }),
+    ]) {
+      expect(refused.find((entry) => entry.id === "render")?.kind).toBe("work");
+    }
+  });
+
   it.each([
     ["running", "running", undefined],
     ["failed", "failed", { content: [{ type: "text", text: "Invalid HTML" }], isError: true }],

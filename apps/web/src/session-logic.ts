@@ -9,6 +9,7 @@ import {
   type OrchestrationV2RunAttempt,
   type OrchestrationV2TurnItem,
   type PlanId,
+  type PluginCardReference,
   type RunId,
   type ToolActivitySurface,
   type ToolActivityIcon,
@@ -26,7 +27,11 @@ import {
 import type { HtmlRenderReference } from "@t3tools/shared/htmlRender";
 import { turnItemDetailRevision } from "@t3tools/client-runtime/work-log/item-detail";
 import type { McpAppReference } from "@t3tools/shared/mcpApp";
-import { htmlRenderFromToolItem, mcpAppFromToolItem } from "@t3tools/shared/toolOutput";
+import {
+  htmlRenderFromToolItem,
+  mcpAppFromToolItem,
+  pluginCardFromToolItem,
+} from "@t3tools/shared/toolOutput";
 import {
   contextCompactionLabel,
   workEntryIndicatesToolFailure,
@@ -142,6 +147,14 @@ export type TimelineEntry = (
       readonly itemId: TurnItemId;
       readonly revision: string;
       readonly mcpApp: McpAppReference;
+    }
+  | {
+      readonly id: string;
+      readonly kind: "plugin-card";
+      readonly createdAt: string;
+      readonly runId: RunId | null;
+      /** As the tool result recorded it: a summary to show and an id to ask the plugin about. */
+      readonly card: PluginCardReference;
     }
   | {
       readonly id: string;
@@ -725,6 +738,22 @@ export function deriveTimelineEntriesFromVisibleTurnItems(
         itemId: row.sourceItemId,
         revision: turnItemDetailRevision(item),
         mcpApp,
+        ...attemptMetadata,
+      });
+      continue;
+    }
+
+    const pluginCard =
+      item.type === "dynamic_tool" && item.status === "completed"
+        ? pluginCardFromToolItem(item)
+        : undefined;
+    if (pluginCard !== undefined) {
+      entries.push({
+        id: item.id,
+        kind: "plugin-card",
+        createdAt,
+        runId: item.runId,
+        card: pluginCard,
         ...attemptMetadata,
       });
       continue;
