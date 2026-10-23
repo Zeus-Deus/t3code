@@ -3,7 +3,6 @@ import type {
   ProviderUserInputAnswers,
   UserInputQuestion,
 } from "@t3tools/contracts";
-import { MAX_PLUGIN_RESULT_BYTES } from "@t3tools/contracts";
 import { isWorkspaceImagePreviewPath } from "@t3tools/shared/filePreview";
 import { compactDynamicToolOutput } from "@t3tools/shared/toolOutput";
 import * as Option from "effect/Option";
@@ -39,9 +38,6 @@ const decodeSingleAnswer = Schema.decodeUnknownOption(
   Schema.Union([Schema.String, Schema.Tuple([Schema.String])]),
 );
 const decodeToolCallContent = Schema.decodeUnknownOption(AcpWireSchema.ToolCallContent);
-const decodeSerializedToolOutput = Schema.decodeUnknownOption(
-  Schema.fromJsonString(Schema.Unknown),
-);
 
 /** Native questions share the permission method, but their choices are not approvals. */
 export function isAntigravityUserInputRequest(
@@ -222,19 +218,11 @@ export function sanitizeAntigravityToolPayload(payload: unknown): unknown {
 const isJsonRecord = Schema.is(Schema.Record(Schema.String, Schema.Json));
 
 function sanitizeAntigravityToolOutput(output: unknown): unknown {
-  if (
-    typeof output === "string" &&
-    output.length > TOOL_TEXT_LIMIT &&
-    output.length <= MAX_PLUGIN_RESULT_BYTES &&
-    Buffer.byteLength(output) <= MAX_PLUGIN_RESULT_BYTES
-  ) {
-    const parsed = Option.getOrUndefined(decodeSerializedToolOutput(output));
-    if (compactDynamicToolOutput(parsed)?.isError === true) {
-      // A plain truncated tail loses the failure flag and permits cached success recovery.
-      return { isError: true, content: [{ type: "text", text: boundText(output) }] };
-    }
-  }
-  return sanitizeAntigravityToolPayload(output);
+  // Partial notifications lack tool identity. Use the bounded plugin allowance only for
+  // the failure bit, before sanitization can erase it and permit cached success recovery.
+  const failed = compactDynamicToolOutput(output, "t3-code.t3_plugin_invoke")?.isError === true;
+  const retained = sanitizeAntigravityToolPayload(output);
+  return failed ? { isError: true, output: retained } : retained;
 }
 
 export function normalizeAntigravitySessionUpdate(

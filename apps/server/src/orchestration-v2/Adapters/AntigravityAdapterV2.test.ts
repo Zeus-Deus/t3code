@@ -631,13 +631,36 @@ describe("AntigravityAdapterV2 html_render pages", () => {
                     { ...pluginRequest, operationId: "proposal-unrelated" },
                     pluginCard,
                   );
-                  for (const [toolCallId, operationId] of [
-                    ["card-published", "proposal-1"],
-                    ["card-unpublished", "proposal-2"],
-                    ["card-failed", "proposal-3"],
-                    ["card-error-small", "proposal-4"],
-                    ["card-error-large", "proposal-5"],
-                    ["card-error-previous", "proposal-6"],
+                  const failureText = (size: number) =>
+                    JSON.stringify({ isError: true, data: "x".repeat(size) });
+                  const failureEnvelope = (size: number) => ({
+                    content: [{ type: "text", text: failureText(size) }],
+                  });
+                  for (const [toolCallId, operationId, rawOutput] of [
+                    ["card-published", "proposal-1", "Summary of card-published"],
+                    ["card-unpublished", "proposal-2", "Summary of card-unpublished"],
+                    ["card-failed", "proposal-3", "Summary of card-failed"],
+                    ["card-error-small", "proposal-4", failureText(100)],
+                    ["card-error-large", "proposal-5", failureText(20_000)],
+                    ["card-error-previous", "proposal-6", failureText(20_000)],
+                    ["card-envelope-object-small", "proposal-7", failureEnvelope(100)],
+                    ["card-envelope-object-large", "proposal-8", failureEnvelope(9_000)],
+                    [
+                      "card-envelope-serialized-small",
+                      "proposal-9",
+                      JSON.stringify(failureEnvelope(100)),
+                    ],
+                    [
+                      "card-envelope-serialized-large",
+                      "proposal-10",
+                      JSON.stringify(failureEnvelope(20_000)),
+                    ],
+                    ["card-envelope-object-previous", "proposal-11", failureEnvelope(9_000)],
+                    [
+                      "card-envelope-serialized-previous",
+                      "proposal-12",
+                      JSON.stringify(failureEnvelope(20_000)),
+                    ],
                   ] as const) {
                     const input = { ...pluginRequest, operationId };
                     yield* send({
@@ -651,7 +674,7 @@ describe("AntigravityAdapterV2 html_render pages", () => {
                     if (toolCallId !== "card-unpublished") {
                       yield* mcpSessions.recordPluginCard(cardSession, input, pluginCard);
                     }
-                    if (toolCallId === "card-error-previous") {
+                    if (toolCallId.endsWith("-previous")) {
                       yield* send({
                         sessionUpdate: "tool_call_update",
                         toolCallId,
@@ -664,12 +687,7 @@ describe("AntigravityAdapterV2 html_render pages", () => {
                       sessionUpdate: "tool_call_update",
                       toolCallId,
                       status: toolCallId === "card-failed" ? "failed" : "completed",
-                      rawOutput: toolCallId.startsWith("card-error-")
-                        ? JSON.stringify({
-                            isError: true,
-                            data: "x".repeat(toolCallId === "card-error-small" ? 100 : 20_000),
-                          })
-                        : `Summary of ${toolCallId}`,
+                      rawOutput,
                     });
                   }
                   yield* send({
@@ -826,7 +844,17 @@ describe("AntigravityAdapterV2 html_render pages", () => {
         ),
         [pluginCard, pluginCard],
       );
-      for (const nativeId of ["card-error-small", "card-error-large", "card-error-previous"]) {
+      for (const nativeId of [
+        "card-error-small",
+        "card-error-large",
+        "card-error-previous",
+        "card-envelope-object-small",
+        "card-envelope-object-large",
+        "card-envelope-serialized-small",
+        "card-envelope-serialized-large",
+        "card-envelope-object-previous",
+        "card-envelope-serialized-previous",
+      ]) {
         const matching = events.flatMap((event) =>
           event.type === "turn_item.updated" &&
           event.turnItem.type === "dynamic_tool" &&
@@ -837,7 +865,7 @@ describe("AntigravityAdapterV2 html_render pages", () => {
         );
         assert.deepEqual(
           matching,
-          nativeId === "card-error-previous" ? [pluginCard, undefined] : [undefined],
+          nativeId.endsWith("-previous") ? [pluginCard, undefined] : [undefined],
           nativeId,
         );
         assert.strictEqual(
@@ -852,6 +880,12 @@ describe("AntigravityAdapterV2 html_render pages", () => {
         "proposal-4",
         "proposal-5",
         "proposal-6",
+        "proposal-7",
+        "proposal-8",
+        "proposal-9",
+        "proposal-10",
+        "proposal-11",
+        "proposal-12",
       ]) {
         assert.strictEqual(
           yield* mcpSessions.takePluginCard(threadId, { ...pluginRequest, operationId }),

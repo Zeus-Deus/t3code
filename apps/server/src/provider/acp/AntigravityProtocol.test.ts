@@ -262,6 +262,82 @@ describe("Antigravity permissions and questions", () => {
 });
 
 describe("Antigravity tool results", () => {
+  it.each([
+    { isError: true },
+    { is_error: true },
+    { error: { message: "Failed" } },
+    { _tag: "OrchestratorMcpFailure" },
+  ])("preserves failure in bounded MCP carriers before sanitizing: %j", (failure) => {
+    const text = JSON.stringify({ ...failure, data: "x".repeat(20_000) });
+    const content = [{ type: "text", text }];
+    for (const rawOutput of [
+      { content },
+      content,
+      { structuredContent: text },
+      [{ text: { type: "text", text } }],
+      JSON.stringify({ content }),
+      JSON.stringify(content),
+      JSON.stringify({ structuredContent: text }),
+    ]) {
+      const snapshot = JSON.stringify(rawOutput);
+      expect(compactDynamicToolOutput(rawOutput, "t3-code.t3_plugin_invoke")?.isError).toBe(true);
+      const notification = {
+        ...commandCompleted,
+        update: { ...commandCompleted.update, rawOutput },
+      };
+      const normalized = normalizeAntigravitySessionUpdate(notification);
+      expect(isSessionNotification(normalized)).toBe(true);
+      const toolCall = normalizeAntigravityToolCall(parseToolUpdate(normalized).toolCall);
+      expect(compactDynamicToolOutput(toolCall.data.rawOutput)?.isError).toBe(true);
+      expect(JSON.stringify(toolCall.data.rawOutput).length).toBeLessThan(8_300);
+      expect(JSON.stringify(toolCall.data.rawOutput)).toContain("[Earlier output truncated]");
+      expect(JSON.stringify(notification.update.rawOutput)).toBe(snapshot);
+    }
+  });
+
+  it("keeps the shared failure-carrier bounds and sanitizes successful envelopes", () => {
+    const failure = { isError: true, data: "" };
+    const padding = MAX_PLUGIN_RESULT_BYTES - Buffer.byteLength(JSON.stringify(failure));
+    const text = JSON.stringify({
+      ...failure,
+      data: "漢".repeat(Math.floor(padding / 3)) + "x".repeat(padding % 3),
+    });
+    expect(Buffer.byteLength(text)).toBe(MAX_PLUGIN_RESULT_BYTES);
+    const bounded = parseToolUpdate({
+      ...commandCompleted,
+      update: { ...commandCompleted.update, rawOutput: { content: [{ type: "text", text }] } },
+    }).toolCall;
+    expect(compactDynamicToolOutput(bounded.data.rawOutput)?.isError).toBe(true);
+    expect(JSON.stringify(bounded.data.rawOutput).length).toBeLessThan(8_300);
+
+    const oversized = JSON.stringify({ ...failure, data: "漢".repeat(Math.ceil(padding / 3) + 1) });
+    const failedText = JSON.stringify({ ...failure, data: "x".repeat(20_000) });
+    for (const rawOutput of [
+      { content: [{ text: oversized }] },
+      JSON.stringify({ content: [{ text }] }),
+      Array.from({ length: 33 }, () => ({ text: failedText })),
+      { content: { content: { content: { content: { content: failedText } } } } },
+      [
+        ...Array.from({ length: 22 }, () => ({
+          text: { content: [{ text: "{}" }, { text: "{}" }] },
+        })),
+        { text: failedText },
+      ],
+      { unrelated: { content: [{ text: failedText }] } },
+      { content: [{ text: JSON.stringify({ isError: false, data: "x".repeat(20_000) }) }] },
+    ]) {
+      expect(
+        compactDynamicToolOutput(rawOutput, "t3-code.t3_plugin_invoke")?.isError,
+      ).toBeUndefined();
+      const toolCall = parseToolUpdate({
+        ...commandCompleted,
+        update: { ...commandCompleted.update, rawOutput },
+      }).toolCall;
+      expect(compactDynamicToolOutput(toolCall.data.rawOutput)?.isError).toBeUndefined();
+      expect(JSON.stringify(toolCall.data.rawOutput).length).toBeLessThan(65_000);
+    }
+  });
+
   it.each([{ isError: true }, { is_error: true }, { error: { message: "Failed" } }])(
     "preserves serialized failure before truncating tool output: %j",
     (failure) => {
