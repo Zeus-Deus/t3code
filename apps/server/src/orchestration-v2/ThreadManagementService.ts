@@ -405,6 +405,7 @@ export interface ThreadManagementServiceShape {
     Effect.Effect<OrchestrationV2ThreadShellSnapshot, Orchestrator.OrchestratorV2Error>,
     Orchestrator.OrchestratorV2Error
   >;
+  readonly getThreadMetadata: Orchestrator.OrchestratorV2["Service"]["getThreadMetadata"];
   readonly getThreadShell: Orchestrator.OrchestratorV2["Service"]["getThreadShell"];
   /** Omit `projectId` to list every project's threads. */
   readonly listProjectThreads: (input: {
@@ -1335,6 +1336,7 @@ const make = Effect.gen(function* () {
     listActiveSubagentThreadIds: orchestrator.listActiveSubagentThreadIds,
     listOlderSettledThreads: orchestrator.listOlderSettledThreads,
     readShellSnapshot: orchestrator.readShellSnapshot,
+    getThreadMetadata: orchestrator.getThreadMetadata,
     getThreadShell: orchestrator.getThreadShell,
     listProjectThreads,
     sendToThread,

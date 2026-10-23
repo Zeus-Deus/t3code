@@ -37,6 +37,7 @@ vi.mock(import("../../state/use-atom-command"), async (original) => ({
     AsyncResult.success(await state.answer(request.input))) as never,
 }));
 
+import { ThreadDetailsPluginStatuses } from "../chat/ThreadDetailsPluginStatuses";
 import { PluginThreadStatuses } from "./PluginThreadStatuses";
 
 const environmentId = EnvironmentId.make("env-1");
@@ -130,4 +131,25 @@ it("never shows the previous thread's status after switching threads", async () 
   releaseB({ data: { label: "Realm off", tone: "neutral" } });
   await expect.element(page.getByRole("button", { name: "Realm off" })).toBeVisible();
   expect(page.getByRole("button", { name: "Realm live" }).query()).toBeNull();
+});
+
+it("lists the status in the thread details card and opens its side panel from there", async () => {
+  let answer: PluginInvokeResult = live;
+  setup(async () => answer);
+  await using _screen = await render(<ThreadDetailsPluginStatuses threadRef={threadA} />);
+
+  const row = page.getByRole("button", { name: "Realm live" });
+  await expect.element(row).toBeVisible();
+  await expect
+    .element(row)
+    .toHaveAccessibleDescription("Realms: 1920x1080 desktop. Agent can use it.");
+  await userEvent.click(row);
+  expect(selectActiveRightPanelSurface(useRightPanelStore.getState().byThreadKey, threadA)).toEqual(
+    expect.objectContaining({ kind: "plugin", installationId: "inst-realms", viewId: "realm" }),
+  );
+
+  answer = { data: null };
+  window.dispatchEvent(new Event("focus"));
+  await expect.element(row).not.toBeInTheDocument();
+  expect(page.getByRole("region", { name: "Plugin status" }).query()).toBeNull();
 });

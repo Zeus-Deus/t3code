@@ -20,6 +20,7 @@ import {
   type PluginViewInput,
   type PluginViewResult,
   type PluginRunFinalizedEvent,
+  type ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
@@ -34,6 +35,7 @@ import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import * as ProcessRunner from "../processRunner.ts";
 import * as Threads from "../orchestration-v2/ThreadManagementService.ts";
+import type { OrchestratorV2Error } from "../orchestration-v2/Orchestrator.ts";
 import { PluginExecutionPolicy, assertPluginExecutionAllowed } from "./PluginExecutionPolicy.ts";
 import { preparePluginRepair } from "./PluginRepair.ts";
 import * as ApplicationEvents from "../persistence/OrchestrationEventStore.ts";
@@ -78,6 +80,7 @@ const sourceIdentity = (source: PluginSource) => {
   return `git:${url.href}`;
 };
 const MAX_PLUGIN_RESULT_IMAGE_TOTAL_BYTES = 8 * 1024 * 1024;
+const MAX_PLUGIN_LINEAGE_READS = 64;
 const imageSignatures = {
   "image/png": [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a],
   "image/jpeg": [0xff, 0xd8, 0xff],
@@ -87,11 +90,6 @@ const invalidImage = () =>
     reason: "invalid_result",
     message: "The plugin returned an image the host could not read from its data directory.",
   });
-// Only an agent's MCP credential binds it to a thread; a client session never names one.
-const callerFor = (actor: PluginActor): PluginCaller =>
-  actor.source === "agent" && actor.threadId !== undefined
-    ? { kind: "agent", threadId: actor.threadId }
-    : { kind: actor.source };
 const dataKeyFor = (record: PluginStore.StoredInstallation) =>
   record.dataKey ?? record.installation.installationId;
 const recordFor = (state: PluginStore.PluginState, id: string) =>
@@ -175,6 +173,38 @@ const make = Effect.gen(function* () {
   const receipts = yield* PluginReceipts.PluginReceipts;
   const host = yield* PluginHost.PluginHost;
   const supervisor = yield* PluginSupervisor.PluginSupervisor;
+  const subagentOf = Effect.fn("PluginService.subagentOf")(
+    function* (
+      threadId: ThreadId,
+    ): Effect.fn.Return<Pick<PluginCaller, "subagentOf" | "lineage">, OrchestratorV2Error> {
+      const seen = new Set<ThreadId>();
+      let current = threadId;
+      for (let reads = 0; reads < MAX_PLUGIN_LINEAGE_READS; reads++) {
+        if (seen.has(current)) return { lineage: "unresolved" };
+        seen.add(current);
+        const thread = yield* threads.getThreadMetadata(current);
+        if (thread === null || thread.deletedAt !== null) return { lineage: "unresolved" };
+        if (thread.lineage.relationshipToParent !== "subagent")
+          return current === threadId ? {} : { subagentOf: current };
+        if (thread.lineage.parentThreadId === null) return { lineage: "unresolved" };
+        current = thread.lineage.parentThreadId;
+      }
+      // Incomplete or corrupt lineage must not assign ownership to an arbitrary ancestor.
+      return { lineage: "unresolved" };
+    },
+    Effect.catch(() => Effect.succeed({ lineage: "unresolved" as const })),
+  );
+  const callerFor = Effect.fn("PluginService.callerFor")(function* (
+    actor: PluginActor,
+  ): Effect.fn.Return<PluginCaller> {
+    // Only an agent's MCP credential binds it to a thread; a client session never names one.
+    if (actor.source !== "agent" || actor.threadId === undefined) return { kind: actor.source };
+    return {
+      kind: "agent",
+      threadId: actor.threadId,
+      ...(yield* subagentOf(actor.threadId)),
+    };
+  });
   const git = yield* PluginGitSource.PluginGitSource;
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -1535,16 +1565,35 @@ const make = Effect.gen(function* () {
           message: "The plugin invocation is too large.",
         });
       let callId = 0;
+      const caller = yield* callerFor(actor);
+      const targetThreadId = input.context?.threadId;
+      const targetLineage =
+        targetThreadId === undefined
+          ? {}
+          : targetThreadId === caller.threadId
+            ? {
+                ...(caller.subagentOf === undefined ? {} : { subagentOf: caller.subagentOf }),
+                ...(caller.lineage === undefined ? {} : { lineage: caller.lineage }),
+              }
+            : yield* subagentOf(targetThreadId);
       const output = yield* supervisor.invoke(
         {
           ...input,
+          ...(input.context === undefined
+            ? {}
+            : {
+                context: {
+                  ...input.context,
+                  ...targetLineage,
+                },
+              }),
           capabilities: record.installation.grants.capabilities.filter((capability) =>
             pluginRequestedCapabilities(record.installation.manifest).includes(capability),
           ),
           directory,
           entry: record.installation.manifest.entry,
           dataDirectory: data,
-          caller: callerFor(actor),
+          caller,
         },
         (method, value) => {
           if (++callId > 100)

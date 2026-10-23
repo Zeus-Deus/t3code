@@ -40,8 +40,11 @@ const subscribeVisibility = (listener: () => void) => {
 };
 const documentVisible = () => document.visibilityState === "visible";
 
-/** The open thread's plugin statuses; asked only while this document is visible. */
-function usePluginThreadStatuses(
+/**
+ * The open thread's plugin statuses; asked only while this document is visible. Mount one
+ * consumer per thread at a time: each runs its own poller.
+ */
+export function usePluginThreadStatuses(
   threadRef: ScopedThreadRef,
 ): ReadonlyArray<PluginThreadStatusValue> {
   const catalogue = usePluginCatalogue(threadRef.environmentId);
@@ -93,19 +96,34 @@ function usePluginThreadStatuses(
   return pluginThreadStatusesFor(values, target, entries);
 }
 
+export function pluginThreadStatusDescription(value: PluginThreadStatusValue) {
+  const name = value.entry.installation.manifest.name;
+  return value.status.detail === undefined ? name : `${name}: ${value.status.detail}`;
+}
+
+/** Opens the status's view, or undefined when the plugin declared none. */
+export function usePluginThreadStatusOpener(
+  threadRef: ScopedThreadRef,
+  value: PluginThreadStatusValue,
+) {
+  const openView = usePluginViewOpener();
+  const { installation, item } = value.entry;
+  const viewId = item.viewId;
+  if (viewId === undefined) return undefined;
+  return () =>
+    openView({ environmentId: threadRef.environmentId, installation, threadRef }, viewId);
+}
+
 function PluginThreadStatusChip(props: {
   readonly threadRef: ScopedThreadRef;
   readonly value: PluginThreadStatusValue;
 }) {
-  const openView = usePluginViewOpener();
-  const { installation, item } = props.value.entry;
-  const { label, tone, detail } = props.value.status;
-  const description =
-    detail === undefined ? installation.manifest.name : `${installation.manifest.name}: ${detail}`;
-  const viewId = item.viewId;
+  const { label, tone } = props.value.status;
+  const description = pluginThreadStatusDescription(props.value);
+  const open = usePluginThreadStatusOpener(props.threadRef, props.value);
   return (
     <Tooltip>
-      {viewId === undefined ? (
+      {open === undefined ? (
         <TooltipTrigger render={<Badge variant={TONE_VARIANT[tone]} />}>
           {label}
           <span className="sr-only">{`, ${description}`}</span>
@@ -117,16 +135,7 @@ function PluginThreadStatusChip(props: {
               variant={TONE_VARIANT[tone]}
               render={<button type="button" />}
               aria-description={description}
-              onClick={() =>
-                openView(
-                  {
-                    environmentId: props.threadRef.environmentId,
-                    installation,
-                    threadRef: props.threadRef,
-                  },
-                  viewId,
-                )
-              }
+              onClick={open}
             />
           }
         >
@@ -139,8 +148,9 @@ function PluginThreadStatusChip(props: {
 }
 
 /**
- * Compact plugin-provided statuses for the open thread, such as "Realm live". Nothing renders
- * until a plugin reports one, and a failing plugin stays quiet.
+ * Compact plugin-provided statuses for the open thread, such as "Realm live", for the header
+ * while the thread details card is closed. Nothing renders until a plugin reports one, and a
+ * failing plugin stays quiet.
  */
 export function PluginThreadStatuses(props: { readonly threadRef: ScopedThreadRef }) {
   const statuses = usePluginThreadStatuses(props.threadRef);

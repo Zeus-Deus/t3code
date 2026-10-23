@@ -270,6 +270,7 @@ it.effect(
   "namespaces the same semantic operation ID separately for different agent threads",
   () => {
     const principals: string[] = [];
+    const threadIds: Array<ThreadId | undefined> = [];
     return Effect.gen(function* () {
       const toolkit = yield* PluginToolkit;
       for (const id of ["agent-one", "agent-two"]) {
@@ -279,6 +280,8 @@ it.effect(
             generation: installation.generation,
             actionId: "agent-action",
             operationId: "new-review",
+            context: { threadId: ThreadId.make("thread:requested-target") },
+            input: { threadId: "thread:forged", subagentOf: "thread:forged-parent" },
           })
           .pipe(
             Stream.unwrap,
@@ -295,6 +298,7 @@ it.effect(
       }
       expect(principals).toHaveLength(2);
       expect(new Set(principals).size).toBe(2);
+      expect(threadIds).toEqual(["agent-one", "agent-two"]);
     }).pipe(
       Effect.provide(
         handlersWith(
@@ -302,6 +306,7 @@ it.effect(
             invoke: (_input, actor) =>
               Effect.sync(() => {
                 principals.push(actor.principalId);
+                threadIds.push(actor.threadId);
                 return { message: "Invoked" };
               }),
           }),

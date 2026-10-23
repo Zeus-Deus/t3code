@@ -101,9 +101,17 @@ it.live("runs the frozen v1 author artifact without rebuilding it against the cu
       directory,
       entry: manifest.entry,
       dataDirectory,
-      caller: { kind: "client" as const },
+      caller: {
+        kind: "agent" as const,
+        threadId: ThreadId.make("thread:v1"),
+        subagentOf: ThreadId.make("thread:owner"),
+      },
       capabilities: manifest.capabilities,
-      context: { threadId: ThreadId.make("thread:v1"), projectId: ProjectId.make("project:v1") },
+      context: {
+        threadId: ThreadId.make("thread:v1"),
+        projectId: ProjectId.make("project:v1"),
+        subagentOf: ThreadId.make("thread:owner"),
+      },
     };
     const result = yield* supervisor.invoke(
       { ...base, handler: "action:exercise", operationId: "exercise" },
@@ -133,6 +141,26 @@ it.live("runs the frozen v1 author artifact without rebuilding it against the cu
     expect(
       (yield* supervisor.invoke(
         { ...resumed, handler: "view:summary:read", operationId: "view" },
+        host,
+      )).data,
+    ).toEqual({ title: "Existing thread" });
+    expect(
+      (yield* supervisor.invoke(
+        {
+          ...resumed,
+          handler: "view:summary:read",
+          operationId: "unresolved-lineage",
+          caller: {
+            kind: "agent",
+            threadId: ThreadId.make("thread:v1"),
+            lineage: "unresolved",
+          },
+          context: {
+            threadId: ThreadId.make("thread:v1"),
+            projectId: ProjectId.make("project:v1"),
+            lineage: "unresolved",
+          },
+        },
         host,
       )).data,
     ).toEqual({ title: "Existing thread" });

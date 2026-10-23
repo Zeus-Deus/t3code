@@ -2,7 +2,7 @@ import * as Schema from "effect/Schema";
 import {
   MAX_PLUGIN_RESULT_IMAGES,
   PLUGIN_RESULT_IMAGE_MIME_TYPES,
-  PluginActionContext,
+  PluginInvocationContext,
   PluginCaller,
   PluginInvokeResult,
   ThreadId,
@@ -53,7 +53,7 @@ export const PluginParentMessage = Schema.Union([
     operationId: id,
     handler: id,
     input: Schema.optionalKey(Schema.Unknown),
-    context: Schema.optionalKey(PluginActionContext),
+    context: Schema.optionalKey(PluginInvocationContext),
     caller: PluginCaller,
   }),
   Schema.Struct({

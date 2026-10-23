@@ -3,7 +3,7 @@ import * as NodeChildProcess from "node:child_process";
 import {
   PLUGIN_CAPABILITIES,
   PluginError,
-  type PluginActionContext,
+  type PluginInvocationContext,
   type PluginCaller,
   type PluginInvokeResult,
 } from "@t3tools/contracts";
@@ -46,7 +46,7 @@ export interface PluginExecutionInput {
   readonly handler: string;
   readonly operationId: string;
   readonly input?: unknown;
-  readonly context?: PluginActionContext;
+  readonly context?: PluginInvocationContext;
   readonly caller: PluginCaller;
   readonly capabilities?: readonly string[];
 }

@@ -45,6 +45,12 @@ identify their source.
 
 `invocation.caller` describes the verified caller. An agent's thread identity
 comes from its credential, independently of the target in `invocation.context`.
+The host derives optional `subagentOf` from the caller's own thread or the
+context's target by following only subagent edges to the first non-subagent
+ancestor, stopping at forks; if ancestry cannot be resolved, it omits `subagentOf`
+and sets `lineage: "unresolved"` on that caller or context so ownership-sensitive
+plugins can return a retryable message before allocating to `threadId` (older v1
+hosts omit this signal).
 Use `ctx.dataDirectory` for private files that must survive worker restarts and
 package updates. Keep runtime-generated files out of the installed snapshot.
 

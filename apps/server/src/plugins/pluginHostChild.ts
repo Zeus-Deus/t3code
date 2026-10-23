@@ -160,12 +160,12 @@ export const runPluginHostChild = async (): Promise<void> => {
       return;
     }
     const controller = new AbortController();
-    const invocation: PluginInvocation = {
+    const invocation: PluginInvocation = Object.freeze({
       signal: controller.signal,
       operationId: message.operationId,
       caller: Object.freeze({ ...message.caller }),
-      ...(message.context === undefined ? {} : { context: message.context }),
-    };
+      ...(message.context === undefined ? {} : { context: Object.freeze({ ...message.context }) }),
+    });
     invocations.set(message.invocationId, controller);
     try {
       let result: Awaited<ReturnType<PluginHandler>>;

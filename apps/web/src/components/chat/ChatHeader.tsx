@@ -49,6 +49,8 @@ interface ChatHeaderProps {
   activeThreadTitle: string;
   activeThreadLinkOrigin?: string | null | undefined;
   isServerThread: boolean;
+  /** Plugin statuses move into the thread details card while it is open. */
+  showPluginStatuses: boolean;
   activeProject: EnvironmentProject | null;
   parentThreadLink: { threadId: ThreadId; title: string } | null;
   onOpenThread: (threadId: ThreadId) => void;
@@ -75,6 +77,7 @@ export const ChatHeader = memo(function ChatHeader({
   activeThreadTitle,
   activeThreadLinkOrigin,
   isServerThread,
+  showPluginStatuses,
   activeProject,
   parentThreadLink,
   onOpenThread,
@@ -425,7 +428,9 @@ export const ChatHeader = memo(function ChatHeader({
         </WorkspaceBreadcrumbItem>
       </WorkspaceBreadcrumb>
       {isServerThread ? <GuestShareIndicator threadRef={activeThreadRef} /> : null}
-      {isServerThread ? <PluginThreadStatuses threadRef={activeThreadRef} /> : null}
+      {isServerThread && showPluginStatuses ? (
+        <PluginThreadStatuses threadRef={activeThreadRef} />
+      ) : null}
     </div>
   );
 });

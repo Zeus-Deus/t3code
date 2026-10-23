@@ -273,13 +273,31 @@ export const PluginActionContext = Schema.Struct({
 });
 export type PluginActionContext = typeof PluginActionContext.Type;
 /**
+ * Handler context enriched by the host; lineage describes the target, never caller identity.
+ * `lineage: "unresolved"` means a read failed or ancestry is missing, deleted, cyclic or over the
+ * depth bound; `subagentOf` is then omitted. Retry before choosing an owner from `threadId`.
+ * This optional v1 addition is absent on older hosts, so omission alone is not proof of a root.
+ */
+export const PluginInvocationContext = Schema.Struct({
+  ...PluginActionContext.fields,
+  subagentOf: Schema.optionalKey(ThreadId),
+  lineage: Schema.optionalKey(Schema.Literal("unresolved")),
+});
+export type PluginInvocationContext = typeof PluginInvocationContext.Type;
+/**
  * Who started an invocation, as established by the host. `threadId` is present only when the host
  * verified the caller acts for that T3 thread (an agent's own thread); it is never taken from
  * invocation input or target context.
+ * `subagentOf` is the first non-subagent ancestor, following only subagent edges; forks stop it.
+ * `lineage: "unresolved"` means a read failed or ancestry is missing, deleted, cyclic or over the
+ * depth bound; `subagentOf` is then omitted. Retry before choosing an owner from `threadId`.
+ * This optional v1 addition is absent on older hosts, so omission alone is not proof of a root.
  */
 export const PluginCaller = Schema.Struct({
   kind: Schema.Literals(["client", "agent", "background"]),
   threadId: Schema.optionalKey(ThreadId),
+  subagentOf: Schema.optionalKey(ThreadId),
+  lineage: Schema.optionalKey(Schema.Literal("unresolved")),
 });
 export type PluginCaller = typeof PluginCaller.Type;
 export const PLUGIN_RESULT_IMAGE_MIME_TYPES = ["image/png", "image/jpeg"] as const;

@@ -76,6 +76,16 @@ export interface PluginActionContext {
   readonly messageId?: string;
   readonly selection?: string;
 }
+export interface PluginInvocationContext extends PluginActionContext {
+  /** Host-derived first non-subagent ancestor of the target; forks stop the chain. Not identity. */
+  readonly subagentOf?: string;
+  /**
+   * A read failed or ancestry is missing, deleted, cyclic or over the depth bound; `subagentOf`
+   * is omitted. Retry before choosing an owner from `threadId`. Optional in v1; older hosts omit
+   * it, so absence alone does not prove a root.
+   */
+  readonly lineage?: "unresolved";
+}
 export type PluginClientIntent =
   | { readonly type: "composer.insert"; readonly text: string; readonly quote?: boolean }
   | { readonly type: "preview.open"; readonly url: string }
@@ -106,12 +116,20 @@ export interface PluginInvokeResult {
 export interface PluginCaller {
   readonly kind: "client" | "agent" | "background";
   readonly threadId?: string;
+  /** Host-derived first non-subagent ancestor of this agent's thread; forks stop the chain. */
+  readonly subagentOf?: string;
+  /**
+   * A read failed or ancestry is missing, deleted, cyclic or over the depth bound; `subagentOf`
+   * is omitted. Retry before choosing an owner from `threadId`. Optional in v1; older hosts omit
+   * it, so absence alone does not prove a root.
+   */
+  readonly lineage?: "unresolved";
 }
 export interface PluginInvocation {
   readonly signal: AbortSignal;
   readonly operationId: string;
   readonly caller: PluginCaller;
-  readonly context?: PluginActionContext;
+  readonly context?: PluginInvocationContext;
 }
 /**
  * What a `status:<id>` handler returns as `data`, or `null` to show nothing. Clients ask while

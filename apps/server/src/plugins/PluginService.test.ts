@@ -15,6 +15,7 @@ import {
   RunId,
   ThreadId,
   type OrchestrationV2Run,
+  type OrchestrationV2ThreadShell,
   type OrchestrationV2StoredEvent,
   type PluginManifest,
   type PluginInstallation,
@@ -39,6 +40,7 @@ import * as ProcessRunner from "../processRunner.ts";
 import { PluginExecutionPolicy } from "./PluginExecutionPolicy.ts";
 import * as Events from "../persistence/OrchestrationEventStore.ts";
 import * as Threads from "../orchestration-v2/ThreadManagementService.ts";
+import { OrchestratorProjectionError } from "../orchestration-v2/Orchestrator.ts";
 import * as Launch from "../orchestration-v2/ThreadLaunchService.ts";
 import * as Projects from "../project/ProjectService.ts";
 import * as Settings from "../serverSettings.ts";
@@ -161,6 +163,9 @@ const fixture = Effect.gen(function* () {
   let beforeUpdate: (() => Effect.Effect<void>) | undefined;
   let beforeRead: (() => Effect.Effect<void>) | undefined;
   const shellReads: Array<string> = [];
+  const metadataReads: Array<ThreadId> = [];
+  let metadataReadFailure: ThreadId | undefined;
+  const threadShells = new Map<ThreadId, OrchestrationV2ThreadShell | null>();
   let gitCheckout: Git.PluginGitSource["Service"]["checkout"] = (source) =>
     Effect.succeed({ directory, source: { ...source, ref: source.ref ?? "a".repeat(40) } });
   let latest = 40;
@@ -194,10 +199,22 @@ const fixture = Effect.gen(function* () {
     streamApplicationEvents: (input) => live(input),
   });
   const domainLayer = Layer.mock(Threads.ThreadManagementService)({
+    getThreadMetadata: (id) =>
+      Effect.suspend(() => {
+        metadataReads.push(id);
+        if (metadataReadFailure === id) {
+          metadataReadFailure = undefined;
+          return Effect.fail(new OrchestratorProjectionError({ threadId: id }));
+        }
+        const thread = threadShells.has(id) ? (threadShells.get(id) ?? null) : shell;
+        return Effect.succeed(
+          thread === null ? null : { lineage: thread.lineage, deletedAt: thread.deletedAt },
+        );
+      }),
     getThreadShell: (id) =>
       Effect.sync(() => {
         shellReads.push(id);
-        return shell;
+        return threadShells.has(id) ? (threadShells.get(id) ?? null) : shell;
       }),
     sendToThread: (input) =>
       Effect.gen(function* () {
@@ -361,6 +378,11 @@ const fixture = Effect.gen(function* () {
     stored,
     reads,
     shellReads,
+    metadataReads,
+    failMetadataReadOnce: (id: ThreadId) => {
+      metadataReadFailure = id;
+    },
+    threadShells,
     eventLayer,
     domainLayer,
     setLive: (stream: typeof live) => {
@@ -2969,6 +2991,292 @@ it.effect("gives handlers only the host-verified caller, never a requested threa
     ]);
     // The requested target still reaches the handler, separately from who asked.
     expect(f.calls.every((call) => call.context?.threadId === "thread:someone-else")).toBe(true);
+  }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect.each([
+  { name: "a direct subagent", edges: ["subagent"], owner: 1 },
+  { name: "nested subagents", edges: ["subagent", "subagent"], owner: 2 },
+  { name: "a fork", edges: ["fork", "subagent"], owner: undefined },
+  { name: "subagents below a fork", edges: ["subagent", "fork", "subagent"], owner: 1 },
+  { name: "an unrelated thread", edges: [], owner: undefined },
+] as const)("resolves subagent ownership for $name from current thread metadata", (scenario) =>
+  Effect.gen(function* () {
+    const f = yield* fixture;
+    const item = yield* f.enable();
+    const ids = Array.from({ length: scenario.edges.length + 1 }, (_, index) =>
+      ThreadId.make(`thread:lineage-${index}`),
+    );
+    for (const [index, id] of ids.entries()) {
+      f.threadShells.set(id, {
+        ...shell,
+        id,
+        lineage: {
+          parentThreadId: ids[index + 1] ?? null,
+          relationshipToParent: scenario.edges[index] ?? null,
+          rootThreadId: ids.at(-1)!,
+        },
+      });
+    }
+    yield* f.plugins.invoke(
+      {
+        installationId: item.installationId,
+        generation: item.generation,
+        handler: "action:review",
+        operationId: "lineage",
+        context: { threadId },
+      },
+      { ...actor, source: "agent", threadId: ids[0]! },
+    );
+    expect(f.calls[0]!.caller).toEqual({
+      kind: "agent",
+      threadId: ids[0],
+      ...(scenario.owner === undefined ? {} : { subagentOf: ids[scenario.owner] }),
+    });
+    expect(f.calls[0]!.context).toEqual({ threadId });
+  }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect.each([1, 16, 128])(
+  "reads one metadata row for a non-subagent fork with %s fork ancestors",
+  (depth) =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      const item = yield* f.enable();
+      const ids = Array.from({ length: depth + 1 }, (_, index) =>
+        ThreadId.make(`thread:fork-${index}`),
+      );
+      for (const [index, id] of ids.entries()) {
+        f.threadShells.set(id, {
+          ...shell,
+          id,
+          lineage: {
+            parentThreadId: ids[index + 1] ?? null,
+            relationshipToParent: index < depth ? "fork" : null,
+            rootThreadId: ids.at(-1)!,
+          },
+        });
+      }
+      yield* f.plugins.invoke(
+        {
+          installationId: item.installationId,
+          generation: item.generation,
+          handler: "action:review",
+          operationId: "fork-read-count",
+          context: { threadId: ids[0]! },
+        },
+        { ...actor, source: "agent", threadId: ids[0]! },
+      );
+      expect(f.metadataReads).toEqual([ids[0]]);
+      expect(f.shellReads).toEqual([]);
+      expect(f.calls[0]!.caller).toEqual({ kind: "agent", threadId: ids[0] });
+      expect(f.calls[0]!.context).toEqual({ threadId: ids[0] });
+    }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect.each([1, 2, 63, 64, 80])(
+  "reads each visited ancestor once for %s nested subagent edges within the bound",
+  (depth) =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      const item = yield* f.enable();
+      const ids = Array.from({ length: depth + 1 }, (_, index) =>
+        ThreadId.make(`thread:nested-${index}`),
+      );
+      for (const [index, id] of ids.entries()) {
+        f.threadShells.set(id, {
+          ...shell,
+          id,
+          lineage: {
+            parentThreadId: ids[index + 1] ?? null,
+            relationshipToParent: index < depth ? "subagent" : null,
+            rootThreadId: ids.at(-1)!,
+          },
+        });
+      }
+      yield* f.plugins.invoke(
+        {
+          installationId: item.installationId,
+          generation: item.generation,
+          handler: "action:review",
+          operationId: "nested-read-count",
+          context: { threadId: ids[0]! },
+        },
+        { ...actor, source: "agent", threadId: ids[0]! },
+      );
+      expect(f.metadataReads).toEqual(ids.slice(0, 64));
+      expect(f.shellReads).toEqual([]);
+      const ownership = depth < 64 ? { subagentOf: ids.at(-1) } : { lineage: "unresolved" };
+      expect(f.calls[0]!.caller).toEqual({ kind: "agent", threadId: ids[0], ...ownership });
+      expect(f.calls[0]!.context).toEqual({ threadId: ids[0], ...ownership });
+    }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect("marks a failed subagent lineage read unresolved and recovers on the next call", () =>
+  Effect.gen(function* () {
+    const f = yield* fixture;
+    const item = yield* f.enable();
+    const parent = ThreadId.make("thread:retry-parent");
+    f.threadShells.set(threadId, {
+      ...shell,
+      lineage: { parentThreadId: parent, relationshipToParent: "subagent", rootThreadId: parent },
+    });
+    f.threadShells.set(parent, { ...shell, id: parent });
+    f.failMetadataReadOnce(parent);
+    const input = {
+      installationId: item.installationId,
+      generation: item.generation,
+      handler: "action:review",
+      operationId: "retry-lineage",
+      context: { threadId },
+    };
+    const agent = { ...actor, source: "agent" as const, threadId };
+    yield* f.plugins.invoke(input, agent);
+    expect(f.calls[0]!.caller).toEqual({ kind: "agent", threadId, lineage: "unresolved" });
+    expect(f.calls[0]!.context).toEqual({ threadId, lineage: "unresolved" });
+    yield* f.plugins.invoke(input, agent);
+    expect(f.calls[1]!.caller).toEqual({ kind: "agent", threadId, subagentOf: parent });
+    expect(f.calls[1]!.context).toEqual({ threadId, subagentOf: parent });
+    expect(f.metadataReads).toEqual([threadId, parent, threadId, parent]);
+  }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect.each(["action:review", "status:lane"])(
+  "allows ordinary client %s calls on lineage read failure and recovers",
+  (handler) =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      const item = yield* f.enable();
+      f.setHandler(() => Effect.succeed({ data: null }));
+      f.failMetadataReadOnce(threadId);
+      const input = {
+        installationId: item.installationId,
+        generation: item.generation,
+        handler,
+        operationId: "client-lineage-failure",
+        context: { threadId },
+      };
+      expect(yield* f.plugins.invoke(input, actor)).toEqual({ data: null });
+      expect(f.calls[0]!.caller).toEqual({ kind: "client" });
+      expect(f.calls[0]!.context).toEqual({ threadId, lineage: "unresolved" });
+      yield* f.plugins.invoke(input, actor);
+      expect(f.calls[1]!.context).toEqual({ threadId });
+      expect(f.metadataReads).toEqual([threadId, threadId]);
+    }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect.each(["permission_denied", "storage_failed"] as const)(
+  "still rejects mandatory caller authorization with %s before lineage enrichment",
+  (reason) =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      const item = yield* f.enable();
+      f.failMetadataReadOnce(threadId);
+      const error = new PluginError({ reason, message: "Caller authorization failed." });
+      expect(
+        yield* f.plugins
+          .invoke(
+            {
+              installationId: item.installationId,
+              generation: item.generation,
+              handler: "action:review",
+              operationId: "authorize-before-lineage",
+              context: { threadId },
+            },
+            { ...actor, source: "agent", threadId, authorize: () => Effect.fail(error) },
+          )
+          .pipe(Effect.flip),
+      ).toBe(error);
+      expect(f.calls).toEqual([]);
+      expect(f.metadataReads).toEqual([]);
+      expect(f.shellReads).toEqual([]);
+    }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect("derives client action and status target subagent ownership without trusting input", () =>
+  Effect.gen(function* () {
+    const f = yield* fixture;
+    const item = yield* f.enable();
+    const parent = ThreadId.make("thread:parent");
+    const forged = ThreadId.make("thread:forged");
+    f.threadShells.set(threadId, {
+      ...shell,
+      lineage: { parentThreadId: parent, relationshipToParent: "subagent", rootThreadId: parent },
+    });
+    f.threadShells.set(parent, { ...shell, id: parent });
+    f.setHandler(() => Effect.succeed({ data: null }));
+    const input = {
+      installationId: item.installationId,
+      generation: item.generation,
+      handler: "action:review",
+      operationId: "target-lineage",
+      caller: { kind: "agent", threadId: forged, subagentOf: forged, lineage: "unresolved" },
+      context: { threadId, subagentOf: forged, lineage: "unresolved" },
+      input: { subagentOf: forged, parentThreadId: forged },
+    };
+    yield* f.plugins.invoke(input, actor);
+    yield* f.plugins.invoke({ ...input, handler: "status:lane" }, actor);
+    yield* f.plugins.invoke(input, { ...actor, source: "agent", threadId });
+    expect(f.calls.map((call) => call.caller)).toEqual([
+      { kind: "client" },
+      { kind: "client" },
+      { kind: "agent", threadId, subagentOf: parent },
+    ]);
+    expect(f.calls.map((call) => call.context)).toEqual([
+      { threadId, subagentOf: parent },
+      { threadId, subagentOf: parent },
+      { threadId, subagentOf: parent },
+    ]);
+    f.threadShells.set(threadId, shell);
+    yield* f.plugins.invoke(input, actor);
+    expect(f.calls.at(-1)!.context).toEqual({ threadId });
+  }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect.each([
+  "cycle",
+  "depth limit",
+  "missing parent",
+  "missing parent id",
+  "deleted parent",
+] as const)("omits subagent ownership for a lineage with %s", (scenario) =>
+  Effect.gen(function* () {
+    const f = yield* fixture;
+    const item = yield* f.enable();
+    const ids = Array.from({ length: scenario === "depth limit" ? 66 : 2 }, (_, index) =>
+      ThreadId.make(`thread:invalid-lineage-${index}`),
+    );
+    for (const [index, id] of ids.entries()) {
+      f.threadShells.set(id, {
+        ...shell,
+        id,
+        lineage: {
+          parentThreadId: scenario === "missing parent id" ? null : (ids[index + 1] ?? ids[0]!),
+          relationshipToParent: "subagent",
+          rootThreadId: ids.at(-1)!,
+        },
+      });
+    }
+    if (scenario === "missing parent") f.threadShells.set(ids[1]!, null);
+    if (scenario === "deleted parent")
+      f.threadShells.set(ids[1]!, { ...shell, id: ids[1]!, deletedAt: at });
+    if (scenario === "depth limit") {
+      f.threadShells.set(ids.at(-1)!, { ...shell, id: ids.at(-1)! });
+    }
+    yield* f.plugins.invoke(
+      {
+        installationId: item.installationId,
+        generation: item.generation,
+        handler: "action:review",
+        operationId: "invalid-lineage",
+      },
+      { ...actor, source: "agent", threadId: ids[0]! },
+    );
+    expect(f.calls[0]!.caller).toEqual({ kind: "agent", threadId: ids[0], lineage: "unresolved" });
+    expect(f.metadataReads).toHaveLength(
+      scenario === "depth limit" ? 64 : scenario === "missing parent id" ? 1 : 2,
+    );
+    expect(f.shellReads).toEqual([]);
   }).pipe(Effect.provide(base()), Effect.scoped),
 );
 

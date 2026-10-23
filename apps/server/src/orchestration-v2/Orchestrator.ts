@@ -401,6 +401,12 @@ export interface OrchestratorV2Shape {
     Effect.Effect<OrchestrationV2ThreadShellSnapshot, OrchestratorV2Error>,
     OrchestratorV2Error
   >;
+  readonly getThreadMetadata: (
+    threadId: ThreadId,
+  ) => Effect.Effect<
+    Pick<OrchestrationV2AppThread, "lineage" | "deletedAt"> | null,
+    OrchestratorV2Error
+  >;
   readonly getThreadShell: (
     threadId: ThreadId,
   ) => Effect.Effect<OrchestrationV2ThreadShell | null, OrchestratorV2Error>;
@@ -13359,6 +13365,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           Effect.map(Effect.mapError(shellProjectionError)),
         );
     }),
+    getThreadMetadata: Effect.fn("Orchestrator.getThreadMetadata")((threadId) =>
+      projectionStore.getThread(threadId).pipe(
+        Effect.map(({ lineage, deletedAt }) => ({ lineage, deletedAt })),
+        Effect.catchTags({ ProjectionStoreThreadNotFoundError: () => Effect.succeed(null) }),
+        Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause })),
+      ),
+    ),
     getThreadShell: Effect.fn("OrchestratorV2.getThreadShell")(function (threadId) {
       return projectionStore
         .getThreadShell(threadId)

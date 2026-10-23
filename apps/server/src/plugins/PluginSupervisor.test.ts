@@ -147,8 +147,12 @@ const fixture = Effect.gen(function* () {
       ctx.handle("action:late-release", async () => { release(); return {data: await late}; });
       ctx.handle("action:identity", (_input, invocation) => {
         try { invocation.caller.threadId = "forged"; } catch {}
+        try { invocation.caller.subagentOf = "forged"; } catch {}
+        try { invocation.context.subagentOf = "forged"; } catch {}
+        try { invocation.caller.lineage = "forged"; } catch {}
+        try { invocation.context.lineage = "forged"; } catch {}
         return {
-          data: { caller: invocation.caller, dataDirectory: ctx.dataDirectory },
+          data: { caller: invocation.caller, context: invocation.context, dataDirectory: ctx.dataDirectory },
           images: [{ path: "assets/screen.png", mimeType: "image/png" }],
         };
       });
@@ -247,16 +251,55 @@ describe("PluginSupervisor real child", () => {
           {
             ...input,
             handler: "action:identity",
-            caller: { kind: "agent", threadId: ThreadId.make("thread:verified") },
+            caller: {
+              kind: "agent",
+              threadId: ThreadId.make("thread:verified"),
+              subagentOf: ThreadId.make("thread:owner"),
+            },
+            context: {
+              threadId: ThreadId.make("thread:target"),
+              subagentOf: ThreadId.make("thread:target-owner"),
+            },
           },
           () => Effect.void,
         );
         expect(result.data).toEqual({
-          caller: { kind: "agent", threadId: "thread:verified" },
+          caller: { kind: "agent", threadId: "thread:verified", subagentOf: "thread:owner" },
+          context: { threadId: "thread:target", subagentOf: "thread:target-owner" },
           dataDirectory: input.dataDirectory,
         });
         expect(result.images).toBeUndefined();
         expect(result.workerImages).toEqual([{ path: "assets/screen.png", mimeType: "image/png" }]);
+      }),
+    ),
+  );
+
+  it.effect("preserves unresolved lineage across IPC and freezes it in the child", () =>
+    provide(
+      Effect.gen(function* () {
+        const supervisor = yield* PluginSupervisor.PluginSupervisor;
+        const input = yield* fixture;
+        const result = yield* supervisor.invoke(
+          {
+            ...input,
+            handler: "action:identity",
+            caller: {
+              kind: "agent",
+              threadId: ThreadId.make("thread:verified"),
+              lineage: "unresolved",
+            },
+            context: {
+              threadId: ThreadId.make("thread:target"),
+              lineage: "unresolved",
+            },
+          },
+          () => Effect.void,
+        );
+        expect(result.data).toEqual({
+          caller: { kind: "agent", threadId: "thread:verified", lineage: "unresolved" },
+          context: { threadId: "thread:target", lineage: "unresolved" },
+          dataDirectory: input.dataDirectory,
+        });
       }),
     ),
   );

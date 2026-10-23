@@ -97,7 +97,7 @@ const t3_plugin_invoke = McpToolAccess.writes((input: Tool.Parameters<typeof Plu
       scopes: [AuthOrchestrationReadScope, AuthOrchestrationOperateScope],
       runtimeMode: caller.limits.runtimeMode,
       interactionMode: caller.limits.interactionMode,
-      ...(caller.caller === undefined ? {} : { threadId: caller.caller.id }),
+      ...(caller.scope.thread === undefined ? {} : { threadId: caller.scope.thread.threadId }),
       authorize: Effect.fn("mcp.plugins.authorize")(
         function* () {
           if (caller.scope.thread === undefined) {
