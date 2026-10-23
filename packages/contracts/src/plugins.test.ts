@@ -16,6 +16,7 @@ import {
   PluginTreeSnapshot,
   PluginThreadCreateInput,
   PluginCardReference,
+  PluginThreadMetadata,
   pluginCompatibility,
   pluginRequestedCapabilities,
 } from "./plugins.ts";
@@ -54,11 +55,15 @@ const encodeCatalogue = Schema.encodeSync(catalogueCodec);
 const decodeManifest = Schema.decodeUnknownSync(PluginManifest);
 const resultCodec = Schema.toCodecJson(PluginInvokeResult);
 const decodeResult = Schema.decodeUnknownSync(resultCodec);
+const decodeThreadCreate = Schema.decodeUnknownSync(PluginThreadCreateInput);
+const decodeTreeSnapshot = Schema.decodeUnknownSync(PluginTreeSnapshot);
+const decodeCardReference = Schema.decodeUnknownSync(PluginCardReference);
+const decodeThreadMetadata = Schema.decodeUnknownSync(PluginThreadMetadata);
 const decodePluginError = Schema.decodeUnknownSync(Schema.toCodecJson(PluginError));
 
 it("decodes additive workflow choices, bounded native trees and historical card references", () => {
   expect(
-    Schema.decodeUnknownSync(PluginThreadCreateInput)({
+    decodeThreadCreate({
       projectId: "p",
       text: "start",
       idempotencyKey: "one",
@@ -73,7 +78,7 @@ it("decodes additive workflow choices, bounded native trees and historical card 
     }),
   ).toMatchObject({ workspaceStrategy: { type: "worktree" }, modelSelection: { model: "custom" } });
   expect(
-    Schema.decodeUnknownSync(PluginTreeSnapshot)({
+    decodeTreeSnapshot({
       nodes: [
         { id: "project", kind: "project", projectId: "p" },
         { id: "thread", parentId: "project", kind: "thread", threadId: "t" },
@@ -81,7 +86,7 @@ it("decodes additive workflow choices, bounded native trees and historical card 
     }).nodes,
   ).toHaveLength(2);
   expect(
-    Schema.decodeUnknownSync(PluginCardReference)({
+    decodeCardReference({
       installationId: "test.plugin",
       generation: "one",
       dataOwner: "owner",
@@ -90,9 +95,7 @@ it("decodes additive workflow choices, bounded native trees and historical card 
       data: { planId: "one" },
     }).data,
   ).toEqual({ planId: "one" });
-  expect(() =>
-    Schema.decodeUnknownSync(PluginCardReference)({ viewId: "card", summary: "unowned" }),
-  ).toThrow();
+  expect(() => decodeCardReference({ viewId: "card", summary: "unowned" })).toThrow();
 });
 
 describe("plugin wire compatibility", () => {
@@ -326,4 +329,57 @@ it("protects contribution reads with read authority and keeps unknown required f
     available: false,
     missingCapabilities: ["ui.future-required"],
   });
+});
+
+it("keeps query feature requirements outside the frozen v1 catalogue and accepts optional grouping metadata", () => {
+  const frozenCapabilities = new Set([
+    "storage",
+    "settings",
+    "threads.read",
+    "threads.send",
+    "threads.create",
+    "events.run-finalized",
+    "ui",
+    "ui.sidebar-views",
+  ]);
+  const queryOnly = decodeManifest({
+    ...manifest,
+    capabilities: ["threads.read", "workflow.query"],
+    actions: [],
+    views: [],
+  });
+  expect(
+    queryOnly.capabilities.filter((capability) => !frozenCapabilities.has(capability)),
+  ).toEqual(["workflow.query"]);
+  expect(pluginCompatibility(queryOnly).available).toBe(true);
+  const metadata = {
+    id: "t",
+    projectId: "p",
+    title: "Task",
+    modelSelection: { instanceId: "codex", model: "test" },
+    runtimeMode: "auto",
+    interactionMode: "default",
+    createdAt: "2026-10-22T00:00:00.000Z",
+    updatedAt: "2026-10-22T00:00:00.000Z",
+    archivedAt: null,
+    settledAt: null,
+    settledOverride: null,
+    snoozedUntil: null,
+    snoozedAt: null,
+    pinnedAt: null,
+    branch: null,
+    worktreePath: null,
+    lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: "t" },
+  };
+  const decode = decodeThreadMetadata;
+  expect(decode(metadata)).not.toHaveProperty("creationSource");
+  expect(
+    decode({
+      ...metadata,
+      creationSource: "future-source",
+      isRunning: true,
+      needsAttention: false,
+    }),
+  ).toMatchObject({ creationSource: "future-source", isRunning: true, needsAttention: false });
+  expect(() => decode({ ...metadata, creationSource: "x".repeat(129) })).toThrow();
 });

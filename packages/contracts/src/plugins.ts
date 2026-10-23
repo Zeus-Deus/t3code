@@ -37,6 +37,7 @@ export const PLUGIN_CAPABILITIES = [
   "ui.conversation-cards",
   "ui.changes",
   "worktrees.create",
+  "workflow.query",
 ] as const;
 export const PluginCapability = Schema.Literals(PLUGIN_CAPABILITIES);
 export type PluginCapability = typeof PluginCapability.Type;
@@ -210,6 +211,7 @@ export const PluginProjectMetadata = Schema.Struct({
 });
 export type PluginProjectMetadata = typeof PluginProjectMetadata.Type;
 export const PluginThreadMetadata = Schema.Struct({
+  creationSource: Schema.optionalKey(text(128)),
   isRunning: Schema.optionalKey(Schema.Boolean),
   needsAttention: Schema.optionalKey(Schema.Boolean),
   id: ThreadId,

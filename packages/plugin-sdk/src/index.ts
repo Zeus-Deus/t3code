@@ -19,7 +19,8 @@ export type PluginCapability =
   | "ui.native-trees"
   | "ui.conversation-cards"
   | "ui.changes"
-  | "worktrees.create";
+  | "worktrees.create"
+  | "workflow.query";
 export type PluginSettingValue = string | number | boolean;
 export interface PluginManifest {
   readonly id: string;
@@ -178,6 +179,8 @@ export interface PluginProjectMetadata {
   readonly updatedAt: string;
 }
 export interface PluginThreadMetadata {
+  /** Host-derived creation origin, for display grouping only. */
+  readonly creationSource?: string;
   readonly isRunning?: boolean;
   readonly needsAttention?: boolean;
   readonly id: string;
