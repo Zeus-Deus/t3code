@@ -43,6 +43,7 @@ import {
   BotIcon,
   FileSearchIcon,
   HistoryIcon,
+  HouseIcon,
   InfoIcon,
   MoreHorizontalIcon,
   PlayIcon,
@@ -70,10 +71,12 @@ import {
   usePluginIntentApplier,
 } from "../plugins/usePluginActions";
 import { usePluginEventBacklog } from "../plugins/usePluginEventBacklog";
+import { usePluginStartPage } from "../plugins/pluginStartPage";
 import { usePluginRepair } from "../plugins/usePluginRepair";
 import { Alert, AlertDescription } from "../ui/alert";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { Checkbox } from "../ui/checkbox";
 import {
   Dialog,
@@ -734,6 +737,7 @@ function PluginContributions(props: {
   const applyIntents = usePluginIntentApplier();
   const pathname = useLocation({ select: (location) => location.pathname });
   const [running, setRunning] = useState<string | null>(null);
+  const { startPage, setStartPage } = usePluginStartPage();
   if (actions.length === 0 && views.length === 0) return null;
   const target = {
     environmentId,
@@ -787,19 +791,74 @@ function PluginContributions(props: {
                   : "Side panel beside a thread"}
             </p>
           </div>
-          <Button
-            size="xs"
-            variant="ghost"
-            disabled={!viewsAllowed}
-            aria-label={`Open ${view.title}`}
-            onClick={() => applyIntents(target, [{ type: "view.open", viewId: view.id }])}
-          >
-            <SquareArrowOutUpRightIcon />
-            Open
-          </Button>
+          {view.placement === "page" ? (
+            <PluginStartPageToggle
+              viewTitle={view.title}
+              chosen={
+                startPage?.environmentId === environmentId &&
+                startPage.pluginId === installation.manifest.id &&
+                startPage.viewId === view.id
+              }
+              onChange={(chosen) =>
+                setStartPage(
+                  chosen
+                    ? { environmentId, pluginId: installation.manifest.id, viewId: view.id }
+                    : null,
+                )
+              }
+            />
+          ) : null}
+          {/* A card's view only opens from its card. */}
+          {view.placement === "conversation" ? null : (
+            <Button
+              size="xs"
+              variant="ghost"
+              disabled={!viewsAllowed}
+              aria-label={`Open ${view.title}`}
+              onClick={() => applyIntents(target, [{ type: "view.open", viewId: view.id }])}
+            >
+              <SquareArrowOutUpRightIcon />
+              Open
+            </Button>
+          )}
         </li>
       ))}
     </ul>
+  );
+}
+
+/** This device opens the page when the app starts; it falls back at once if the page can't open. */
+function PluginStartPageToggle(props: {
+  readonly viewTitle: string;
+  readonly chosen: boolean;
+  readonly onChange: (chosen: boolean) => void;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <Button
+            size="xs"
+            variant="ghost"
+            aria-pressed={props.chosen}
+            aria-label={
+              props.chosen
+                ? `Stop starting on ${props.viewTitle}`
+                : `Start on ${props.viewTitle} on this device`
+            }
+            onClick={() => props.onChange(!props.chosen)}
+          />
+        }
+      >
+        <HouseIcon />
+        {props.chosen ? "Start page" : "Start here"}
+      </TooltipTrigger>
+      <TooltipPopup side="top">
+        {props.chosen
+          ? "This device opens this page when T3 Code starts"
+          : "Open this page when T3 Code starts on this device"}
+      </TooltipPopup>
+    </Tooltip>
   );
 }
 
