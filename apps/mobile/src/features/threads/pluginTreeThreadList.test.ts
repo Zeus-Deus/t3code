@@ -85,6 +85,22 @@ describe("buildPluginTreeThreadListItems", () => {
     expect(outline(result)).toEqual(["0#Quiet (folded)", "0#Later (folded)", "0#Now", "1:b:card"]);
   });
 
+  it("names the earliest snooze end among the threads it placed", () => {
+    const nodes: PluginTreeNode[] = [
+      { id: "later", kind: "group", title: "Later", collapsedByDefault: true },
+      { id: "a", kind: "thread", threadId: ThreadId.make("a"), parentId: "later" },
+      { id: "b", kind: "thread", threadId: ThreadId.make("b"), parentId: "later" },
+    ];
+    const result = build(nodes, [
+      thread("a", { snoozedAt: NOW, snoozedUntil: "2026-10-23T15:00:00.000Z" }),
+      thread("b", { snoozedAt: NOW, snoozedUntil: "2026-10-23T13:00:00.000Z" }),
+      // The caller's own list wakes threads the tree leaves out.
+      thread("c", { snoozedAt: NOW, snoozedUntil: "2026-10-23T12:30:00.000Z" }),
+    ]);
+    expect(result.nextSnoozeWakeAt).toBe("2026-10-23T13:00:00.000Z");
+    expect(build(nodes, [thread("a"), thread("b")]).nextSnoozeWakeAt).toBeNull();
+  });
+
   it("lines up rows listed after a nested heading with the heading they continue", () => {
     const result = build(
       [

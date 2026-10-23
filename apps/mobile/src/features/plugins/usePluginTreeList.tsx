@@ -38,14 +38,16 @@ type SnapshotUpdate = {
 
 /**
  * Reads one environment's snapshot of the chosen tree while the list shows it: on mount, when the
- * plugin or a core change touches the tree, and after reconnecting. Never per row.
+ * plugin or a core change touches the tree, when a snooze ends, and after reconnecting. Never per
+ * row.
  */
 function PluginTreeSnapshotFetcher(props: {
   readonly environmentId: EnvironmentId;
   readonly choice: PluginSidebarTreeOption;
+  readonly snoozeWake: number;
   readonly onReport: (environmentId: EnvironmentId, update: SnapshotUpdate) => void;
 }) {
-  const { environmentId, choice, onReport } = props;
+  const { environmentId, choice, snoozeWake, onReport } = props;
   const catalogue = usePluginCatalogue(environmentId);
   const readTree = useAtomCommand(pluginEnvironment.readTree, { reportFailure: false });
   const latest = useRef({ readTree, onReport });
@@ -91,8 +93,8 @@ function PluginTreeSnapshotFetcher(props: {
     return () => {
       cancelled = true;
     };
-    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- A new change count reads again.
-  }, [environmentId, installationId, generation, treeId, known, revision]);
+    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- A new change count or snooze end reads again.
+  }, [environmentId, installationId, generation, treeId, known, revision, snoozeWake]);
   return null;
 }
 
@@ -100,7 +102,14 @@ function PluginTreeSnapshotFetcher(props: {
  * The thread list's plugin tree on this device: the trees offered, the chosen one, its
  * snapshots, and the person's folds. `fetchers` must be rendered while the list is shown.
  */
-export function usePluginTreeList(environmentIds: ReadonlyArray<EnvironmentId>): {
+export function usePluginTreeList(
+  environmentIds: ReadonlyArray<EnvironmentId>,
+  /**
+   * Counts snooze ends in the list that renders `fetchers`: ending one is time alone, with no
+   * event to signal the tree.
+   */
+  snoozeWake = 0,
+): {
   readonly options: ReadonlyArray<PluginSidebarTreeOption>;
   readonly selected: PluginSidebarTreeOption | null;
   readonly select: (choice: PluginSidebarTreeOption | null) => void;
@@ -174,6 +183,7 @@ export function usePluginTreeList(environmentIds: ReadonlyArray<EnvironmentId>):
               key={`${environmentId}:${selectedTree.key}`}
               environmentId={environmentId}
               choice={selectedTree}
+              snoozeWake={snoozeWake}
               onReport={(id, update) => report(selectedTree.key, id, update)}
             />
           )),

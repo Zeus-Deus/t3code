@@ -669,6 +669,7 @@ function useSidebarThreads(input: {
     for (const thread of list) sectionByThreadKey.set(threadShellKey(thread), section);
   }
   return {
+    snoozeWakeTick: snoozeWakeClock,
     ...partition,
     snoozedThreads,
     settledThreads,
@@ -1419,6 +1420,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     activeKeys,
     pinnedKeysById,
     activeKeysById,
+    snoozeWakeTick,
   } = useSidebarThreads({
     projectScopeKey,
     scopedProjectKeys,
@@ -3096,7 +3098,9 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   const newThreadInProjectShortcutLabel = shortcutLabelForCommand(keybindings, "chat.newLocal");
   return (
     <>
-      {selectedTree === null ? null : <PluginTreeSnapshotSources choice={selectedTree} />}
+      {selectedTree === null ? null : (
+        <PluginTreeSnapshotSources choice={selectedTree} snoozeWake={snoozeWakeTick} />
+      )}
       <ThreadContextDragGhost />
       <SidebarChromeHeader isElectron={isElectron} />
       <SidebarContent

@@ -12,7 +12,7 @@ import { Atom } from "effect/reactivity";
 import { page, userEvent } from "vite-plus/test/browser";
 import { describe, expect, it, vi } from "vite-plus/test";
 
-import { act, render } from "../../test/render";
+import { act, fakeTimers, render } from "../../test/render";
 import type { SidebarProjectSnapshot } from "../sidebarProjectGrouping";
 import { makeThreadFixture } from "../test-fixtures";
 import type { Thread } from "../types";
@@ -834,6 +834,33 @@ describe("Sidebar plugin tree", () => {
     await expect.poll(sectionNames).toEqual([`tree:${laptop}:g`]);
     // Each connected environment reads once.
     expect(data.read().treeReads.toSorted()).toEqual([laptop, server]);
+  });
+
+  it("asks the tree again once a listed thread's snooze ends, without polling", async () => {
+    const a = thread("a", laptop, "p1");
+    setupTree({
+      threads: [a],
+      route: a,
+      trees: new Map([
+        [laptop, [treeGroup("g", "Mine"), treeThread("n", "a", "g")]],
+        [server, []],
+      ]),
+    });
+    await using _screen = await renderSidebar();
+    await expect.poll(sectionNames).toEqual([`tree:${laptop}:g`]);
+
+    using _timers = fakeTimers({ now: Date.parse(NOW) });
+    const napping = thread("napping", laptop, "p1", {
+      snoozedAt: NOW,
+      snoozedUntil: "2026-10-23T12:01:00.000Z",
+    });
+    await act(() => data.update({ threads: [a, napping] }));
+    const reads = data.read().treeReads.length;
+
+    await act(() => vi.advanceTimersByTime(59_000));
+    expect(data.read().treeReads).toHaveLength(reads);
+    await act(() => vi.advanceTimersByTime(2_000));
+    expect(data.read().treeReads.slice(reads).toSorted()).toEqual([laptop, server]);
   });
 
   it("folds as the plugin asks until the person chooses, keeping the open thread", async () => {

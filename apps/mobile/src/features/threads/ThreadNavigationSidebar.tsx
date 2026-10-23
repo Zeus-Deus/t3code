@@ -51,7 +51,11 @@ import { useHomeListOptions } from "../home/home-list-options";
 import { buildHomeListFilterMenu } from "../home/home-list-filter-menu";
 import { buildHomeProjectScopes } from "../home/homeThreadList";
 import { usePluginTreeList } from "../plugins/usePluginTreeList";
-import { buildPluginTreeThreadListItems, withPluginTreeItems } from "./pluginTreeThreadList";
+import {
+  buildPluginTreeThreadListItems,
+  earliestSnoozeWakeAt,
+  withPluginTreeItems,
+} from "./pluginTreeThreadList";
 import { SwipeableScrollGateProvider, useSwipeableScrollGate } from "../home/thread-swipe-actions";
 import { usePendingTaskListActions } from "../home/usePendingTaskListActions";
 import { useThreadListActions } from "../home/useThreadListActions";
@@ -188,8 +192,10 @@ function ThreadNavigationSidebarPane(
   const availableEnvironmentIds = new Set(
     environments.map((environment) => environment.environmentId),
   );
+  const [snoozeWakeTick, bumpSnoozeWakeTick] = useState(0);
   const pluginTree = usePluginTreeList(
     environments.map((environment) => environment.environmentId),
+    snoozeWakeTick,
   );
   const { options, setSelectedEnvironmentId, setSelectedProjectKey } =
     useHomeListOptions(availableEnvironmentIds);

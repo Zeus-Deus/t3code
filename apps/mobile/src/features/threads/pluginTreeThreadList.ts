@@ -40,6 +40,8 @@ export function buildPluginTreeThreadListItems(input: {
 }): {
   readonly items: ReadonlyArray<ThreadListV2ListItem>;
   readonly placedKeys: ReadonlySet<string>;
+  /** The earliest snooze end among placed threads; the caller's list wakes only its own. */
+  readonly nextSnoozeWakeAt: string | null;
 } {
   const scopeByProject = new Map<string, HomeProjectScope>();
   for (const scope of input.projectScopes) {
@@ -141,7 +143,29 @@ export function buildPluginTreeThreadListItems(input: {
       ? { ...item, showTrailingDivider: !item.showTrailingDivider }
       : item,
   );
-  return { items: divided, placedKeys: layout.placedKeys };
+  let nextSnoozeWakeAt: string | null = null;
+  for (const thread of input.threads) {
+    const until = thread.snoozedUntil;
+    if (
+      until == null ||
+      !layout.placedKeys.has(threadKey(thread)) ||
+      !(input.snoozeEnvironmentIds?.has(thread.environmentId) ?? true) ||
+      !effectiveSnoozed(thread, { now: input.now })
+    ) {
+      continue;
+    }
+    if (nextSnoozeWakeAt === null || Date.parse(until) < Date.parse(nextSnoozeWakeAt)) {
+      nextSnoozeWakeAt = until;
+    }
+  }
+  return { items: divided, placedKeys: layout.placedKeys, nextSnoozeWakeAt };
+}
+
+/** Threads the tree placed are not in the list's own layout, so either may wake first. */
+export function earliestSnoozeWakeAt(list: string | null, tree: string | null): string | null {
+  if (list === null) return tree;
+  if (tree === null) return list;
+  return Date.parse(tree) < Date.parse(list) ? tree : list;
 }
 
 /**

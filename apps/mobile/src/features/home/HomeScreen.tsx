@@ -59,6 +59,7 @@ import { useQueuedThreadKeys } from "../../state/use-thread-outbox";
 import { usePluginTreeList } from "../plugins/usePluginTreeList";
 import {
   buildPluginTreeThreadListItems,
+  earliestSnoozeWakeAt,
   withPluginTreeItems,
 } from "../threads/pluginTreeThreadList";
 import {
@@ -368,8 +369,10 @@ export function HomeScreen(props: HomeScreenProps) {
     onScrollBeginDrag: handleScrollBeginDrag,
   });
 
+  const [snoozeWakeTick, bumpSnoozeWakeTick] = useState(0);
   const pluginTree = usePluginTreeList(
     props.environments.map((environment) => environment.environmentId),
+    snoozeWakeTick,
   );
   const projectScopes = buildHomeProjectScopes({
     projects: props.projects,

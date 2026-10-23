@@ -83,13 +83,15 @@ const usePluginTreeSnapshotStore = create<PluginTreeSnapshotState>()((set) => ({
 
 /**
  * Reads one environment's snapshot of the chosen tree while the tree is shown: when it mounts,
- * when the plugin or a core change touches the tree, and after reconnecting. Never per row.
+ * when the plugin or a core change touches the tree, when a snooze ends, and after reconnecting.
+ * Never per row.
  */
 function PluginTreeSnapshotSource(props: {
   readonly environmentId: EnvironmentId;
   readonly choice: PluginSidebarTreeOption;
+  readonly snoozeWake: number;
 }) {
-  const { environmentId, choice } = props;
+  const { environmentId, choice, snoozeWake } = props;
   const catalogue = usePluginCatalogue(environmentId);
   const report = usePluginTreeSnapshotStore((state) => state.report);
   const readTree = useAtomCommand(pluginEnvironment.readTree, { reportFailure: false });
@@ -139,19 +141,37 @@ function PluginTreeSnapshotSource(props: {
     return () => {
       cancelled = true;
     };
-    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- A new change count reads again.
-  }, [choice.key, environmentId, installationId, generation, treeId, known, revision, report]);
+  }, [
+    choice.key,
+    environmentId,
+    installationId,
+    generation,
+    treeId,
+    known,
+    revision,
+    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- A snooze ending reads again.
+    snoozeWake,
+    report,
+  ]);
   return null;
 }
 
 /** Mounted only while a tree is the sidebar's view, so nothing is read for a hidden tree. */
-export function PluginTreeSnapshotSources(props: { readonly choice: PluginSidebarTreeOption }) {
+export function PluginTreeSnapshotSources(props: {
+  readonly choice: PluginSidebarTreeOption;
+  /**
+   * Counts snooze ends among the listed threads. Ending a snooze is time alone, with no event to
+   * signal the tree, so the plugin is asked again where it might shelve by snooze.
+   */
+  readonly snoozeWake: number;
+}) {
   const environmentIds = useConnectedEnvironmentIds();
   return environmentIds.map((environmentId) => (
     <PluginTreeSnapshotSource
       key={`${environmentId}:${props.choice.key}`}
       environmentId={environmentId}
       choice={props.choice}
+      snoozeWake={props.snoozeWake}
     />
   ));
 }
