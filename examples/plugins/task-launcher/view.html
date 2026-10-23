@@ -1,0 +1,1337 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Task Launcher</title>
+    <style>
+      /*
+       * T3 Code applies its theme as CSS variables on <html> through the plugin bridge
+       * (window.t3). System colors keep the page readable before the first context arrives.
+       * The document keeps its natural height: as a conversation card, the host sizes the frame
+       * to it.
+       */
+      :root {
+        --bg: var(--color-background-primary, Canvas);
+        --surface: var(--color-background-secondary, Canvas);
+        --muted-bg: var(--color-background-tertiary, Canvas);
+        --fg: var(--color-text-primary, CanvasText);
+        --muted: var(--color-text-secondary, GrayText);
+        --border: var(--color-border-primary, GrayText);
+        --input: var(--color-border-secondary, GrayText);
+        --ring: var(--color-ring-primary, Highlight);
+        --danger: var(--color-text-danger, CanvasText);
+        --success: var(--color-text-success, CanvasText);
+        --warning: var(--color-text-warning, CanvasText);
+        --radius: var(--border-radius-md, 8px);
+        --font: var(--font-sans, system-ui, sans-serif);
+        --mono: var(--font-mono, ui-monospace, monospace);
+        color-scheme: light dark;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--fg);
+        font: 13px/1.45 var(--font);
+      }
+      [hidden] {
+        display: none !important;
+      }
+      main {
+        display: flex;
+        flex-direction: column;
+      }
+      header {
+        display: flex;
+        align-items: flex-start;
+        gap: 8px;
+        padding: 10px 12px 8px;
+      }
+      .heading {
+        flex: 1;
+        min-width: 0;
+      }
+      h1 {
+        margin: 0;
+        font-size: 13px;
+        font-weight: 600;
+        overflow-wrap: anywhere;
+      }
+      .meta,
+      .tally,
+      .hint,
+      .note {
+        margin: 0;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .tally {
+        font-variant-numeric: tabular-nums;
+      }
+      button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        height: 28px;
+        padding: 0 10px;
+        border: 1px solid var(--input);
+        border-radius: calc(var(--radius) - 2px);
+        background: var(--bg);
+        color: var(--fg);
+        font: inherit;
+        font-size: 12px;
+        cursor: pointer;
+        white-space: nowrap;
+        flex-shrink: 0;
+      }
+      button:hover:not(:disabled) {
+        background: var(--muted-bg);
+      }
+      button:disabled {
+        opacity: 0.5;
+        cursor: default;
+      }
+      button:focus-visible,
+      select:focus-visible,
+      input:focus-visible,
+      summary:focus-visible {
+        outline: 2px solid var(--ring);
+        outline-offset: 1px;
+      }
+      button.primary {
+        background: var(--fg);
+        border-color: var(--fg);
+        color: var(--bg);
+      }
+      button.primary:hover:not(:disabled) {
+        background: var(--fg);
+        opacity: 0.9;
+      }
+      button.ghost {
+        border-color: transparent;
+        background: transparent;
+        color: var(--muted);
+      }
+      button.ghost:hover:not(:disabled) {
+        color: var(--fg);
+      }
+      button.link {
+        height: auto;
+        padding: 0;
+        border: 0;
+        background: transparent;
+        color: var(--muted);
+        text-decoration: underline;
+        text-underline-offset: 2px;
+      }
+      button.link:hover:not(:disabled) {
+        background: transparent;
+        color: var(--fg);
+      }
+      .placeholder {
+        margin: 0;
+        padding: 16px 12px;
+        text-align: center;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .recorded {
+        margin: 0 12px 8px;
+        color: var(--muted);
+        font-size: 12px;
+        overflow-wrap: anywhere;
+      }
+      .recorded strong {
+        color: var(--fg);
+        font-weight: 500;
+      }
+      .alert {
+        margin: 0 12px 8px;
+        padding: 8px 10px;
+        border: 1px solid var(--color-border-danger, var(--border));
+        border-radius: var(--radius);
+        background: var(--color-background-danger, var(--surface));
+      }
+      .alert strong {
+        display: block;
+        font-weight: 500;
+        color: var(--danger);
+      }
+      .alert p {
+        margin: 2px 0 0;
+        overflow-wrap: anywhere;
+      }
+      ol {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        border-top: 1px solid var(--border);
+      }
+      .task {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: flex-start;
+        gap: 4px 10px;
+        padding: 8px 12px;
+        border-bottom: 1px solid var(--border);
+      }
+      /*
+       * The mark is the launch journal at a glance: a ring not yet started, filled once
+       * started, broken while the outcome is uncertain.
+       */
+      .mark {
+        flex-shrink: 0;
+        width: 10px;
+        height: 10px;
+        margin-top: 4px;
+        border: 1.5px solid var(--muted);
+        border-radius: 50%;
+      }
+      .task[data-state="starting"] .mark {
+        border-color: var(--fg);
+        background: linear-gradient(90deg, var(--fg) 50%, transparent 50%);
+      }
+      .task[data-state="started"] .mark {
+        border-color: var(--success);
+        background: var(--success);
+      }
+      .task[data-state="uncertain"] .mark {
+        border-color: var(--warning);
+        border-style: dashed;
+      }
+      .task-main {
+        flex: 1 1 200px;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+      .task-head {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        gap: 2px 8px;
+      }
+      h2 {
+        margin: 0;
+        font-size: 13px;
+        font-weight: 500;
+        overflow-wrap: anywhere;
+      }
+      .state {
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .task[data-state="started"] .state {
+        color: var(--success);
+      }
+      .task[data-state="uncertain"] .state {
+        color: var(--warning);
+      }
+      .prompt {
+        margin: 0;
+        color: var(--muted);
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+      .prompt.clamped {
+        display: -webkit-box;
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 2;
+        overflow: hidden;
+      }
+      .used,
+      .diagnostic,
+      .fallback {
+        margin: 0;
+        font-size: 12px;
+        overflow-wrap: anywhere;
+      }
+      .used,
+      .fallback {
+        color: var(--muted);
+      }
+      .diagnostic {
+        color: var(--warning);
+      }
+      .task-actions {
+        display: flex;
+        gap: 6px;
+        margin-left: auto;
+      }
+      details {
+        border-bottom: 1px solid var(--border);
+      }
+      summary {
+        display: flex;
+        align-items: baseline;
+        gap: 8px;
+        padding: 8px 12px;
+        cursor: pointer;
+        list-style: none;
+      }
+      summary::-webkit-details-marker {
+        display: none;
+      }
+      summary::before {
+        content: "▸";
+        color: var(--muted);
+        font-size: 10px;
+      }
+      details[open] > summary::before {
+        content: "▾";
+      }
+      .summary-label {
+        flex-shrink: 0;
+        font-weight: 500;
+      }
+      .summary-text {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .settings {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        padding: 0 12px 12px 30px;
+      }
+      .field {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        min-width: 0;
+        margin: 0;
+        padding: 0;
+        border: 0;
+      }
+      .label,
+      legend {
+        padding: 0;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+      .row > .field {
+        flex: 1 1 140px;
+      }
+      select,
+      input[type="text"] {
+        height: 28px;
+        min-width: 0;
+        padding: 0 8px;
+        border: 1px solid var(--input);
+        border-radius: calc(var(--radius) - 2px);
+        background: var(--bg);
+        color: var(--fg);
+        font: inherit;
+        font-size: 12px;
+      }
+      input[type="text"] {
+        font-family: var(--mono);
+      }
+      .model-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-width: 0;
+      }
+      .model-name {
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .picker {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        padding: 4px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+      }
+      .models {
+        display: flex;
+        flex-direction: column;
+        max-height: 220px;
+        overflow: auto;
+      }
+      .choice {
+        display: flex;
+        align-items: baseline;
+        gap: 8px;
+        padding: 4px 6px;
+        border-radius: calc(var(--radius) - 3px);
+        cursor: pointer;
+      }
+      .choice:hover {
+        background: var(--muted-bg);
+      }
+      .choice input {
+        margin: 0;
+        flex-shrink: 0;
+        accent-color: var(--fg);
+      }
+      .choice-sub {
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .picker-foot {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        padding: 0 4px 2px;
+      }
+      .workspace {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px 16px;
+      }
+      .workspace .choice {
+        padding: 2px 0;
+      }
+      .workspace .choice:hover {
+        background: transparent;
+      }
+      .workspace .choice:has(input:disabled) {
+        color: var(--muted);
+        cursor: default;
+      }
+      footer {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        padding: 8px 12px 10px;
+      }
+      .footer-text {
+        flex: 1 1 200px;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+      .status {
+        margin: 0;
+        font-size: 12px;
+      }
+      .hint.blocked {
+        color: var(--warning);
+      }
+      .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip: rect(0 0 0 0);
+        white-space: nowrap;
+      }
+    </style>
+  </head>
+  <body>
+    <main id="app" aria-busy="true">
+      <header>
+        <div class="heading">
+          <h1 id="title">Task proposal</h1>
+          <p class="meta" id="meta"></p>
+          <p class="tally" id="tally"></p>
+        </div>
+        <button type="button" class="ghost" id="refresh" disabled>Refresh</button>
+      </header>
+      <p class="recorded" id="recorded" hidden>
+        <strong>Recorded in this conversation:</strong> <span id="recorded-text"></span>
+      </p>
+      <div class="alert" id="failure" role="alert" hidden>
+        <strong id="failure-title"></strong>
+        <p id="failure-text"></p>
+      </div>
+      <p class="placeholder" id="placeholder">Connecting…</p>
+      <ol id="tasks" aria-label="Proposed tasks" hidden></ol>
+      <details id="settings" hidden>
+        <summary>
+          <span class="summary-label">Launch settings</span>
+          <span class="summary-text" id="settings-summary"></span>
+        </summary>
+        <div class="settings">
+          <div class="field">
+            <span class="label" id="model-label">Model</span>
+            <div class="model-row">
+              <span class="model-name" id="model-name" aria-labelledby="model-label"></span>
+              <button
+                type="button"
+                id="model-toggle"
+                aria-expanded="false"
+                aria-controls="model-picker"
+              >
+                Change
+              </button>
+            </div>
+            <div class="picker" id="model-picker" hidden>
+              <div class="models" id="model-list" role="radiogroup" aria-label="Models"></div>
+              <div class="picker-foot">
+                <p class="hint" id="model-status" role="status" aria-live="polite"></p>
+                <button type="button" class="ghost" id="model-more" hidden>More models</button>
+              </div>
+            </div>
+          </div>
+          <div class="row">
+            <label class="field">
+              <span class="label">Access</span>
+              <select id="runtime">
+                <option value="approval-required">Supervised</option>
+                <option value="auto-accept-edits">Auto-accept edits</option>
+                <option value="auto">Auto</option>
+                <option value="full-access">Full access</option>
+              </select>
+            </label>
+            <label class="field">
+              <span class="label">Mode</span>
+              <select id="interaction">
+                <option value="default">Build</option>
+                <option value="plan">Plan</option>
+              </select>
+            </label>
+          </div>
+          <fieldset class="field">
+            <legend>Workspace</legend>
+            <div class="workspace">
+              <label class="choice">
+                <input type="radio" name="workspace" id="ws-root" value="root" />
+                Project folder
+              </label>
+              <label class="choice">
+                <input type="radio" name="workspace" id="ws-worktree" value="worktree" />
+                New worktree
+              </label>
+            </div>
+            <label class="field" id="base-field" hidden>
+              <span class="label">Base branch or ref</span>
+              <input
+                type="text"
+                id="base-ref"
+                autocomplete="off"
+                autocapitalize="off"
+                spellcheck="false"
+                maxlength="256"
+                aria-describedby="start-hint"
+              />
+            </label>
+          </fieldset>
+        </div>
+      </details>
+      <footer id="footer" hidden>
+        <div class="footer-text">
+          <p class="status" id="status" role="status" aria-live="polite"></p>
+          <p class="hint" id="start-hint"></p>
+        </div>
+        <button type="button" class="primary" id="start-all" hidden></button>
+      </footer>
+    </main>
+    <script>
+      (function () {
+        "use strict";
+        // Buttons only, no <form>: the view's sandbox has no allow-forms, so submit never fires.
+        var bridge = window.t3;
+        var RUNTIME = {
+          "approval-required": "Supervised",
+          "auto-accept-edits": "Auto-accept edits",
+          auto: "Auto",
+          "full-access": "Full access",
+        };
+        var INTERACTION = { default: "Build", plan: "Plan" };
+        var STATE_LABEL = {
+          proposed: "Not started",
+          starting: "Starting…",
+          started: "Started",
+          uncertain: "Outcome uncertain",
+        };
+        var UNCERTAIN_FALLBACK =
+          "Launch outcome is uncertain. Inspect threads before starting this work elsewhere.";
+        var LONG_PROMPT = 160;
+
+        var state = {
+          context: null,
+          key: null,
+          // Bumped whenever the view follows another thread or card; older answers are dropped.
+          generation: 0,
+          readSeq: 0,
+          reading: false,
+          // A change signal arrived while a request was in flight, whose answer may predate it.
+          changed: false,
+          data: null,
+          failure: null,
+          // Task ids this view is starting right now. The journal says pending for them too, but
+          // here the answer is still coming, so they read as starting, not uncertain.
+          busy: null,
+          results: {},
+          status: "",
+          // Only what the person changed; everything else follows the plan's defaults.
+          edits: {},
+          expanded: {},
+          models: null,
+        };
+
+        var $ = function (id) {
+          return document.getElementById(id);
+        };
+
+        function el(tag, attrs, children) {
+          var node = document.createElement(tag);
+          for (var key in attrs || {}) {
+            if (attrs[key] === undefined || attrs[key] === null) continue;
+            if (key === "text") node.textContent = attrs[key];
+            else if (key === "onclick") node.addEventListener("click", attrs[key]);
+            else node.setAttribute(key, attrs[key]);
+          }
+          (children || []).forEach(function (child) {
+            if (child) node.appendChild(child);
+          });
+          return node;
+        }
+
+        function message(error, fallback) {
+          return (error && error.message) || fallback;
+        }
+
+        function formatTime(iso) {
+          var date = new Date(iso);
+          return isNaN(date.getTime())
+            ? ""
+            : date.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+        }
+
+        function plural(count, word) {
+          return count + " " + word + (count === 1 ? "" : "s");
+        }
+
+        function hasFeature(name) {
+          return Boolean(bridge && bridge.features && bridge.features.indexOf(name) >= 0);
+        }
+
+        function canReveal() {
+          return hasFeature("local-intents") && typeof bridge.intent === "function";
+        }
+
+        function emptyModels() {
+          return {
+            open: false,
+            list: [],
+            next: 0,
+            loaded: false,
+            loading: false,
+            error: null,
+            seq: 0,
+          };
+        }
+        state.models = emptyModels();
+
+        // ---- Context ------------------------------------------------------------------------
+
+        function cardPlanId(context) {
+          var data = context && context.card && context.card.data;
+          return data && typeof data.planId === "string" ? data.planId : null;
+        }
+
+        function isCard() {
+          return Boolean(state.context && state.context.placement === "conversation");
+        }
+
+        /** Why nothing can be read here, or null when a read can go out. */
+        function unreadable() {
+          if (!bridge) return "Open this view inside T3 Code.";
+          if (!state.context) return "Connecting…";
+          if (!state.context.thread) {
+            return "Open Task Launcher beside a thread to review the tasks proposed in it.";
+          }
+          // A card shows one recorded proposal; without its id it must not show the latest one.
+          if (isCard() && !cardPlanId(state.context)) {
+            return "This card doesn't name a proposal. Open Task Launcher from the thread's menu.";
+          }
+          return null;
+        }
+
+        function applyContext(context) {
+          if (!context) return;
+          state.context = context;
+          var thread = context.thread;
+          var key = [
+            context.view && context.view.viewId,
+            thread ? thread.threadId : "",
+            thread ? thread.projectId || "" : "",
+            cardPlanId(context) || "",
+          ].join("\n");
+          if (key === state.key) {
+            render();
+            return;
+          }
+          state.key = key;
+          state.generation += 1;
+          state.readSeq += 1;
+          state.reading = false;
+          state.changed = false;
+          state.data = null;
+          state.failure = null;
+          state.busy = null;
+          state.results = {};
+          state.status = "";
+          state.edits = {};
+          state.expanded = {};
+          state.models = emptyModels();
+          $("model-picker").hidden = true;
+          $("model-toggle").setAttribute("aria-expanded", "false");
+          $("model-list").replaceChildren();
+          $("base-ref").value = "";
+          if (unreadable()) render();
+          else read();
+        }
+
+        // ---- Bridge -------------------------------------------------------------------------
+
+        function call(name, input) {
+          if (!bridge) return Promise.reject(new Error("Open this view inside T3 Code."));
+          return bridge.invoke(name, input);
+        }
+
+        function isReadData(data) {
+          if (!data || typeof data !== "object") return false;
+          var plan = data.plan;
+          if (plan === null) return true;
+          return Boolean(
+            plan &&
+            typeof plan.id === "string" &&
+            typeof plan.title === "string" &&
+            plan.defaults &&
+            typeof plan.defaults === "object" &&
+            Array.isArray(plan.tasks) &&
+            plan.tasks.every(function (task) {
+              return (
+                task &&
+                typeof task.id === "string" &&
+                typeof task.title === "string" &&
+                typeof task.prompt === "string" &&
+                task.launch &&
+                typeof task.launch.state === "string"
+              );
+            }),
+          );
+        }
+
+        /** Rereads once the request in flight settles, if a change signal arrived meanwhile. */
+        function settle() {
+          if (state.changed && !state.busy && !state.reading && !unreadable()) read();
+        }
+
+        function read() {
+          if (unreadable()) return;
+          var generation = state.generation;
+          var seq = ++state.readSeq;
+          state.reading = true;
+          state.changed = false;
+          render();
+          var planId = isCard() ? cardPlanId(state.context) : null;
+          call("read", planId ? { planId: planId } : {})
+            .then(function (result) {
+              if (generation !== state.generation || seq !== state.readSeq) return;
+              var data = result && result.data;
+              if (!isReadData(data)) {
+                throw new Error("Task Launcher returned an unexpected response.");
+              }
+              state.reading = false;
+              state.data = data;
+              if (state.failure && state.failure.kind === "read") state.failure = null;
+              render();
+              settle();
+            })
+            .catch(function (error) {
+              if (generation !== state.generation || seq !== state.readSeq) return;
+              state.reading = false;
+              // Access may be gone: nothing the backend showed before stays on screen.
+              state.data = null;
+              state.failure = {
+                kind: "read",
+                title: "Couldn't read this proposal",
+                text: message(error, "The request failed."),
+              };
+              render();
+              settle();
+            });
+        }
+
+        function onChanged(change) {
+          if (!change || !state.context || !state.context.view) return;
+          if (change.topic !== "view:" + state.context.view.viewId || unreadable()) return;
+          if (state.busy || state.reading) state.changed = true;
+          else read();
+        }
+
+        // ---- Launch choices -----------------------------------------------------------------
+
+        function plan() {
+          return state.data ? state.data.plan : null;
+        }
+
+        function sameModel(a, b) {
+          return Boolean(a && b && a.instanceId === b.instanceId && a.model === b.model);
+        }
+
+        function modelSelection() {
+          var current = plan();
+          return state.edits.modelSelection || (current && current.defaults.modelSelection);
+        }
+
+        function runtimeMode() {
+          var current = plan();
+          return state.edits.runtimeMode || (current && current.defaults.runtimeMode);
+        }
+
+        function interactionMode() {
+          var current = plan();
+          return state.edits.interactionMode || (current && current.defaults.interactionMode);
+        }
+
+        function workspace() {
+          return state.edits.workspace === "worktree" ? "worktree" : "root";
+        }
+
+        function baseRef() {
+          return (state.edits.baseRef || "").trim();
+        }
+
+        function choices() {
+          var out = {};
+          var selection = modelSelection();
+          if (selection) out.modelSelection = selection;
+          if (runtimeMode()) out.runtimeMode = runtimeMode();
+          if (interactionMode()) out.interactionMode = interactionMode();
+          out.workspaceStrategy =
+            workspace() === "worktree"
+              ? { type: "worktree", baseRef: baseRef() }
+              : { type: "root" };
+          return out;
+        }
+
+        function modelLabel(selection) {
+          if (!selection) return "Thread default";
+          var known = state.models.list.filter(function (model) {
+            return sameModel(model.modelSelection, selection);
+          })[0];
+          return known ? known.title + " · " + known.providerTitle : selection.model;
+        }
+
+        function describe(choice) {
+          if (!choice || typeof choice !== "object") return "";
+          var ws = choice.workspaceStrategy;
+          var parts = [
+            choice.modelSelection ? modelLabel(choice.modelSelection) : null,
+            RUNTIME[choice.runtimeMode] || null,
+            INTERACTION[choice.interactionMode] || null,
+            ws && ws.type === "worktree"
+              ? "New worktree from " + ws.baseRef
+              : ws && ws.type === "root"
+                ? "Project folder"
+                : null,
+          ];
+          return parts.filter(Boolean).join(" · ");
+        }
+
+        /** Why Start is off right now, phrased as what to do; null when it is on. */
+        function blocker() {
+          var data = state.data;
+          if (!data || !data.plan) return null;
+          if (data.canStart !== true) {
+            return "Task Launcher is not allowed to start threads. Grant it thread creation in Settings › Plugins.";
+          }
+          if (workspace() === "worktree") {
+            if (data.canWorktree !== true) {
+              return "Task Launcher can't create worktrees. Choose Project folder, or grant worktrees in Settings › Plugins.";
+            }
+            if (!baseRef()) return "Enter the base branch or ref for the new worktree.";
+          }
+          return null;
+        }
+
+        // ---- Tasks --------------------------------------------------------------------------
+
+        /** What a person should read for a task: anything not plainly settled is uncertain. */
+        function taskState(task) {
+          if (state.busy && state.busy[task.id]) return "starting";
+          var recorded = task.launch.state;
+          return recorded === "proposed" || recorded === "started" ? recorded : "uncertain";
+        }
+
+        function startable() {
+          var current = plan();
+          if (!current) return [];
+          return current.tasks.filter(function (task) {
+            return taskState(task) === "proposed";
+          });
+        }
+
+        function start(ids) {
+          var current = plan();
+          if (!current || state.busy || state.reading || blocker() || ids.length === 0) return;
+          var generation = state.generation;
+          var chosen = choices();
+          var request =
+            ids.length === 1
+              ? call("start", Object.assign({ planId: current.id, taskId: ids[0] }, chosen))
+              : call("startAll", {
+                  planId: current.id,
+                  choices: ids.map(function (id) {
+                    return Object.assign({ taskId: id }, chosen);
+                  }),
+                });
+          state.busy = {};
+          ids.forEach(function (id) {
+            state.busy[id] = true;
+          });
+          state.failure = null;
+          state.results = {};
+          state.status = ids.length === 1 ? "Starting…" : "Starting " + ids.length + " tasks…";
+          render();
+          request.then(
+            function (result) {
+              if (generation !== state.generation) return;
+              state.busy = null;
+              var data = result && result.data;
+              if (!isReadData(data)) {
+                state.status = "";
+                state.failure = {
+                  kind: "start",
+                  title: "Unexpected response",
+                  text: "Task Launcher returned an unexpected response. The list below is reread.",
+                };
+                read();
+                return;
+              }
+              // Newer than any read still in flight.
+              state.readSeq += 1;
+              state.reading = false;
+              state.data = data;
+              state.status = outcome(data.results);
+              (data.results || []).forEach(function (entry) {
+                if (entry && typeof entry.diagnostic === "string") {
+                  state.results[entry.taskId] = entry.diagnostic;
+                }
+              });
+              render();
+              settle();
+            },
+            function (error) {
+              if (generation !== state.generation) return;
+              state.busy = null;
+              state.status = "";
+              state.failure = {
+                kind: "start",
+                title: "Couldn't start",
+                text: message(error, "The request failed."),
+              };
+              // The server is the authority on what was recorded; never send the start again.
+              read();
+            },
+          );
+        }
+
+        function outcome(results) {
+          if (!Array.isArray(results) || results.length === 0) return "";
+          var counts = { started: 0, uncertain: 0, other: 0 };
+          results.forEach(function (entry) {
+            var recorded = entry && entry.state;
+            if (recorded === "started") counts.started += 1;
+            else if (recorded === "proposed") counts.other += 1;
+            else counts.uncertain += 1;
+          });
+          var parts = [];
+          if (counts.started) parts.push(counts.started + " started");
+          if (counts.uncertain) parts.push(counts.uncertain + " uncertain");
+          if (counts.other) parts.push(counts.other + " not started");
+          return parts.join(", ") + ".";
+        }
+
+        function reveal(threadId) {
+          bridge
+            .intent({ type: "thread.reveal", threadId: threadId })
+            .then(undefined, function (error) {
+              state.status = message(error, "Couldn't open that thread.");
+              render();
+            });
+        }
+
+        // ---- Model picker -------------------------------------------------------------------
+
+        function loadModels() {
+          var models = state.models;
+          if (models.loading || (models.loaded && models.next === null)) return;
+          var generation = state.generation;
+          var seq = ++models.seq;
+          var cursor = models.next;
+          models.loading = true;
+          models.error = null;
+          renderModels();
+          call("models", cursor ? { cursor: cursor } : {}).then(
+            function (result) {
+              if (generation !== state.generation || seq !== state.models.seq) return;
+              var data = result && result.data;
+              models.loading = false;
+              if (!data || !Array.isArray(data.models)) {
+                models.error = "Task Launcher returned an unexpected model list.";
+              } else {
+                data.models.forEach(function (model) {
+                  if (model && model.modelSelection && typeof model.title === "string") {
+                    models.list.push(model);
+                  }
+                });
+                models.loaded = true;
+                models.next = typeof data.nextCursor === "number" ? data.nextCursor : null;
+              }
+              renderModelList();
+              render();
+            },
+            function (error) {
+              if (generation !== state.generation || seq !== state.models.seq) return;
+              models.loading = false;
+              models.error = message(error, "Couldn't load models.");
+              render();
+            },
+          );
+        }
+
+        function toggleModels() {
+          var models = state.models;
+          models.open = !models.open;
+          $("model-picker").hidden = !models.open;
+          $("model-toggle").setAttribute("aria-expanded", String(models.open));
+          // The catalog is read only when the person asks for it.
+          if (models.open && !models.loaded) loadModels();
+          render();
+        }
+
+        function renderModelList() {
+          var list = $("model-list");
+          var current = modelSelection();
+          list.replaceChildren();
+          state.models.list.forEach(function (model, index) {
+            var input = el("input", { type: "radio", name: "model", value: String(index) });
+            input.checked = sameModel(model.modelSelection, current);
+            list.appendChild(
+              el("label", { class: "choice" }, [
+                input,
+                el("span", { text: model.title }),
+                el("span", { class: "choice-sub", text: model.providerTitle }),
+              ]),
+            );
+          });
+        }
+
+        function renderModels() {
+          var models = state.models;
+          var current = modelSelection();
+          $("model-name").textContent = modelLabel(current);
+          $("model-toggle").textContent = models.open ? "Close" : "Change";
+          $("model-toggle").disabled = !plan();
+          // Checked state is synced in place, so arrow keys keep focus inside the group.
+          $("model-list")
+            .querySelectorAll("input")
+            .forEach(function (input) {
+              var model = models.list[Number(input.value)];
+              input.checked = Boolean(model && sameModel(model.modelSelection, current));
+              input.disabled = Boolean(state.busy);
+            });
+          $("model-status").textContent = models.loading
+            ? "Loading models…"
+            : models.error
+              ? models.error
+              : models.loaded && models.list.length === 0
+                ? "No models are available for this project."
+                : "";
+          var more = $("model-more");
+          more.hidden = !models.error && (models.loading || !models.loaded || models.next === null);
+          more.textContent = models.error ? "Try again" : "More models";
+          more.disabled = models.loading;
+        }
+
+        // ---- Rendering ----------------------------------------------------------------------
+
+        function renderHeader() {
+          var current = plan();
+          var tasks = current ? current.tasks : [];
+          $("title").textContent = current ? current.title : "Task proposal";
+          $("meta").textContent = current
+            ? "Proposed " + plural(tasks.length, "task") + " · " + formatTime(current.createdAt)
+            : "";
+          var counts = { proposed: 0, starting: 0, started: 0, uncertain: 0 };
+          tasks.forEach(function (task) {
+            counts[taskState(task)] += 1;
+          });
+          $("tally").textContent = [
+            counts.proposed ? counts.proposed + " not started" : null,
+            counts.starting ? counts.starting + " starting" : null,
+            counts.started ? counts.started + " started" : null,
+            counts.uncertain ? counts.uncertain + " uncertain" : null,
+          ]
+            .filter(Boolean)
+            .join(" · ");
+          $("refresh").disabled = Boolean(unreadable()) || state.reading || Boolean(state.busy);
+          $("app").setAttribute("aria-busy", String(state.reading || Boolean(state.busy)));
+
+          // The card's text is what the agent's result recorded, kept for when the live plan is
+          // still loading or no longer readable.
+          var summary = isCard() && state.context.card && state.context.card.summary;
+          $("recorded").hidden = !summary || Boolean(current);
+          $("recorded-text").textContent = summary || "";
+
+          var failure = state.failure;
+          $("failure").hidden = !failure;
+          $("failure-title").textContent = failure ? failure.title : "";
+          $("failure-text").textContent = failure ? failure.text : "";
+
+          var placeholder = unreadable();
+          if (!placeholder && !state.data && !failure) placeholder = "Loading proposal…";
+          if (!placeholder && state.data && !current) {
+            placeholder =
+              "No task proposals for this thread yet. When an agent proposes tasks, they appear here for review.";
+          }
+          $("placeholder").hidden = !placeholder;
+          $("placeholder").textContent = placeholder || "";
+        }
+
+        function taskRow(task, blocked) {
+          var shown = taskState(task);
+          var launch = task.launch;
+          var long = task.prompt.length > LONG_PROMPT || task.prompt.indexOf("\n") >= 0;
+          var expanded = Boolean(state.expanded[task.id]);
+          var promptId = "prompt-" + task.id;
+          var diagnostic =
+            typeof launch.diagnostic === "string"
+              ? launch.diagnostic
+              : shown === "uncertain"
+                ? UNCERTAIN_FALLBACK
+                : shown === "proposed"
+                  ? state.results[task.id] || null
+                  : null;
+          var used = describe(launch.choices);
+          var actions = [];
+          if (shown === "proposed" || shown === "starting") {
+            actions.push(
+              el("button", {
+                type: "button",
+                "data-action": "start",
+                "data-focus": "start:" + task.id,
+                "aria-label": "Start " + task.title,
+                disabled: blocked || state.busy || state.reading ? "" : null,
+                text: shown === "starting" ? "Starting…" : "Start",
+                onclick: function () {
+                  start([task.id]);
+                },
+              }),
+            );
+          }
+          var openable = shown === "started" && typeof launch.threadId === "string";
+          if (openable && canReveal()) {
+            actions.push(
+              el("button", {
+                type: "button",
+                "data-action": "open",
+                "data-focus": "open:" + task.id,
+                "aria-label": "Open thread for " + task.title,
+                text: "Open thread",
+                onclick: function () {
+                  reveal(launch.threadId);
+                },
+              }),
+            );
+          }
+          return el("li", { class: "task", "data-task-id": task.id, "data-state": shown }, [
+            el("span", { class: "mark", "aria-hidden": "true" }),
+            el("div", { class: "task-main" }, [
+              el("div", { class: "task-head" }, [
+                el("h2", { text: task.title }),
+                el("span", { class: "state", text: STATE_LABEL[shown] }),
+              ]),
+              el("p", {
+                class: long && !expanded ? "prompt clamped" : "prompt",
+                id: promptId,
+                text: task.prompt,
+              }),
+              long
+                ? el("div", {}, [
+                    el("button", {
+                      type: "button",
+                      class: "link",
+                      "data-focus": "prompt:" + task.id,
+                      "aria-expanded": String(expanded),
+                      "aria-controls": promptId,
+                      text: expanded ? "Show less" : "Show full prompt",
+                      onclick: function () {
+                        state.expanded[task.id] = !expanded;
+                        render();
+                      },
+                    }),
+                  ])
+                : null,
+              used && shown !== "proposed"
+                ? el("p", {
+                    class: "used",
+                    text: (shown === "started" ? "Started with " : "Requested with ") + used,
+                  })
+                : null,
+              diagnostic ? el("p", { class: "diagnostic", text: diagnostic }) : null,
+              openable && !canReveal()
+                ? el("p", {
+                    class: "fallback",
+                    text: "Find “" + task.title + "” in the sidebar to open it.",
+                  })
+                : null,
+            ]),
+            actions.length ? el("div", { class: "task-actions" }, actions) : null,
+          ]);
+        }
+
+        function renderTasks() {
+          var list = $("tasks");
+          var current = plan();
+          var active = document.activeElement;
+          var focusKey = active && list.contains(active) ? active.getAttribute("data-focus") : null;
+          var blocked = Boolean(blocker());
+          list.replaceChildren();
+          list.hidden = !current;
+          if (!current) return;
+          current.tasks.forEach(function (task) {
+            list.appendChild(taskRow(task, blocked));
+          });
+          if (!focusKey) return;
+          // A row's Start becomes Open thread once started; keep focus in that row.
+          var taskId = focusKey.slice(focusKey.indexOf(":") + 1);
+          var fallback = null;
+          var buttons = list.querySelectorAll("button");
+          for (var i = 0; i < buttons.length; i += 1) {
+            var key = buttons[i].getAttribute("data-focus");
+            if (key === focusKey) return buttons[i].focus();
+            if (!fallback && key && key.slice(key.indexOf(":") + 1) === taskId)
+              fallback = buttons[i];
+          }
+          if (fallback) fallback.focus();
+        }
+
+        function renderSettings() {
+          var current = plan();
+          var data = state.data;
+          $("settings").hidden = !current;
+          $("footer").hidden = !current && !state.status;
+          if (!current) return;
+          $("settings-summary").textContent = describe(choices());
+          $("runtime").value = runtimeMode();
+          $("interaction").value = interactionMode();
+          var worktree = workspace() === "worktree";
+          $("ws-root").checked = !worktree;
+          $("ws-worktree").checked = worktree;
+          // A worktree already chosen stays chosen, so a lost grant blocks Start instead of
+          // quietly launching in the project folder.
+          $("ws-worktree").disabled = data.canWorktree !== true && !worktree;
+          $("base-field").hidden = !worktree;
+          var locked = Boolean(state.busy);
+          ["runtime", "interaction", "ws-root", "base-ref"].forEach(function (id) {
+            $(id).disabled = locked;
+          });
+          if (locked) $("ws-worktree").disabled = true;
+          renderModels();
+        }
+
+        function renderFooter() {
+          var reason = blocker();
+          var ready = startable();
+          var hint = $("start-hint");
+          hint.textContent =
+            reason ||
+            (ready.length
+              ? "Each task starts as its own thread with these launch settings. Nothing starts until you choose Start."
+              : plan()
+                ? "Every task here has a recorded launch. Uncertain ones are never started again from here."
+                : "");
+          hint.className = reason ? "hint blocked" : "hint";
+          $("status").textContent = state.status;
+          var all = $("start-all");
+          all.hidden = ready.length < 2 && !(state.busy && Object.keys(state.busy).length > 1);
+          all.textContent = state.busy ? "Starting…" : "Start " + ready.length + " tasks";
+          all.disabled = Boolean(reason) || Boolean(state.busy) || state.reading;
+        }
+
+        function render() {
+          renderHeader();
+          renderTasks();
+          renderSettings();
+          renderFooter();
+        }
+
+        // ---- Wiring -------------------------------------------------------------------------
+
+        $("refresh").addEventListener("click", function () {
+          if (state.reading || state.busy) return;
+          state.status = "";
+          read();
+        });
+        $("start-all").addEventListener("click", function () {
+          start(
+            startable().map(function (task) {
+              return task.id;
+            }),
+          );
+        });
+        $("model-toggle").addEventListener("click", toggleModels);
+        $("model-more").addEventListener("click", loadModels);
+        $("model-list").addEventListener("change", function (event) {
+          var model = state.models.list[Number(event.target.value)];
+          if (!model || state.busy) return;
+          state.edits.modelSelection = model.modelSelection;
+          render();
+        });
+        $("runtime").addEventListener("change", function (event) {
+          state.edits.runtimeMode = event.target.value;
+          render();
+        });
+        $("interaction").addEventListener("change", function (event) {
+          state.edits.interactionMode = event.target.value;
+          render();
+        });
+        ["ws-root", "ws-worktree"].forEach(function (id) {
+          $(id).addEventListener("change", function (event) {
+            if (!event.target.checked) return;
+            state.edits.workspace = event.target.value;
+            render();
+            if (event.target.value === "worktree" && !baseRef()) $("base-ref").focus();
+          });
+        });
+        $("base-ref").addEventListener("input", function (event) {
+          state.edits.baseRef = event.target.value;
+          renderSettings();
+          renderTasks();
+          renderFooter();
+        });
+
+        if (!bridge) {
+          render();
+          return;
+        }
+        render();
+        bridge.onContext(applyContext);
+        // Older clients have no change signals; Refresh covers them.
+        if (typeof bridge.onChanged === "function") bridge.onChanged(onChanged);
+        bridge.ready.then(applyContext);
+      })();
+    </script>
+  </body>
+</html>
