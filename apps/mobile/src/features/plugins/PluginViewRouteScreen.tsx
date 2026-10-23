@@ -5,21 +5,27 @@ import {
   findPluginView,
   makePluginViewHost,
   notifyPluginThreadActivity,
+  pluginChangesSupported,
   pluginInactiveReason,
+  pluginViewBridgeFeatures,
   pluginViewFailure,
   pluginViewHandler,
   pluginViewOuterDocument,
+  pluginViewTopic,
   type PluginViewContext,
   type PluginViewHost,
 } from "@t3tools/client-runtime/plugins";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import {
   EnvironmentId,
+  PluginCardReference,
   ThreadId,
   type PluginInstallation,
   type PluginView,
 } from "@t3tools/contracts";
+import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
+import * as Schema from "effect/Schema";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Platform, View } from "react-native";
 import { WebView, type WebViewMessageEvent } from "react-native-webview";
@@ -32,7 +38,13 @@ import { mobileHtmlRenderTheme } from "../../lib/htmlRenderTheme";
 import { randomHex, uuidv4 } from "../../lib/uuid";
 import { NativeStackScreenOptions } from "../../native/StackHeader";
 import { useThreadShell } from "../../state/entities";
-import { pluginEnvironment, usePluginCatalogue } from "../../state/plugins";
+import {
+  pluginEnvironment,
+  usePluginCatalogue,
+  usePluginChangeRevision,
+} from "../../state/plugins";
+import { environmentPresentations } from "../../state/presentation";
+import { useAtomValue } from "@effect/atom-react";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
 import { newPluginOperationId, usePluginIntentApplier } from "./usePluginActions";
@@ -42,7 +54,11 @@ type PluginViewRouteParams = {
   readonly installationId: string;
   readonly viewId: string;
   readonly threadId?: string;
+  /** A conversation card opened full screen: the recorded reference, as JSON. */
+  readonly card?: string;
 };
+
+const decodeCard = Schema.decodeUnknownOption(Schema.fromJsonString(PluginCardReference));
 
 function Notice(props: { readonly title: string; readonly action?: ReactNode }) {
   return (
@@ -57,6 +73,8 @@ export function PluginViewRouteScreen({ route }: StaticScreenProps<PluginViewRou
   const navigation = useNavigation();
   const environmentId = EnvironmentId.make(route.params.environmentId);
   const threadId = route.params.threadId ? ThreadId.make(route.params.threadId) : null;
+  const card =
+    route.params.card === undefined ? null : Option.getOrNull(decodeCard(route.params.card));
   const catalogue = usePluginCatalogue(environmentId);
   const entry = findPluginView(
     catalogue.installations,
@@ -82,9 +100,11 @@ export function PluginViewRouteScreen({ route }: StaticScreenProps<PluginViewRou
                   : entry === null
                     ? null
                     : (pluginInactiveReason(entry.installation) ??
-                      (entry.installation.grants.capabilities.includes("ui")
-                        ? null
-                        : "The plugin was not granted permission to show views."));
+                      (!entry.installation.grants.capabilities.includes("ui")
+                        ? "The plugin was not granted permission to show views."
+                        : entry.view.placement === "conversation" && card === null
+                          ? "This view only opens from a card in chat."
+                          : null));
   return (
     <View collapsable={false} className="flex-1 bg-background">
       <NativeStackScreenOptions
@@ -104,6 +124,7 @@ export function PluginViewRouteScreen({ route }: StaticScreenProps<PluginViewRou
           installation={entry.installation}
           view={entry.view}
           threadId={threadId}
+          card={card}
         />
       )}
     </View>
@@ -119,10 +140,22 @@ function PluginViewDocument(props: {
   readonly installation: PluginInstallation;
   readonly view: PluginView;
   readonly threadId: ThreadId | null;
+  readonly card: PluginCardReference | null;
 }) {
-  const { environmentId, installation, view } = props;
+  const { environmentId, installation, view, card } = props;
   const { installationId, generation } = installation;
+  const presentations = useAtomValue(environmentPresentations.presentationsAtom);
+  const changes = pluginChangesSupported(
+    presentations.get(environmentId)?.serverConfig?.environment.capabilities,
+  );
+  // Full screen, a card fills the page instead of sizing to its content.
+  const features = pluginViewBridgeFeatures({
+    placement: card === null ? "page" : "conversation",
+    changes,
+  }).filter((feature) => feature !== "resize");
+  const featureKey = features.join(",");
   const readView = useAtomCommand(pluginEnvironment.readView, { reportFailure: false });
+  const readCardView = useAtomCommand(pluginEnvironment.readCardView, { reportFailure: false });
   const invoke = useAtomCommand(pluginEnvironment.invoke, { reportFailure: false });
   const applyIntents = usePluginIntentApplier();
   const navigation = useNavigation();
@@ -143,39 +176,51 @@ function PluginViewDocument(props: {
     [themeId, themeAppearance, themeVariables, systemColorsActive],
   );
   const [secret] = useState(uuidv4);
-  const [loaded, setLoaded] = useState<{ readonly html: string; readonly token: string } | null>(
-    null,
-  );
+  const [loaded, setLoaded] = useState<{
+    readonly html: string;
+    readonly token: string;
+    readonly features: typeof features;
+  } | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const [stopped, setStopped] = useState<"navigated" | "crashed" | null>(null);
   const [attempt, setAttempt] = useState(0);
   const webView = useRef<WebView<object>>(null);
   const hostRef = useRef<PluginViewHost | null>(null);
-  const live = { props, theme, thread, invoke, applyIntents, navigation };
+  const live = { props, theme, thread, invoke, applyIntents, navigation, features, readCardView };
   const latest = useRef(live);
   useEffect(() => {
     latest.current = live;
   });
 
+  const cardKey = card === null ? null : JSON.stringify(card);
   useEffect(() => {
     let cancelled = false;
-    void readView({ environmentId, input: { installationId, generation, viewId: view.id } }).then(
-      (result) => {
-        if (cancelled) return;
-        if (result._tag === "Success") {
-          setFailure(null);
-          // A fresh token per document; see `PluginViewHostOptions.token`.
-          setLoaded({ html: result.value.html, token: randomHex(16) });
-        } else {
-          setFailure(pluginViewFailure(squashAtomCommandFailure(result)).message);
-        }
-      },
-    );
+    const current = latest.current;
+    const card = current.props.card;
+    // A card's view is served only after the server checks where the card came from.
+    void (
+      card === null
+        ? readView({ environmentId, input: { installationId, generation, viewId: view.id } })
+        : current.readCardView({ environmentId, input: { installationId, generation, card } })
+    ).then((result) => {
+      if (cancelled) return;
+      if (result._tag === "Success") {
+        setFailure(null);
+        // A fresh token per document; see `PluginViewHostOptions.token`.
+        setLoaded({
+          html: result.value.html,
+          token: randomHex(16),
+          features: latest.current.features,
+        });
+      } else {
+        setFailure(pluginViewFailure(squashAtomCommandFailure(result)).message);
+      }
+    });
     return () => {
       cancelled = true;
     };
     // oxlint-disable-next-line react/exhaustive-effect-dependencies -- Retry asks for the document again.
-  }, [readView, environmentId, installationId, generation, view.id, attempt]);
+  }, [readView, environmentId, installationId, generation, view.id, cardKey, featureKey, attempt]);
 
   useEffect(() => {
     if (loaded === null) return;
@@ -185,12 +230,22 @@ function PluginViewDocument(props: {
         theme: current.theme.appearance,
         styles: mcpAppStyleVariables(current.theme.variables),
         platform: "mobile",
-        placement: "page",
+        placement: current.props.card === null ? "page" : "conversation",
         view: { installationId, viewId: view.id },
         thread:
           current.props.threadId === null
             ? null
             : { threadId: current.props.threadId, projectId: current.thread?.projectId ?? null },
+        features: loaded.features,
+        ...(current.props.card === null
+          ? {}
+          : {
+              card: {
+                viewId: current.props.card.viewId,
+                summary: current.props.card.summary,
+                ...(current.props.card.data === undefined ? {} : { data: current.props.card.data }),
+              },
+            }),
       };
     };
     const host = makePluginViewHost({
@@ -241,6 +296,7 @@ function PluginViewDocument(props: {
           unsupported,
         );
       },
+      features: loaded.features,
     });
     hostRef.current = host;
     return () => {
@@ -255,13 +311,28 @@ function PluginViewDocument(props: {
     // oxlint-disable-next-line react/exhaustive-effect-dependencies -- A theme change is resent.
   }, [theme]);
 
+  // Only a shown document listens; a closed screen holds no subscription.
+  const topic = pluginViewTopic(view.id);
+  const revision = usePluginChangeRevision(changes ? environmentId : null, {
+    installationId,
+    generation,
+    topic,
+  });
+  const seenRevision = useRef(revision);
+  useEffect(() => {
+    if (revision === null) return;
+    const seen = seenRevision.current;
+    seenRevision.current = revision;
+    if (seen !== null && seen !== revision) hostRef.current?.changed(topic);
+  }, [revision, topic]);
+
   const source = useMemo(
     () =>
       loaded === null
         ? null
         : {
             html: pluginViewOuterDocument(
-              buildPluginViewDocument(loaded.html, loaded.token),
+              buildPluginViewDocument(loaded.html, loaded.token, loaded.features),
               secret,
             ),
           },

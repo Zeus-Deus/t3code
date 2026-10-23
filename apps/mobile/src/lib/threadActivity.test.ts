@@ -1893,3 +1893,42 @@ describe("streamed feed updates", () => {
     expect(showsDelegation(steps[3]!)).toBe(false);
   });
 });
+
+describe("plugin cards", () => {
+  const card = {
+    installationId: "inst-launcher",
+    generation: "gen-1",
+    dataOwner: "owner-1",
+    viewId: "launcher",
+    summary: "Launch plan: fix login",
+    data: { planId: "plan-1" },
+  };
+  const invoke = (
+    id: string,
+    index: number,
+    overrides: Partial<Extract<OrchestrationV2TurnItem, { type: "dynamic_tool" }>> = {},
+  ) =>
+    projected(
+      {
+        ...base(id, "2026-06-20T00:00:02.000Z", index),
+        type: "dynamic_tool",
+        toolName: "mcp__t3-code__t3_plugin_invoke",
+        input: { actionId: "propose" },
+        output: { structuredContent: { card } },
+        ...overrides,
+      },
+      index,
+    );
+
+  it("shows a recorded card in place of its tool call, and only for T3's plugin tool", () => {
+    const feed = buildThreadFeed([
+      invoke("card", 1),
+      invoke("refused", 2, { output: { structuredContent: { card }, isError: true } }),
+      invoke("imitation", 3, { toolName: "mcp__other__t3_plugin_invoke" }),
+      invoke("running", 4, { status: "running" }),
+    ]);
+    expect(feed.flatMap((entry) => (entry.type === "plugin-card" ? [entry.card] : []))).toEqual([
+      card,
+    ]);
+  });
+});

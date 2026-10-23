@@ -49,6 +49,7 @@ import type {
   OrchestrationV2RunStatus,
   OrchestrationV2TurnItem,
   OrchestrationV2UserMessageInputIntent,
+  PluginCardReference,
   RunAttemptId,
   ScheduledTaskId,
   TurnItemId,
@@ -71,6 +72,7 @@ import {
   compactDynamicToolOutput,
   htmlRenderFromToolItem,
   mcpAppFromToolItem,
+  pluginCardFromToolItem,
 } from "@t3tools/shared/toolOutput";
 import * as DateTime from "effect/DateTime";
 import {
@@ -195,6 +197,14 @@ type RawThreadFeedEntry =
       readonly itemId: TurnItemId;
       readonly revision: string;
       readonly app: McpAppReference;
+    }
+  | {
+      readonly type: "plugin-card";
+      readonly id: string;
+      readonly createdAt: string;
+      readonly runId: RunId | null;
+      /** As the tool result recorded it: a summary to show and an id to ask the plugin about. */
+      readonly card: PluginCardReference;
     };
 
 export type ThreadFeedEntry = ThreadFeedEntryContent & {
@@ -203,7 +213,7 @@ export type ThreadFeedEntry = ThreadFeedEntryContent & {
 };
 
 type ThreadFeedEntryContent =
-  | Extract<RawThreadFeedEntry, { type: "message" | "html-render" | "mcp-app" }>
+  | Extract<RawThreadFeedEntry, { type: "message" | "html-render" | "mcp-app" | "plugin-card" }>
   | {
       readonly type: "activity-group";
       readonly id: string;
@@ -1175,7 +1185,8 @@ function deriveThreadFeedRunFolds(
         ? (entry.message.runId ?? runlessKey)
         : entry.type === "activity-group" ||
             entry.type === "html-render" ||
-            entry.type === "mcp-app"
+            entry.type === "mcp-app" ||
+            entry.type === "plugin-card"
           ? (entry.runId ?? runlessKey)
           : null;
     if (!ownRunId) continue;
@@ -1230,6 +1241,7 @@ function deriveThreadFeedRunFolds(
             entry.type !== "html-render" &&
             entry.type !== "mcp-app" &&
             !(entry.type === "activity-group" && isContextCompactionActivityGroup(entry)) &&
+            entry.type !== "plugin-card" &&
             !(
               entry.type === "activity-group" &&
               entry.activities.some(
@@ -2277,6 +2289,23 @@ export function buildThreadFeed(
         itemId: row.sourceItemId,
         revision: turnItemDetailRevision(item),
         app,
+      };
+      projectedEntriesCache.set(row, { attemptId, entry });
+      entries.push(entry);
+      entryRows.push(index);
+      continue;
+    }
+    const pluginCard =
+      item.type === "dynamic_tool" && item.status === "completed"
+        ? pluginCardFromToolItem(item)
+        : undefined;
+    if (pluginCard) {
+      const entry: RawThreadFeedEntry = {
+        type: "plugin-card",
+        id: `plugin-card:${row.visibility}:${row.sourceThreadId}:${row.sourceItemId}`,
+        createdAt,
+        runId: item.runId,
+        card: pluginCard,
       };
       projectedEntriesCache.set(row, { attemptId, entry });
       entries.push(entry);

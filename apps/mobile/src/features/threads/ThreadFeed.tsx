@@ -231,6 +231,7 @@ import { htmlRenderFrameHeight } from "@t3tools/shared/htmlRender";
 import { htmlRenderRowHeight, ThreadHtmlRender } from "./HtmlRenderWebView";
 import { ThreadMcpApp } from "./McpAppWebView";
 import { assetEnvironment, useAssetUrl, useRefreshAssetUrl } from "../../state/assets";
+import { ThreadPluginCard } from "../plugins/ThreadPluginCard";
 import { useAtomQueryRunner } from "../../state/use-atom-query-runner";
 import { readEnvironmentScope, usePreparedConnection } from "../../state/session";
 import { projectEnvironment } from "../../state/projects";
@@ -1412,6 +1413,16 @@ function renderFeedEntry(
         revision={entry.revision}
         app={entry.app}
         width={props.contentWidth}
+      />
+    );
+  }
+
+  if (entry.type === "plugin-card") {
+    return (
+      <ThreadPluginCard
+        environmentId={props.environmentId}
+        threadId={props.threadId}
+        card={entry.card}
       />
     );
   }
