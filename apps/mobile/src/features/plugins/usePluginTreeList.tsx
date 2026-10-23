@@ -72,6 +72,8 @@ function PluginTreeSnapshotFetcher(props: {
       latest.current.onReport(environmentId, null);
       return;
     }
+    // Read after the change subscription first reports, not before it and again at its first count.
+    if (revision === undefined) return;
     let cancelled = false;
     void latest.current
       .readTree({

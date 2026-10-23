@@ -275,10 +275,10 @@ export function PluginViewFrame(props: {
   });
   const seenRevision = useRef(revision);
   useEffect(() => {
-    if (revision === null) return;
+    if (revision === null || revision === undefined) return;
     const seen = seenRevision.current;
     seenRevision.current = revision;
-    if (seen !== null && seen !== revision) hostRef.current?.changed(topic);
+    if (seen !== null && seen !== undefined && seen !== revision) hostRef.current?.changed(topic);
   }, [revision, topic]);
 
   const retry = () => {

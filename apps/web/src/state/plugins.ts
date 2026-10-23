@@ -105,15 +105,11 @@ export function readRunnablePluginInstallations(
 
 const changesTarget = (environmentId: EnvironmentId) => ({ environmentId, input: {} });
 
-/**
- * Change counts for an environment's plugin topics since this client subscribed, or null where
- * the environment sends no change signals. Pass null while nothing is shown, so hidden views keep
- * no subscription. Compare a topic's count with the value last acted on: any difference,
- * including a reset after reconnecting, means read again.
- */
-export function usePluginChangeRevisions(
+// Undefined while the subscription has not reported its first count. A failed subscription
+// counts as none, so readers fall back to reading once.
+function usePluginChangeSubscription(
   environmentId: EnvironmentId | null,
-): PluginChangeRevisions | null {
+): PluginChangeRevisions | null | undefined {
   const environment = useEnvironment(environmentId);
   const canRead = useEnvironmentScope(environmentId, AuthOrchestrationReadScope);
   const capabilities = environment?.serverConfig?.environment.capabilities;
@@ -126,10 +122,28 @@ export function usePluginChangeRevisions(
   const query = useEnvironmentQuery(
     subscribed ? pluginEnvironment.changes(changesTarget(environmentId)) : null,
   );
-  return subscribed ? query.data : null;
+  if (!subscribed) return null;
+  if (query.data !== null) return query.data;
+  return query.error === null ? undefined : null;
 }
 
-/** One topic's count from `usePluginChangeRevisions`. */
+/**
+ * Change counts for an environment's plugin topics since this client subscribed, or null where
+ * the environment sends no change signals. Pass null while nothing is shown, so hidden views keep
+ * no subscription. Compare a topic's count with the value last acted on: any difference,
+ * including a reset after reconnecting, means read again.
+ */
+export function usePluginChangeRevisions(
+  environmentId: EnvironmentId | null,
+): PluginChangeRevisions | null {
+  return usePluginChangeSubscription(environmentId) ?? null;
+}
+
+/**
+ * One topic's count from `usePluginChangeRevisions`, or undefined until the subscription first
+ * reports. A snapshot read waits for that first count, so it follows the subscription instead of
+ * racing ahead of it, and the first count is not itself a change.
+ */
 export function usePluginChangeRevision(
   environmentId: EnvironmentId | null,
   topic: {
@@ -137,8 +151,9 @@ export function usePluginChangeRevision(
     readonly generation: string;
     readonly topic: string;
   } | null,
-): number | null {
-  const revisions = usePluginChangeRevisions(topic === null ? null : environmentId);
+): number | null | undefined {
+  const revisions = usePluginChangeSubscription(topic === null ? null : environmentId);
   if (revisions === null || topic === null) return null;
+  if (revisions === undefined) return undefined;
   return revisions.get(pluginChangeKey(topic)) ?? 0;
 }

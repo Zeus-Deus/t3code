@@ -217,7 +217,8 @@ export const pluginTreeViewSourcesAtom = (environmentIds: ReadonlyArray<Environm
  * How often a plugin topic changed since this client subscribed, or null where the environment
  * sends no change signals. Pass null while nothing is shown, so hidden views hold no subscription.
  * Any difference from the value last acted on, including a reset after reconnecting, means read
- * again.
+ * again. Undefined until the subscription first reports: a snapshot read waits for that count, so
+ * it follows the subscription instead of racing ahead of it. A failed subscription counts as none.
  */
 export function usePluginChangeRevision(
   environmentId: EnvironmentId | null,
@@ -226,7 +227,7 @@ export function usePluginChangeRevision(
     readonly generation: string;
     readonly topic: string;
   } | null,
-): number | null {
+): number | null | undefined {
   const presentations = useAtomValue(environmentPresentations.presentationsAtom);
   const presentation = environmentId === null ? undefined : presentations.get(environmentId);
   const canRead = useEnvironmentScope(environmentId, AuthOrchestrationReadScope);
@@ -241,6 +242,7 @@ export function usePluginChangeRevision(
   const query = useEnvironmentQuery(
     subscribed ? pluginEnvironment.changes({ environmentId, input: {} }) : null,
   );
-  if (!subscribed || query.data === null) return null;
+  if (!subscribed) return null;
+  if (query.data === null) return query.error === null ? undefined : null;
   return query.data.get(pluginChangeKey(topic)) ?? 0;
 }

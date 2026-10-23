@@ -40,7 +40,8 @@ const data = vi.hoisted(() => {
     route: null as { environmentId: string; threadId: string } | null,
     // A plugin tree as each environment serves it, and how often it signalled a change.
     trees: new Map<string, unknown[]>(),
-    treeRevision: 0,
+    // Undefined while the change subscription has not reported; null where there is none.
+    treeRevision: 0 as number | null | undefined,
     treeReads: [] as string[],
   };
   return {
@@ -813,6 +814,26 @@ describe("Sidebar plugin tree", () => {
     ).toEqual(["project:repo:app", "a", "b", `tree:${laptop}:shelf`, `tree:${server}:shelf`]);
     const left = rowLefts();
     expect(left.get("b")).toBe(left.get("a"));
+  });
+
+  it("reads once the change subscription first reports, not again for that first count", async () => {
+    const a = thread("a", laptop, "p1");
+    setupTree({
+      threads: [a],
+      route: a,
+      trees: new Map([
+        [laptop, [treeGroup("g", "Mine"), treeThread("n", "a", "g")]],
+        [server, []],
+      ]),
+    });
+    data.update({ treeRevision: undefined });
+    await using _screen = await renderSidebar();
+    expect(data.read().treeReads).toEqual([]);
+
+    await act(() => data.update({ treeRevision: 0 }));
+    await expect.poll(sectionNames).toEqual([`tree:${laptop}:g`]);
+    // Each connected environment reads once.
+    expect(data.read().treeReads.toSorted()).toEqual([laptop, server]);
   });
 
   it("folds as the plugin asks until the person chooses, keeping the open thread", async () => {

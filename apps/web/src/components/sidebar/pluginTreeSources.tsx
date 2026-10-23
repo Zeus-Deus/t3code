@@ -118,6 +118,7 @@ function PluginTreeSnapshotSource(props: {
       report(choice.key, environmentId, { kind: "withdrawn" });
       return;
     }
+    if (revision === undefined) return;
     let cancelled = false;
     report(choice.key, environmentId, { kind: "loading", installationId, generation });
     void latestRead
