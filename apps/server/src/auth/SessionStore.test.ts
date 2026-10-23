@@ -83,6 +83,25 @@ const makeDiskSessionStoreLayer = Effect.fn("makeDiskSessionStoreLayer")(functio
 });
 
 it.layer(NodeServices.layer)("SessionStore.layer", (it) => {
+  it.effect("asserts live sessions and rejects revoked or expired sessions", () =>
+    Effect.gen(function* () {
+      const sessions = yield* SessionStore.SessionStore;
+      const revoked = yield* sessions.issue({ subject: "revoked" });
+      const expired = yield* sessions.issue({ subject: "expired", ttl: Duration.seconds(1) });
+      yield* sessions.assertActive(revoked.sessionId);
+      yield* sessions.assertActive(expired.sessionId);
+      yield* sessions.markConnected(expired.sessionId);
+      yield* sessions.revoke(revoked.sessionId);
+      expect((yield* Effect.flip(sessions.assertActive(revoked.sessionId)))._tag).toBe(
+        "SessionCredentialVerificationError",
+      );
+      yield* TestClock.adjust(Duration.seconds(1));
+      expect((yield* Effect.flip(sessions.assertActive(expired.sessionId)))._tag).toBe(
+        "SessionCredentialVerificationError",
+      );
+    }).pipe(Effect.provide(Layer.merge(layerSessionStore(), TestClock.layer()))),
+  );
+
   it.effect.each(["revoke", "revokeAllExcept", "replace"] as const)(
     "invalidates every connection for a session on %s and leaves other sessions active",
     (operation) =>

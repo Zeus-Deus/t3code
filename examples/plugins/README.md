@@ -1,0 +1,161 @@
+# Building a T3 plugin
+
+These packages can be installed directly from their directories. They have no
+build or install scripts. `plugin.mjs` exports `activate(context)`; activation
+registers handlers, while host calls run inside handler invocations.
+
+The optional `@t3tools/plugin-sdk` package supplies TypeScript author types.
+Bundle dependencies and compile TypeScript before distributing a plugin. The
+host loads ordinary JavaScript and does not install dependencies for you.
+
+## Package
+
+Create `t3-plugin.json` with a stable `publisher.name` identifier, a semantic
+version, `apiVersion: 1`, a relative JavaScript entry, required capabilities, and
+the actions, views, and settings you contribute. Use the example manifests
+as starting points. The host inspects this declaration before evaluating code.
+
+Use `optionalCapabilities` for features that can be omitted on older hosts,
+and check `ctx.capabilities` before using them. A constraint the host must
+understand belongs in the required `capabilities` list; older hosts can ignore
+unknown manifest fields. Experimental capabilities need a new name when their
+meaning changes.
+
+Keep everything needed at runtime in the package. View entries are single,
+self-contained HTML files. Installation copies a bounded, immutable snapshot;
+editing your source directory does not change the running installation.
+
+## Host API
+
+Register action handlers with `ctx.handle("action:my-action", handler)`. A handler
+receives its input plus an invocation containing `signal`, `operationId`, and
+the captured project, thread, message, and selection context. Return a message,
+JSON data, or client requests such as `composer.insert`, `preview.open`,
+`thread.reveal`, and `view.open`.
+
+Use `ctx.settings.get(key)` for declared settings and
+`ctx.storage.get/set/delete` for plugin-owned JSON data. Treat missing storage
+as `null`, version your stored format, and handle migration failures yourself.
+Host history must remain readable without your plugin.
+
+`ctx.threads.read`, `send`, and `create` operate through T3's existing domain
+services. Declare the matching capabilities and obtain project grants. The host
+also checks the invoking client's or agent's authority. Plugin messages visibly
+identify their source.
+
+`invocation.caller` describes the verified caller. An agent's thread identity
+comes from its credential, independently of the target in `invocation.context`.
+Use `ctx.dataDirectory` for private files that must survive worker restarts and
+package updates. Keep runtime-generated files out of the installed snapshot.
+
+The initial `threads.read` API returns the latest 30 messages, with each message
+limited to 4,096 characters. It is a bounded snapshot, not a full-history export.
+
+Every `send` or `create` call requires an `idempotencyKey`, a stable name for
+that effect within the invocation. For example:
+
+```js
+await ctx.threads.send({
+  threadId: invocation.context.threadId,
+  text: "Review the previous result without editing files.",
+  idempotencyKey: "request-review",
+});
+```
+
+Reusing the invocation's operation identity and effect key prevents duplicate
+T3 commands after a lost response or process restart. Distinct intended effects
+need distinct keys. This protection does not make your own HTTP requests or
+filesystem writes idempotent.
+
+The logical effect identity survives plugin revision changes. Reusing it with
+different input rejects with `code: "idempotency_conflict"`; the error may
+include a prior effect handle when the caller is still authorized to see it.
+Handle that conflict explicitly rather than automatically issuing another
+effect. Installation generations revoke stale calls; they do not reset the
+history of completed effects.
+
+Use `ctx.events.onRunFinalized(handler)` for committed turn outcomes. Delivery
+is at least once. Use `deliveryId` to deduplicate plugin data and external
+effects. Keep observers bounded, respect cancellation, and avoid generating
+feedback loops. Event observers never run inside orchestration replay.
+New project grants start observing from the grant's event position. A person
+resuming a stopped observer chooses whether to skip or deliver missed runs.
+
+Host calls are unavailable during activation. Keep activation fast and use
+`ctx.signal` or an exported `deactivate()` to dispose any resources you own.
+Await host calls before returning from a handler. Outstanding calls are
+cancelled when the invocation ends, so starting one with `void` does not create
+background work.
+Disabling revokes the installation generation and stops its worker.
+It cannot automatically stop independent VMs, services or other external
+resources your plugin started; provide lifecycle controls for those resources.
+`ctx.log(level, message)` writes bounded diagnostics to the environment's
+server logs.
+
+## Views and agents
+
+Declare a named page or side-panel view, then register its handlers as
+`view:<view-id>:<handler>`. Views use an isolated host bridge to call only their
+own plugin's handlers. See Workflow Board's `view.html` for the bridge handshake
+and error handling. The page has no app stores, native bridge, or bearer token.
+Use client intents to open links; navigating the frame stops its bridge.
+
+A handler can return PNG or JPEG images by naming files inside
+`ctx.dataDirectory`. The host verifies the paths, size and image signatures
+before returning image content to an agent or view. See the SDK's image result
+types for the limits and shape.
+
+Only actions marked `agentCallable: true` appear in `t3_plugin_list`. Agents
+call them with `t3_plugin_invoke` and a stable operation ID. An agent cannot
+install plugins or invoke arbitrary view or event handlers through these tools.
+
+## Thread status
+
+A plugin with the `ui` capability can declare up to four `threadStatus` items,
+such as `{ "id": "realm", "title": "Realm", "viewId": "realm" }`, and register
+`ctx.handle("status:realm", handler)`. The client asks it with the open thread
+in `invocation.context` when the thread appears, about every 30 seconds while it
+stays visible, on window focus, and shortly after one of your actions or view
+handlers runs for that thread. Return `{ data: { label, tone, detail } }` with a
+label of at most 40 characters, a tone of `neutral`, `info`, `success`, `warning`,
+or `danger`, and an optional detail shown as its description. Return
+`{ data: null }` to show nothing. Report current state cheaply and without side
+effects; failures are hidden rather than shown to the user. `viewId` must name
+one of your side-panel views, which opens when the user selects the status.
+
+## Develop and verify
+
+Install from a local directory in an isolated development environment. After
+each change, refresh and consent to the new digest. Exercise the intended
+feature, disable/re-enable it, restart the server, retry the same operation,
+and test a client connected remotely. Make unavailable-client behavior visible.
+
+The SDK is the boundary: do not import T3's components, stores, Effect services,
+database schema, or private transport. New host capabilities should have a real
+consumer and a compatibility fixture before becoming a lasting public promise.
+
+Keep your persistent data format versioned and refuse formats you cannot read.
+Retaining an older code revision does not restore storage, files, or external
+effects. The facade API major does not pin the app's Node/Electron runtime;
+avoid assumptions about a particular runtime version.
+
+The examples exercise different boundaries: Quote Helper adds selection actions
+and composer requests; Workflow Board combines storage, events, and thread
+automation; Repository Lens runs read-only Git commands in its Node worker and
+renders the results in a side panel. Repository Lens needs an absolute repository
+path in its settings on the server machine. It does not send messages, modify
+files, or fetch from a remote. Node access comes from trusting the package, not
+from its `ui` or `settings` capabilities.
+Its configured repository is shared across threads in the environment, rather
+than following the current project's path. Git's repository configuration still
+applies, including any clean filters; inspect repositories whose configuration
+you trust.
+
+Within an API major, optional fields can be added. New access to host services
+requires a new capability name; an older host refuses unsupported requirements.
+Clients may omit presentation contributions they do not understand and report
+unsupported intents. Supply a useful message when a feature needs newer client
+support. Removing fields or changing their meaning requires a new API major.
+
+The snapshot fingerprint detects changed or corrupt packages. It does not
+protect against code already running as the same operating-system user.

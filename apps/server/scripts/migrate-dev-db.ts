@@ -15,6 +15,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import { Command, Flag } from "effect/cli";
 
+import { pausePluginObserversAfterReseed } from "../src/plugins/PluginStore.ts";
 import * as ProjectionStore from "../src/orchestration-v2/ProjectionStore.ts";
 import { rebuildMessageSearch } from "../src/orchestration-v2/messageSearchIndex.ts";
 import { migrationManifest, runMigrations } from "../src/persistence/Migrations.ts";
@@ -204,6 +205,12 @@ const RECOVERY_KINDS: ReadonlyArray<ProjectionStore.ProjectionRecoveryKind> = [
 ];
 
 const CLEARED_TABLES: ReadonlyArray<string> = [
+  "plugin_records",
+  "plugin_storage",
+  "plugin_state_metadata",
+  "plugin_operation_receipts",
+  "plugin_run_deliveries",
+  "plugin_event_reservations",
   "scheduled_tasks",
   "orchestration_v2_effect_outbox",
   "orchestration_v2_thread_launch_workflows",
@@ -296,6 +303,79 @@ const copySourceSlice = Effect.fn("copyDevDbSourceSlice")(function* (sourcePath:
     }),
   );
   yield* sql`DETACH DATABASE src`;
+});
+
+// A refresh replaces core history, not the worktree's own plugin catalogue or private files.
+const preserveDevPlugins = Effect.fn("preserveDevPlugins")(function* (databasePath: string) {
+  const fs = yield* FileSystem.FileSystem;
+  if (!(yield* fs.exists(databasePath))) return;
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`ATTACH DATABASE ${`${NodeURL.pathToFileURL(databasePath).href}?mode=ro`} AS dev_plugins`;
+  yield* sql.withTransaction(
+    Effect.gen(function* () {
+      const tables = yield* sql<{ name: string }>`SELECT name FROM dev_plugins.sqlite_schema
+      WHERE type='table' AND name IN ('plugin_records','plugin_storage','plugin_state_metadata')`;
+      const names = new Set(tables.map((table) => table.name));
+      if (names.has("plugin_records")) {
+        yield* sql`CREATE TABLE IF NOT EXISTS main.plugin_records (installation_id TEXT PRIMARY KEY, position INTEGER NOT NULL, record_json TEXT NOT NULL, event_cursor INTEGER NOT NULL)`;
+        yield* sql`INSERT INTO main.plugin_records(installation_id,position,record_json,event_cursor)
+        SELECT installation_id,position,record_json,event_cursor FROM dev_plugins.plugin_records`;
+      }
+      if (names.has("plugin_storage")) {
+        yield* sql`CREATE TABLE IF NOT EXISTS main.plugin_storage (installation_id TEXT NOT NULL REFERENCES plugin_records(installation_id) ON DELETE CASCADE, key TEXT NOT NULL, value_json TEXT NOT NULL, PRIMARY KEY(installation_id,key))`;
+        yield* sql`INSERT INTO main.plugin_storage(installation_id,key,value_json)
+        SELECT installation_id,key,value_json FROM dev_plugins.plugin_storage`;
+      }
+      if (names.has("plugin_state_metadata")) {
+        yield* sql`CREATE TABLE IF NOT EXISTS main.plugin_state_metadata (id INTEGER PRIMARY KEY CHECK(id=1), value_json TEXT NOT NULL)`;
+        yield* sql`INSERT INTO main.plugin_state_metadata(id,value_json)
+        SELECT id,value_json FROM dev_plugins.plugin_state_metadata`;
+      }
+    }),
+  );
+  yield* sql`DETACH DATABASE dev_plugins`;
+});
+
+const pauseDevPluginDatabase = Effect.fn("pauseDevPluginDatabase")(function* (
+  baseDir: string,
+  throughSequence: number,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const filename = path.join(baseDir, "userdata", "plugins", "state.sqlite");
+  if (!(yield* fs.exists(filename))) return;
+  const canonicalBase = yield* fs.realPath(baseDir);
+  const canonicalFile = yield* fs.realPath(filename);
+  const relative = path.relative(canonicalBase, canonicalFile);
+  if (path.isAbsolute(relative) || relative === ".." || relative.startsWith(`..${path.sep}`))
+    return yield* new MigrateDevDbPhaseError({
+      phase: "compact",
+      databasePath: filename,
+      cause: "plugin-database-outside-dev-home",
+    });
+  const supported = yield* Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const version = yield* sql<{ user_version: number }>`PRAGMA user_version`;
+    if (version[0]?.user_version !== 1) return false;
+    const columns = yield* sql<{ name: string }>`PRAGMA table_info(plugin_records)`;
+    return ["installation_id", "record_json", "event_cursor"].every((name) =>
+      columns.some((column) => column.name === name),
+    );
+  }).pipe(
+    Effect.provide(NodeSqliteClient.layer({ filename, readonly: true })),
+    Effect.catch(() => Effect.succeed(false)),
+  );
+  // Unreadable and newer files cannot run on this host and must remain opaque.
+  if (!supported) return;
+  yield* Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql.withTransaction(pausePluginObserversAfterReseed(throughSequence));
+  }).pipe(
+    Effect.provide(NodeSqliteClient.layer({ filename })),
+    Effect.mapError(
+      (cause) => new MigrateDevDbPhaseError({ phase: "compact", databasePath: filename, cause }),
+    ),
+  );
 });
 
 const pruneSnapshot = Effect.fn("pruneDevDbSnapshot")(function* (input: RunMigrateDevDbInput) {
@@ -393,8 +473,12 @@ const pruneSnapshot = Effect.fn("pruneDevDbSnapshot")(function* (input: RunMigra
             AND stream_id NOT IN (SELECT thread_id FROM kept_threads))
            OR (aggregate_kind = 'project'
             AND stream_id NOT IN (SELECT project_id FROM kept_projects))`;
+      const presentTables = yield* sql<{
+        name: string;
+      }>`SELECT name FROM sqlite_schema WHERE type='table'`;
+      const names = new Set(presentTables.map((table) => table.name));
       for (const table of CLEARED_TABLES) {
-        yield* sql`DELETE FROM ${sql(table)}`;
+        if (names.has(table)) yield* sql`DELETE FROM ${sql(table)}`;
       }
     }),
   );
@@ -531,6 +615,21 @@ export const runMigrateDevDb = Effect.fn("runMigrateDevDb")(function* (
       ),
       wrapPhase("prune", snapshotPath),
     );
+
+    const historyStart = yield* Effect.gen(function* () {
+      yield* preserveDevPlugins(databasePath);
+      const sql = yield* SqlClient.SqlClient;
+      const rows = yield* sql<{
+        sequence: number;
+      }>`SELECT COALESCE(MAX(sequence),0) AS sequence FROM orchestration_events`;
+      const sequence = rows[0]?.sequence ?? 0;
+      yield* sql.withTransaction(pausePluginObserversAfterReseed(sequence));
+      return sequence;
+    }).pipe(
+      Effect.provide(NodeSqliteClient.layer({ filename: snapshotPath })),
+      wrapPhase("compact", databasePath),
+    );
+    yield* pauseDevPluginDatabase(baseDir, historyStart);
 
     yield* Console.log(`Compacting into ${databasePath}...`);
     // A server may have started during pruning; re-check before replacing its database.

@@ -1,4 +1,7 @@
 import * as Dialog from "../../components/ui/Dialog";
+import { useAtomValue } from "@effect/atom-react";
+import { pluginPlacementEntriesAtom } from "../../state/plugins";
+import { usePluginActionRunner } from "../plugins/usePluginActions";
 import type { ThreadRowProviderInstance } from "./thread-provider-instance";
 import {
   THREAD_LIST_V2_MONO_FONT as MONO_FONT,
@@ -847,6 +850,28 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
     ],
     [props.titleRegenerationSupported, thread.titleRegeneration],
   );
+  const pluginEntries = useAtomValue(
+    pluginPlacementEntriesAtom(thread.environmentId, "thread-menu"),
+  );
+  const runPluginAction = usePluginActionRunner();
+  const pluginMenuItems = useMemo<MenuAction[]>(
+    () =>
+      pluginEntries.length === 0
+        ? []
+        : [
+            {
+              id: "plugins",
+              title: "Plugins",
+              image: "puzzlepiece.extension",
+              subactions: pluginEntries.map((entry) => ({
+                id: `plugin:${entry.installation.installationId}:${entry.action.id}`,
+                title: entry.action.title,
+                subtitle: entry.installation.manifest.name,
+              })),
+            },
+          ],
+    [pluginEntries],
+  );
   const snoozableCardMenuActions = useMemo<MenuAction[]>(
     () => [
       { id: "settle", title: "Settle", image: "checkmark" },
@@ -859,10 +884,17 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       ...arrangementMenuItems,
       ...titleMenuItems,
       ...autoSettleMenuItems,
+      ...pluginMenuItems,
       LEGACY_MENU_ACTIONS[0]!,
       { id: "delete", title: "Delete", image: "trash", attributes: { destructive: true } },
     ],
-    [arrangementMenuItems, autoSettleMenuItems, snoozePresetActions, titleMenuItems],
+    [
+      arrangementMenuItems,
+      autoSettleMenuItems,
+      pluginMenuItems,
+      snoozePresetActions,
+      titleMenuItems,
+    ],
   );
   const cardMenuActions = useMemo<MenuAction[]>(
     () => [
@@ -870,10 +902,11 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       ...arrangementMenuItems,
       ...titleMenuItems,
       ...autoSettleMenuItems,
+      ...pluginMenuItems,
       LEGACY_MENU_ACTIONS[0]!,
       ...CARD_MENU_ACTIONS.slice(1),
     ],
-    [arrangementMenuItems, autoSettleMenuItems, titleMenuItems],
+    [arrangementMenuItems, autoSettleMenuItems, pluginMenuItems, titleMenuItems],
   );
   const slimMenuActions = useMemo<MenuAction[]>(
     () => [
@@ -883,29 +916,32 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       ),
       ...titleMenuItems,
       ...autoSettleMenuItems,
+      ...pluginMenuItems,
       LEGACY_MENU_ACTIONS[0]!,
       SLIM_MENU_ACTIONS[1]!,
     ],
-    [arrangementMenuItems, autoSettleMenuItems, titleMenuItems],
+    [arrangementMenuItems, autoSettleMenuItems, pluginMenuItems, titleMenuItems],
   );
   const snoozedMenuActions = useMemo<MenuAction[]>(
     () => [
       SNOOZED_MENU_ACTIONS[0]!,
       ...titleMenuItems,
       ...autoSettleMenuItems,
+      ...pluginMenuItems,
       LEGACY_MENU_ACTIONS[0]!,
       SNOOZED_MENU_ACTIONS[1]!,
     ],
-    [autoSettleMenuItems, titleMenuItems],
+    [autoSettleMenuItems, pluginMenuItems, titleMenuItems],
   );
   const legacyMenuActions = useMemo<MenuAction[]>(
     () => [
       LEGACY_MENU_ACTIONS[0]!,
       ...arrangementMenuItems,
       ...titleMenuItems,
+      ...pluginMenuItems,
       LEGACY_MENU_ACTIONS[1]!,
     ],
-    [arrangementMenuItems, titleMenuItems],
+    [arrangementMenuItems, pluginMenuItems, titleMenuItems],
   );
   const handleMenuAction = useCallback(
     ({ nativeEvent }: { readonly nativeEvent: { readonly event: string } }) => {
@@ -936,6 +972,26 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
         copyTextWithHaptic(thread.id, { target: "thread-id" });
       }
       if (nativeEvent.event === "delete") handleDelete();
+      if (nativeEvent.event.startsWith("plugin:")) {
+        const [, installationId, actionId] = nativeEvent.event.split(":");
+        const entry = pluginEntries.find(
+          (candidate) =>
+            candidate.installation.installationId === installationId &&
+            candidate.action.id === actionId,
+        );
+        if (entry) {
+          void runPluginAction(
+            {
+              environmentId: thread.environmentId,
+              installation: entry.installation,
+              threadId: thread.id,
+            },
+            entry.action,
+            { projectId: thread.projectId, threadId: thread.id },
+          );
+        }
+        return;
+      }
       if (nativeEvent.event === "snooze:custom") {
         setCustomSnoozeOpen(true);
         return;
@@ -974,6 +1030,8 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       setCustomSnoozeOpen,
       snoozePresets,
       props.snoozePresets,
+      pluginEntries,
+      runPluginAction,
     ],
   );
   const primaryAction = useMemo(() => {

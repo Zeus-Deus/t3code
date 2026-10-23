@@ -35,6 +35,12 @@ function recordEffect(action: string) {
 }
 
 vi.mock("../components/CustomSnoozeDialog", () => ({ requestCustomSnooze: vi.fn() }));
+vi.mock("../components/plugins/usePluginThreadMenu", () => ({
+  usePluginThreadMenu: () => ({
+    capture: () => ({ entries: [], items: [], locationKey: "/" }),
+    run: () => false,
+  }),
+}));
 vi.mock("react", () => ({
   useCallback: (callback: unknown) => callback,
   useMemo: (factory: () => unknown) => factory(),

@@ -21,6 +21,7 @@ const RIGHT_PANEL_KINDS = [
   "terminal",
   "pull-request",
   "pull-requests",
+  "plugin",
 ] as const;
 export type RightPanelKind = (typeof RIGHT_PANEL_KINDS)[number];
 
@@ -74,7 +75,15 @@ export type RightPanelSurface =
       url?: string;
       detailTab?: PullRequestDetailTab;
     }
-  | { id: "pull-requests"; kind: "pull-requests" };
+  | { id: "pull-requests"; kind: "pull-requests" }
+  | {
+      /** A plugin view in the thread's environment; the installation is looked up when shown. */
+      id: `plugin:${string}`;
+      kind: "plugin";
+      installationId: string;
+      viewId: string;
+      title: string;
+    };
 
 const RIGHT_PANEL_STORAGE_KEY = "t3code:right-panel-state:v2";
 const RIGHT_PANEL_STORAGE_VERSION = 14;
@@ -120,7 +129,7 @@ interface RightPanelStoreState {
   ) => boolean;
   open: (
     ref: ScopedThreadRef,
-    kind: Exclude<RightPanelKind, "file" | "terminal" | "pull-request">,
+    kind: Exclude<RightPanelKind, "file" | "terminal" | "pull-request" | "plugin">,
   ) => void;
   openDevice: (ref: ScopedThreadRef, target: DeviceTabTarget, automatic?: boolean) => void;
   renameDevice: (ref: ScopedThreadRef, surfaceId: string, title: string) => void;
@@ -135,6 +144,10 @@ interface RightPanelStoreState {
     keepSource?: boolean,
   ) => void;
   openAttachment: (ref: ScopedThreadRef, attachment: ChatFileAttachment) => void;
+  openPluginView: (
+    ref: ScopedThreadRef,
+    target: { installationId: string; viewId: string; title: string },
+  ) => void;
   openPullRequest: (
     ref: ScopedThreadRef,
     target: {
@@ -179,7 +192,7 @@ interface RightPanelStoreState {
   toggleVisibility: (ref: ScopedThreadRef) => void;
   toggle: (
     ref: ScopedThreadRef,
-    kind: Exclude<RightPanelKind, "file" | "terminal" | "pull-request">,
+    kind: Exclude<RightPanelKind, "file" | "terminal" | "pull-request" | "plugin">,
   ) => void;
   setThreadPanelOpen: (
     ref: ScopedThreadRef,
@@ -201,8 +214,20 @@ const DEFAULT_THREAD_PANEL_VISIBILITY: ThreadPanelVisibility = {
   popoverOpen: false,
 };
 
+const pluginSurface = (target: {
+  installationId: string;
+  viewId: string;
+  title: string;
+}): Extract<RightPanelSurface, { kind: "plugin" }> => ({
+  id: `plugin:${target.installationId}:${target.viewId}`,
+  kind: "plugin",
+  installationId: target.installationId,
+  viewId: target.viewId,
+  title: target.title,
+});
+
 const singletonSurface = (
-  kind: Exclude<RightPanelKind, "file" | "preview" | "terminal" | "pull-request">,
+  kind: Exclude<RightPanelKind, "file" | "preview" | "terminal" | "pull-request" | "plugin">,
 ): RightPanelSurface => {
   switch (kind) {
     case "diff":
@@ -473,6 +498,13 @@ export function migratePersistedRightPanelState(persistedState: unknown): {
                           : 0;
                       return [{ ...surface, revealLine, revealRequestId }];
                     }
+                    if (surface.kind === "plugin") {
+                      return typeof surface.installationId === "string" &&
+                        typeof surface.viewId === "string" &&
+                        typeof surface.title === "string"
+                        ? [pluginSurface(surface)]
+                        : [];
+                    }
                     if (surface.kind === "pull-request") {
                       if (
                         typeof surface.projectId !== "string" ||
@@ -691,6 +723,12 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
               : current.surfaces;
             return upsertSurface({ ...current, surfaces: withoutPlaceholder }, surface);
           }),
+        ),
+      openPluginView: (ref, target) =>
+        set((state) =>
+          userAction(state, scopedThreadKey(ref), (current) =>
+            upsertSurface(current, pluginSurface(target)),
+          ),
         ),
       openPullRequest: (ref, target) =>
         set((state) =>

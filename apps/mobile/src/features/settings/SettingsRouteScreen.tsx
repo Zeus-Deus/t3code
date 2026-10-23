@@ -1,3 +1,5 @@
+import { useAtomValue } from "@effect/atom-react";
+import { pluginAttentionCountAtom } from "../../state/plugins";
 import {
   navigationCustomizationAvailable,
   overflowNavigationTabs,
@@ -212,6 +214,9 @@ function SettingsList(props: { readonly connections: readonly SettingsListRow[] 
 function useSettingsIndexSections(): SettingsListSection[] {
   const { selectedTargets, projectGroups, selectedProjectKey } = useSettingsEnvironmentFilter();
   const noServerTargets = selectedTargets.length === 0;
+  const pluginAttention = useAtomValue(
+    pluginAttentionCountAtom(selectedTargets.map((target) => target.environmentId)),
+  );
   const selectedProject = projectGroups.find((group) => group.key === selectedProjectKey);
   const scopedProjectMembers =
     selectedProject?.members
@@ -258,6 +263,9 @@ function useSettingsIndexSections(): SettingsListSection[] {
         serverPage("SettingsProviderAccounts", "person.crop.circle", "Providers"),
         serverPage("SettingsThreads", "text.bubble", "Threads"),
         page("SettingsScheduledTasks", "clock", "Scheduled tasks"),
+        page("SettingsPlugins", "cube", "Plugins", {
+          value: pluginAttention === 0 ? undefined : `${pluginAttention} need${pluginAttention === 1 ? "s" : ""} attention`,
+        }),
       ],
     },
     {

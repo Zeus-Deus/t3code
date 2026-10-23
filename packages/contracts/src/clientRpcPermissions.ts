@@ -2,6 +2,7 @@ import * as Schema from "effect/Schema";
 import { GitPreparePullRequestThreadInput, GitRunStackedActionInput } from "./git.ts";
 import {
   AuthAccessWriteScope,
+  AuthTerminalOperateScope,
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
   AuthPreviewOperateScope,
@@ -15,6 +16,22 @@ import { WS_METHODS } from "./rpc.ts";
 
 /** Incremental client enforcement; the server still authorizes every request. */
 export const CLIENT_GUARDED_RPC_SCOPES = {
+  [WS_METHODS.pluginsPrepareRepair]: AuthAccessWriteScope,
+  [WS_METHODS.pluginsStageRepair]: AuthAccessWriteScope,
+  [WS_METHODS.pluginsUsePrevious]: AuthAccessWriteScope,
+  [WS_METHODS.pluginsBacklog]: AuthOrchestrationReadScope,
+  [WS_METHODS.pluginsInstall]: AuthAccessWriteScope,
+  [WS_METHODS.pluginsRefresh]: AuthAccessWriteScope,
+  [WS_METHODS.pluginsDiscardPendingUpdate]: AuthAccessWriteScope,
+  [WS_METHODS.pluginsConsent]: AuthAccessWriteScope,
+  [WS_METHODS.pluginsSetEnabled]: AuthAccessWriteScope,
+  [WS_METHODS.pluginsRemove]: AuthAccessWriteScope,
+  [WS_METHODS.pluginsResume]: AuthAccessWriteScope,
+  [WS_METHODS.pluginsUpdateSettings]: AuthAccessWriteScope,
+  [WS_METHODS.pluginsInvoke]: AuthOrchestrationOperateScope,
+  [WS_METHODS.pluginsList]: AuthOrchestrationReadScope,
+  [WS_METHODS.pluginsSubscribe]: AuthOrchestrationReadScope,
+  [WS_METHODS.pluginsReadView]: AuthOrchestrationReadScope,
   [WS_METHODS.previewClose]: AuthPreviewOperateScope,
   // Stopping a server signals its processes, as closing a terminal does.
   [WS_METHODS.previewStopLocalServer]: AuthTerminalOperateScope,
@@ -75,6 +92,23 @@ export function clientRpcRequiredScopes(
   method: string,
   input: unknown,
 ): readonly AuthEnvironmentScope[] {
+  if (
+    [
+      WS_METHODS.pluginsInstall,
+      WS_METHODS.pluginsPrepareRepair,
+      WS_METHODS.pluginsStageRepair,
+      WS_METHODS.pluginsUsePrevious,
+      WS_METHODS.pluginsRefresh,
+      WS_METHODS.pluginsDiscardPendingUpdate,
+      WS_METHODS.pluginsConsent,
+      WS_METHODS.pluginsSetEnabled,
+      WS_METHODS.pluginsRemove,
+      WS_METHODS.pluginsResume,
+      WS_METHODS.pluginsUpdateSettings,
+    ].some((tag) => tag === method)
+  ) {
+    return [AuthAccessWriteScope, AuthTerminalOperateScope];
+  }
   if (method === WS_METHODS.gitPreparePullRequestThread && input !== undefined) {
     const payload = decodePrepareThread(input);
     if (payload.mode === "worktree" && payload.threadId !== undefined)

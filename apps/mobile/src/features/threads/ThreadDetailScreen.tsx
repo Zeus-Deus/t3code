@@ -169,6 +169,7 @@ import { ComposerErrorNotice } from "./ComposerErrorNotice";
 import { ComposerFeedback } from "./ComposerFeedback";
 import { ComposerUsageLimits } from "./ComposerUsageLimits";
 import { PendingUserInputCard } from "./PendingUserInputCard";
+import { PluginThreadStatuses } from "../plugins/PluginThreadStatuses";
 import { ProviderSubagentBar } from "./ProviderSubagentBar";
 import { ThreadCreationFailedCard } from "./ThreadCreationFailedCard";
 import {
@@ -1416,6 +1417,13 @@ function ThreadDetailBody(props: ThreadDetailScreenProps) {
                       });
                     }}
                   />
+                  {props.draftMode ? null : (
+                    <PluginThreadStatuses
+                      environmentId={props.environmentId}
+                      threadId={props.selectedThread.id}
+                      projectId={props.selectedThread.projectId}
+                    />
+                  )}
                   {props.queuedRunEdit !== null ? (
                     <Animated.View
                       className="shrink-0"

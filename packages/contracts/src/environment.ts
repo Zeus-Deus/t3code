@@ -70,6 +70,14 @@ export const ServerSelfUpdateCapability = Schema.Literals([
 export type ServerSelfUpdateCapability = typeof ServerSelfUpdateCapability.Type;
 
 export const ExecutionEnvironmentCapabilities = Schema.Struct({
+  plugins: Schema.optionalKey(
+    Schema.Struct({
+      apiVersion: Schema.Int,
+      capabilities: Schema.optionalKey(Schema.Array(Schema.String)),
+      recovery: Schema.optionalKey(Schema.Boolean),
+      executionDisabled: Schema.optionalKey(Schema.Boolean),
+    }),
+  ),
   repositoryIdentity: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   connectionProbe: Schema.optionalKey(Schema.Boolean),
   attachmentUploads: Schema.optionalKey(Schema.Boolean),

@@ -14,6 +14,12 @@ const withDatabase = <A, E>(
   effect: Effect.Effect<A, E, SqlClient.SqlClient>,
 ) => effect.pipe(Effect.provide(NodeSqliteClient.layer({ filename: databasePath })));
 
+const legacyCatalogue = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`CREATE TABLE plugin_records (installation_id TEXT PRIMARY KEY, position INTEGER NOT NULL, record_json TEXT NOT NULL, event_cursor INTEGER NOT NULL)`;
+  yield* sql`CREATE TABLE plugin_storage (installation_id TEXT NOT NULL REFERENCES plugin_records(installation_id) ON DELETE CASCADE, key TEXT NOT NULL, value_json TEXT NOT NULL, PRIMARY KEY(installation_id,key))`;
+  yield* sql`CREATE TABLE plugin_state_metadata (id INTEGER PRIMARY KEY CHECK(id=1), value_json TEXT NOT NULL)`;
+});
 const createFixtureSource = Effect.fn("createMigrateDevDbFixtureSource")(function* (
   baseDir: string,
 ) {
@@ -27,6 +33,7 @@ const createFixtureSource = Effect.fn("createMigrateDevDbFixtureSource")(functio
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       yield* runMigrations();
+      yield* legacyCatalogue;
 
       yield* sql`INSERT INTO projection_projects
         (project_id, title, workspace_root, scripts_json, created_at, updated_at, deleted_at)
@@ -95,12 +102,233 @@ const createFixtureSource = Effect.fn("createMigrateDevDbFixtureSource")(functio
         VALUES ('delivery-1', 'task-1', 'key-1', 1900000000000, '{}', '{}', '[]')`;
       yield* sql`INSERT INTO auth_sessions (session_id, subject, scopes, method, issued_at, expires_at)
         VALUES ('session-1', 'user', '[]', 'pairing', '2026-08-01', '2027-08-01')`;
+      yield* sql`INSERT INTO plugin_records VALUES
+        ('plugin-live', 0, '{"secrets":{"token":"source-only-secret"},"directory":"/live/userdata/plugins/snapshots/plugin-live/one"}', 123)`;
+      yield* sql`INSERT INTO plugin_storage VALUES ('plugin-live', 'notes', '["source-only-note"]')`;
+      yield* sql`INSERT INTO plugin_state_metadata VALUES (1, '{"receipts":{},"origins":{}}')`;
+      yield* sql`INSERT INTO plugin_operation_receipts
+        (operation_key,installation_id,generation,request_digest,result_json)
+        VALUES ('source-operation', 'plugin-live', 'one', 'digest', '{"secret":"source-only-result"}')`;
+      yield* sql`INSERT INTO plugin_run_deliveries VALUES ('plugin-live', 'one', 'run-stopped-thread')`;
+      yield* sql`INSERT INTO plugin_event_reservations VALUES ('plugin-live', 'one', 'delivery', 'source-operation')`;
     }),
   );
   return databasePath;
 });
 
 it.layer(NodeServices.layer)("migrate-dev-db", (it) => {
+  it.effect("never seeds plugin secrets, storage, receipts or observer cursors", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const sourceDir = yield* fs.makeTempDirectoryScoped({ prefix: "migrate-plugin-source-" });
+      const destDir = yield* fs.makeTempDirectoryScoped({ prefix: "migrate-plugin-dest-" });
+      const source = yield* createFixtureSource(sourceDir);
+      const tables = [
+        "plugin_records",
+        "plugin_storage",
+        "plugin_state_metadata",
+        "plugin_operation_receipts",
+        "plugin_run_deliveries",
+        "plugin_event_reservations",
+      ];
+      const counts = Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const existing = yield* sql<{
+          name: string;
+        }>`SELECT name FROM sqlite_schema WHERE type='table'`;
+        const names = new Set(existing.map((entry) => entry.name));
+        return yield* Effect.forEach(tables, (table) =>
+          names.has(table)
+            ? sql
+                .unsafe<{ count: number }>(`SELECT COUNT(*) AS count FROM ${table}`)
+                .pipe(Effect.map((rows) => rows[0]!.count))
+            : Effect.succeed(0),
+        );
+      });
+      assert.deepStrictEqual(yield* withDatabase(source, counts), [1, 1, 1, 1, 1, 1]);
+      const result = yield* runMigrateDevDb(
+        { baseDir: destDir, source, projects: 5, threadsPerProject: 2 },
+        { sharedHome: sourceDir },
+      );
+      assert.deepStrictEqual(yield* withDatabase(result.databasePath, counts), [0, 0, 0, 0, 0, 0]);
+      assert.deepStrictEqual(yield* withDatabase(source, counts), [1, 1, 1, 1, 1, 1]);
+    }),
+  );
+
+  it.effect("preserves isolated plugin installs and files while excluding live plugin state", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const sourceDir = yield* fs.makeTempDirectoryScoped({ prefix: "migrate-plugin-live-" });
+      const destDir = yield* fs.makeTempDirectoryScoped({ prefix: "migrate-plugin-dev-" });
+      const source = yield* createFixtureSource(sourceDir);
+      const destination = yield* createFixtureSource(destDir);
+      const raw = '{ "formatVersion": 99, "private": "dev-only" }';
+      yield* withDatabase(
+        destination,
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          yield* sql`DELETE FROM plugin_storage`;
+          yield* sql`DELETE FROM plugin_records`;
+          yield* sql`INSERT INTO plugin_records VALUES('dev-plugin',0,${raw},456)`;
+          yield* sql`INSERT INTO plugin_storage VALUES('dev-plugin','notes','"dev-only-value"')`;
+        }),
+      );
+      const pluginDir = path.join(destDir, "userdata", "plugins");
+      yield* fs.makeDirectory(pluginDir, { recursive: true });
+      const pluginDb = path.join(pluginDir, "state.sqlite");
+      // An unreadable or newer plugin database is preserved, never recreated by seeding.
+      yield* fs.writeFileString(pluginDb, "opaque plugin database bytes");
+      const snapshot = path.join(pluginDir, "snapshots", "dev-plugin", "one");
+      yield* fs.makeDirectory(snapshot, { recursive: true });
+      yield* fs.writeFileString(path.join(snapshot, "plugin.mjs"), "dev snapshot bytes");
+      const result = yield* runMigrateDevDb(
+        { baseDir: destDir, source, projects: 5, threadsPerProject: 2 },
+        { sharedHome: sourceDir },
+      );
+      const state = yield* withDatabase(
+        result.databasePath,
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          return {
+            records:
+              yield* sql`SELECT installation_id,record_json,event_cursor FROM plugin_records`,
+            storage: yield* sql`SELECT installation_id,value_json FROM plugin_storage`,
+            ledger: yield* sql`SELECT * FROM plugin_operation_receipts`,
+          };
+        }),
+      );
+      assert.deepStrictEqual(state.records, [
+        { installation_id: "dev-plugin", record_json: raw, event_cursor: 456 },
+      ]);
+      assert.deepStrictEqual(state.storage, [
+        { installation_id: "dev-plugin", value_json: '"dev-only-value"' },
+      ]);
+      assert.deepStrictEqual(state.ledger, []);
+      assert.strictEqual(yield* fs.readFileString(pluginDb), "opaque plugin database bytes");
+      assert.strictEqual(
+        yield* fs.readFileString(path.join(snapshot, "plugin.mjs")),
+        "dev snapshot bytes",
+      );
+    }),
+  );
+
+  it.effect(
+    "pauses enabled destination observers in both catalogues before replacing their core history",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const sourceDir = yield* fs.makeTempDirectoryScoped({ prefix: "migrate-observer-source-" });
+        const destDir = yield* fs.makeTempDirectoryScoped({ prefix: "migrate-observer-dest-" });
+        const source = yield* createFixtureSource(sourceDir);
+        const destination = yield* createFixtureSource(destDir);
+        const record = {
+          formatVersion: 1,
+          installation: {
+            installationId: "dev-observer",
+            generation: "one",
+            manifest: {
+              id: "test.observer",
+              name: "Observer",
+              version: "1.0.0",
+              apiVersion: 1,
+              entry: "plugin.mjs",
+              capabilities: ["events.run-finalized"],
+              actions: [],
+              views: [],
+              settings: [],
+            },
+            source: { kind: "local", directory: "/dev-only" },
+            digest: "0".repeat(64),
+            enabled: true,
+            consentedDigest: "0".repeat(64),
+            status: "idle",
+            error: null,
+            settings: { keep: "setting" },
+            grants: { capabilities: ["events.run-finalized"], projectIds: ["project-kept"] },
+            updatedAt: "2026-10-23T12:00:00.000Z",
+          },
+          directory: "snapshots/dev-observer/one",
+          secrets: { token: "dev-secret" },
+          projectGrantStarts: { "project-kept": 3 },
+        };
+        const json = JSON.stringify(record);
+        yield* withDatabase(
+          destination,
+          Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient;
+            yield* sql`DELETE FROM plugin_storage`;
+            yield* sql`DELETE FROM plugin_records`;
+            yield* sql`INSERT INTO plugin_records VALUES('dev-observer',0,${json},999)`;
+          }),
+        );
+        const pluginDirectory = path.join(destDir, "userdata", "plugins");
+        yield* fs.makeDirectory(pluginDirectory, { recursive: true });
+        const pluginDb = path.join(pluginDirectory, "state.sqlite");
+        const opaque = '{ "formatVersion": 99, "future": "untouched" }';
+        yield* withDatabase(
+          pluginDb,
+          Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient;
+            yield* sql`CREATE TABLE plugin_records(installation_id TEXT PRIMARY KEY,position INTEGER,record_json TEXT,event_cursor INTEGER)`;
+            yield* sql`CREATE TABLE plugin_storage(installation_id TEXT,key TEXT,value_json TEXT)`;
+            yield* sql`CREATE TABLE plugin_state_metadata(id INTEGER PRIMARY KEY,value_json TEXT)`;
+            yield* sql`PRAGMA user_version=1`;
+            yield* sql`INSERT INTO plugin_records VALUES('dev-observer',0,${json},999),('future',1,${opaque},123)`;
+            yield* sql`INSERT INTO plugin_storage VALUES('dev-observer','notes','"dev-value"')`;
+            yield* sql`INSERT INTO plugin_state_metadata VALUES(1,'{}')`;
+          }),
+        );
+        const result = yield* runMigrateDevDb(
+          { baseDir: destDir, source, projects: 5, threadsPerProject: 2 },
+          { sharedHome: sourceDir },
+        );
+        const latest = yield* withDatabase(
+          result.databasePath,
+          Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient;
+            const rows = yield* sql<{
+              sequence: number;
+            }>`SELECT COALESCE(MAX(sequence),0) AS sequence FROM orchestration_events`;
+            return rows[0]!.sequence;
+          }),
+        );
+        const observer = Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          return yield* sql`SELECT event_cursor,json_extract(record_json,'$.eventBacklogChoiceRequired') AS paused,
+          json_extract(record_json,'$.projectGrantStarts.project-kept') AS grant_start,
+          json_extract(record_json,'$.installation.enabled') AS enabled,
+          json_extract(record_json,'$.secrets.token') AS secret
+          FROM plugin_records WHERE installation_id='dev-observer'`;
+        });
+        const expected = [
+          {
+            event_cursor: latest,
+            paused: 1,
+            grant_start: latest,
+            enabled: 1,
+            secret: "dev-secret",
+          },
+        ];
+        assert.deepStrictEqual(yield* withDatabase(result.databasePath, observer), expected);
+        assert.deepStrictEqual(yield* withDatabase(pluginDb, observer), expected);
+        yield* withDatabase(
+          pluginDb,
+          Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient;
+            assert.deepStrictEqual(
+              yield* sql`SELECT record_json,event_cursor FROM plugin_records WHERE installation_id='future'`,
+              [{ record_json: opaque, event_cursor: 123 }],
+            );
+            assert.deepStrictEqual(yield* sql`SELECT value_json FROM plugin_storage`, [
+              { value_json: '"dev-value"' },
+            ]);
+          }),
+        );
+      }),
+  );
+
   it.effect("keeps stopped and settled thread families and clears pending work", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;

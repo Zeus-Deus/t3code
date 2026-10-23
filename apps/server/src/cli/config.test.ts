@@ -744,6 +744,24 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
     tailscaleServePort: Option.none<number>(),
   });
 
+  it.effect("can start in plugin safe mode without changing the server's data location", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-plugin-safe-mode-" });
+      const resolved = yield* resolveServerConfig(minimalWebFlags(baseDir), Option.none()).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            ConfigProvider.layer(ConfigProvider.fromEnv({ env: { T3CODE_PLUGINS: "0" } })),
+            NetService.layer,
+          ),
+        ),
+      );
+
+      expect(resolved).toMatchObject({ pluginsEnabled: false, baseDir });
+      expect(resolved.dbPath).toBe((yield* deriveExplicitServerPaths(baseDir, undefined)).dbPath);
+    }),
+  );
+
   it.effect(
     "resolves each signal's endpoint through T3CODE_OTLP_*_URL, an OTEL endpoint, the bootstrap envelope, and persisted Settings, in that order",
     () =>

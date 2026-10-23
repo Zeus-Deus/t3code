@@ -14,6 +14,38 @@ const descriptor = {
 } as const;
 
 describe("ExecutionEnvironmentDescriptor", () => {
+  it("decodes an unsupported plugin API major without breaking the connection descriptor", () => {
+    expect(
+      decodeDescriptor({
+        ...descriptor,
+        capabilities: { ...descriptor.capabilities, plugins: { apiVersion: 2 } },
+      }).capabilities.plugins,
+    ).toEqual({ apiVersion: 2 });
+  });
+
+  it("preserves optional recovery and execution metadata while older descriptors remain usable", () => {
+    expect(decodeDescriptor(descriptor).capabilities.plugins).toBeUndefined();
+    expect(
+      decodeDescriptor({
+        ...descriptor,
+        capabilities: {
+          ...descriptor.capabilities,
+          plugins: {
+            apiVersion: 1,
+            recovery: true,
+            executionDisabled: true,
+            capabilities: ["storage", "future.optional"],
+          },
+        },
+      }).capabilities.plugins,
+    ).toEqual({
+      apiVersion: 1,
+      recovery: true,
+      executionDisabled: true,
+      capabilities: ["storage", "future.optional"],
+    });
+  });
+
   it("decodes old, recognized and future manual installation descriptors", () => {
     expect(decodeDescriptor(descriptor).capabilities.serverInstallation).toBeUndefined();
     for (const installation of [{ kind: "npx" }, { kind: "npm-global", prefix: "/opt/node" }]) {

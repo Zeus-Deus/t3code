@@ -34,6 +34,7 @@ import {
   Files,
   Globe2,
   Plus,
+  Puzzle,
   TerminalSquare,
 } from "lucide-react";
 import { Volume2, VolumeOff } from "lucide";
@@ -554,6 +555,8 @@ function surfaceTitle(
       return `#${surface.number}`;
     case "pull-requests":
       return "Pull requests";
+    case "plugin":
+      return surface.title;
     case "device":
       return surface.title ?? surface.target?.name ?? "Device";
     case "preview": {
@@ -644,6 +647,8 @@ function SurfaceIcon({
       );
     case "pull-requests":
       return <PullRequestGlyph.link className="size-3 shrink-0" />;
+    case "plugin":
+      return <Puzzle className="size-3 shrink-0" />;
     case "device":
       return surface.target?.platform === "ios" ? (
         <AppleIcon className="size-3 shrink-0" />

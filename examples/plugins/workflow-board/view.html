@@ -1,0 +1,534 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Workflow Board</title>
+    <style>
+      /*
+       * T3 Code applies its theme as CSS variables on <html> through the plugin bridge
+       * (window.t3). The fallbacks keep the page readable before the first context arrives.
+       */
+      :root {
+        --bg: var(--color-background-primary, #ffffff);
+        --surface: var(--color-background-secondary, #f6f6f7);
+        --muted-bg: var(--color-background-tertiary, #eeeef0);
+        --fg: var(--color-text-primary, #111113);
+        --muted: var(--color-text-secondary, #6b6b73);
+        --border: var(--color-border-primary, #e3e3e6);
+        --input: var(--color-border-secondary, #d6d6da);
+        --ring: var(--color-ring-primary, #6b6bff);
+        --danger: var(--color-text-danger, #c2410c);
+        --success: var(--color-text-success, #15803d);
+        --warning: var(--color-text-warning, #a16207);
+        --radius: var(--border-radius-md, 8px);
+        --font: var(--font-sans, ui-sans-serif, system-ui, sans-serif);
+        --mono: var(--font-mono, ui-monospace, monospace);
+        color-scheme: light dark;
+      }
+      html[data-t3-theme="dark"] {
+        --bg: var(--color-background-primary, #0f0f11);
+        --surface: var(--color-background-secondary, #17171a);
+        --muted-bg: var(--color-background-tertiary, #202024);
+        --fg: var(--color-text-primary, #ededef);
+        --muted: var(--color-text-secondary, #9a9aa3);
+        --border: var(--color-border-primary, #26262b);
+        --input: var(--color-border-secondary, #303036);
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        min-height: 100%;
+        background: var(--bg);
+        color: var(--fg);
+        font: 14px/1.45 var(--font);
+      }
+      main {
+        max-width: 880px;
+        margin: 0 auto;
+        padding: 24px 20px 48px;
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+      }
+      header {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 12px;
+      }
+      h1 {
+        margin: 0;
+        font-size: 15px;
+        font-weight: 600;
+      }
+      .count {
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .composer {
+        display: flex;
+        gap: 8px;
+        align-items: flex-start;
+      }
+      textarea {
+        flex: 1;
+        min-height: 38px;
+        max-height: 160px;
+        resize: vertical;
+        padding: 8px 10px;
+        border: 1px solid var(--input);
+        border-radius: var(--radius);
+        background: var(--bg);
+        color: var(--fg);
+        font: inherit;
+      }
+      textarea:focus-visible,
+      button:focus-visible {
+        outline: 2px solid var(--ring);
+        outline-offset: 1px;
+      }
+      button {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        height: 28px;
+        padding: 0 10px;
+        border: 1px solid var(--input);
+        border-radius: calc(var(--radius) - 2px);
+        background: var(--bg);
+        color: var(--fg);
+        font: inherit;
+        font-size: 12px;
+        cursor: pointer;
+        white-space: nowrap;
+      }
+      button:hover:not(:disabled) {
+        background: var(--muted-bg);
+      }
+      button:disabled {
+        opacity: 0.5;
+        cursor: default;
+      }
+      button.primary {
+        background: var(--fg);
+        color: var(--bg);
+        border-color: var(--fg);
+        height: 38px;
+        padding: 0 14px;
+      }
+      button.primary:hover:not(:disabled) {
+        background: var(--fg);
+        opacity: 0.9;
+      }
+      button.ghost {
+        border-color: transparent;
+        background: transparent;
+        color: var(--muted);
+      }
+      button.ghost:hover:not(:disabled) {
+        color: var(--fg);
+      }
+      button.danger:hover:not(:disabled) {
+        color: var(--danger);
+      }
+      .filters {
+        display: flex;
+        gap: 4px;
+      }
+      .filters button[aria-pressed="true"] {
+        background: var(--muted-bg);
+        border-color: var(--border);
+        color: var(--fg);
+      }
+      .status {
+        min-height: 18px;
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .status.error {
+        color: var(--danger);
+      }
+      ul {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        overflow: hidden;
+      }
+      li {
+        padding: 12px 14px;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 6px 12px;
+        background: var(--bg);
+      }
+      li + li {
+        border-top: 1px solid var(--border);
+      }
+      .text {
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        display: -webkit-box;
+        -webkit-line-clamp: 4;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+      }
+      li.expanded .text {
+        display: block;
+      }
+      .meta {
+        grid-column: 1;
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        height: 18px;
+        padding: 0 6px;
+        border-radius: 4px;
+        background: var(--muted-bg);
+        font-size: 11px;
+        font-weight: 500;
+      }
+      .badge.completed {
+        color: var(--success);
+      }
+      .badge.failed {
+        color: var(--danger);
+      }
+      .badge.interrupted {
+        color: var(--warning);
+      }
+      .actions {
+        grid-row: 1 / span 2;
+        grid-column: 2;
+        display: flex;
+        align-items: flex-start;
+        gap: 4px;
+      }
+      .confirm {
+        grid-column: 1 / -1;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        padding: 8px 10px;
+        border-radius: calc(var(--radius) - 2px);
+        background: var(--surface);
+        font-size: 12px;
+      }
+      .empty {
+        padding: 40px 16px;
+        text-align: center;
+        color: var(--muted);
+        border: 1px dashed var(--border);
+        border-radius: var(--radius);
+      }
+      .empty strong {
+        display: block;
+        color: var(--fg);
+        font-weight: 500;
+        margin-bottom: 4px;
+      }
+      @media (max-width: 560px) {
+        main {
+          padding: 16px 12px 32px;
+        }
+        li {
+          grid-template-columns: minmax(0, 1fr);
+        }
+        .actions {
+          grid-row: auto;
+          grid-column: 1;
+          flex-wrap: wrap;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>Workflow board</h1>
+        <span class="count" id="count"></span>
+      </header>
+      <!-- A div, not a form: the view's sandbox has no allow-forms, so submit never fires. -->
+      <div class="composer" id="add">
+        <textarea
+          id="note"
+          name="note"
+          rows="1"
+          maxlength="8000"
+          placeholder="Add a note to review later…"
+          aria-label="New note"
+        ></textarea>
+        <button class="primary" type="button" id="add-button">Add</button>
+      </div>
+      <div class="filters" role="group" aria-label="Filter items">
+        <button type="button" class="ghost" data-filter="all" aria-pressed="true">All</button>
+        <button type="button" class="ghost" data-filter="notes" aria-pressed="false">Notes</button>
+        <button type="button" class="ghost" data-filter="runs" aria-pressed="false">
+          Finished runs
+        </button>
+      </div>
+      <div class="status" id="status" role="status" aria-live="polite"></div>
+      <div id="list"></div>
+    </main>
+    <script>
+      (function () {
+        "use strict";
+        var bridge = window.t3;
+        var state = {
+          items: [],
+          filter: "all",
+          loading: true,
+          busy: {},
+          expanded: {},
+          confirming: null,
+        };
+        var list = document.getElementById("list");
+        var status = document.getElementById("status");
+        var count = document.getElementById("count");
+        var note = document.getElementById("note");
+        var addButton = document.getElementById("add-button");
+
+        function setStatus(text, isError) {
+          status.textContent = text || "";
+          status.className = isError ? "status error" : "status";
+        }
+
+        function call(name, input) {
+          if (!bridge) return Promise.reject(new Error("Open this page inside T3 Code."));
+          return bridge.invoke(name, input).then(function (result) {
+            if (result && result.data && Array.isArray(result.data.items)) {
+              state.items = result.data.items;
+            }
+            if (result && result.message) setStatus(result.message, false);
+            return result;
+          });
+        }
+
+        function relative(iso) {
+          var then = Date.parse(iso);
+          if (!isFinite(then)) return "";
+          var seconds = Math.round((Date.now() - then) / 1000);
+          if (seconds < 60) return "just now";
+          var minutes = Math.round(seconds / 60);
+          if (minutes < 60) return minutes + "m ago";
+          var hours = Math.round(minutes / 60);
+          if (hours < 24) return hours + "h ago";
+          return new Date(then).toLocaleDateString();
+        }
+
+        function el(tag, attrs, children) {
+          var node = document.createElement(tag);
+          for (var key in attrs || {}) {
+            if (key === "text") node.textContent = attrs[key];
+            else if (key === "onclick") node.addEventListener("click", attrs[key]);
+            else node.setAttribute(key, attrs[key]);
+          }
+          (children || []).forEach(function (child) {
+            if (child) node.appendChild(child);
+          });
+          return node;
+        }
+
+        function run(id, name, input) {
+          state.busy[id] = true;
+          render();
+          return call(name, input)
+            .catch(function (error) {
+              setStatus(error.message || "Request failed.", true);
+            })
+            .then(function () {
+              delete state.busy[id];
+              render();
+            });
+        }
+
+        function visibleItems() {
+          return state.items.filter(function (item) {
+            if (state.filter === "runs") return Boolean(item.runId);
+            if (state.filter === "notes") return !item.runId;
+            return true;
+          });
+        }
+
+        function renderItem(item) {
+          var busy = Boolean(state.busy[item.id]);
+          var expanded = Boolean(state.expanded[item.id]);
+          var meta = el("div", { class: "meta" }, [
+            item.outcome
+              ? el("span", { class: "badge " + item.outcome, text: item.outcome })
+              : el("span", { class: "badge", text: "Note" }),
+            el("span", { text: relative(item.createdAt) }),
+            item.threadId ? el("span", { text: "Linked to a thread" }) : null,
+            item.text.length > 280
+              ? el("button", {
+                  type: "button",
+                  class: "ghost",
+                  text: expanded ? "Show less" : "Show more",
+                  onclick: function () {
+                    state.expanded[item.id] = !expanded;
+                    render();
+                  },
+                })
+              : null,
+          ]);
+          var actions = el("div", { class: "actions" }, [
+            item.threadId
+              ? el("button", {
+                  type: "button",
+                  title: "Open the linked thread",
+                  text: "Open thread",
+                  onclick: function () {
+                    run(item.id, "review", { id: item.id });
+                  },
+                })
+              : null,
+            item.threadId
+              ? el("button", {
+                  type: "button",
+                  title: "Ask the agent in the linked thread to review this note",
+                  text: "Request review",
+                  onclick: function () {
+                    state.confirming = item.id;
+                    render();
+                  },
+                })
+              : null,
+            el("button", {
+              type: "button",
+              class: "ghost danger",
+              "aria-label": "Remove note",
+              title: "Remove",
+              text: "Remove",
+              onclick: function () {
+                run(item.id, "remove", { id: item.id });
+              },
+            }),
+          ]);
+          if (busy) {
+            actions.querySelectorAll("button").forEach(function (button) {
+              button.disabled = true;
+            });
+          }
+          var confirm =
+            state.confirming === item.id
+              ? el("div", { class: "confirm" }, [
+                  el("span", { text: "Send a review request to the linked thread?" }),
+                  el("span", {}, [
+                    el("button", {
+                      type: "button",
+                      class: "ghost",
+                      text: "Cancel",
+                      onclick: function () {
+                        state.confirming = null;
+                        render();
+                      },
+                    }),
+                    el("button", {
+                      type: "button",
+                      text: "Send",
+                      onclick: function () {
+                        state.confirming = null;
+                        run(item.id, "followup", { id: item.id });
+                      },
+                    }),
+                  ]),
+                ])
+              : null;
+          return el("li", { class: expanded ? "expanded" : "" }, [
+            el("div", { class: "text", text: item.text }),
+            actions,
+            meta,
+            confirm,
+          ]);
+        }
+
+        function render() {
+          var items = visibleItems();
+          count.textContent = state.loading
+            ? ""
+            : state.items.length + (state.items.length === 1 ? " item" : " items");
+          list.replaceChildren();
+          if (state.loading) {
+            list.appendChild(el("div", { class: "empty", text: "Loading…" }));
+            return;
+          }
+          if (items.length === 0) {
+            list.appendChild(
+              el("div", { class: "empty" }, [
+                el("strong", {
+                  text: state.items.length === 0 ? "Nothing on the board yet" : "No matching items",
+                }),
+                el("span", {
+                  text:
+                    state.items.length === 0
+                      ? "Add a note above, or select text in a message and choose “Save selection to workflow board”."
+                      : "Try another filter.",
+                }),
+              ]),
+            );
+            return;
+          }
+          list.appendChild(el("ul", {}, items.map(renderItem)));
+        }
+
+        document.querySelectorAll("[data-filter]").forEach(function (button) {
+          button.addEventListener("click", function () {
+            state.filter = button.getAttribute("data-filter");
+            document.querySelectorAll("[data-filter]").forEach(function (other) {
+              other.setAttribute("aria-pressed", String(other === button));
+            });
+            render();
+          });
+        });
+
+        function add() {
+          var text = note.value.trim();
+          if (!text) return;
+          addButton.disabled = true;
+          call("add", { text: text })
+            .then(function () {
+              note.value = "";
+              setStatus("Added.", false);
+            })
+            .catch(function (error) {
+              setStatus(error.message || "Could not add the note.", true);
+            })
+            .then(function () {
+              addButton.disabled = false;
+              render();
+              note.focus();
+            });
+        }
+        addButton.addEventListener("click", add);
+        note.addEventListener("keydown", function (event) {
+          if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+            event.preventDefault();
+            add();
+          }
+        });
+
+        render();
+        call("list")
+          .catch(function (error) {
+            setStatus(error.message || "Could not load the board.", true);
+          })
+          .then(function () {
+            state.loading = false;
+            render();
+          });
+      })();
+    </script>
+  </body>
+</html>

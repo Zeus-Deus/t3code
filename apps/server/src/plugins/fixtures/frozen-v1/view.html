@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Frozen v1 view</title>
+  </head>
+  <body>
+    <p id="summary">Ready</p>
+    <script>
+      window.t3.onContext(() => {});
+      document.getElementById("summary").addEventListener("click", async () => {
+        const result = await window.t3.invoke("read", {});
+        document.getElementById("summary").textContent = result.data.title || "No review yet";
+      });
+    </script>
+  </body>
+</html>

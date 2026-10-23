@@ -1,0 +1,46 @@
+{
+  "id": "examples.repository-lens",
+  "name": "Repository Lens",
+  "description": "Inspect a repository's branch, changed files, diffs, and recent commits without changing it.",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "entry": "plugin.mjs",
+  "capabilities": ["ui", "settings"],
+  "actions": [
+    {
+      "id": "open-inspector",
+      "title": "Open Repository Lens",
+      "placements": ["thread-menu"]
+    },
+    {
+      "id": "inspect",
+      "title": "Inspect repository",
+      "description": "Read the configured repository's branch, changed files, and five recent commits.",
+      "placements": ["palette", "thread-menu"],
+      "agentCallable": true
+    },
+    {
+      "id": "insert-review",
+      "title": "Insert repository review request",
+      "description": "Add a review request to this thread's composer without sending it.",
+      "placements": ["thread-menu"]
+    }
+  ],
+  "views": [
+    {
+      "id": "repository",
+      "title": "Repository Lens",
+      "entry": "view.html",
+      "placement": "side-panel"
+    }
+  ],
+  "settings": [
+    {
+      "key": "repositoryPath",
+      "label": "Repository path",
+      "description": "Absolute path to a Git working tree on the server machine, for example /home/you/projects/app. Set this before inspecting.",
+      "type": "string",
+      "default": ""
+    }
+  ]
+}

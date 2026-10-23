@@ -83,6 +83,7 @@ import {
   resolveComposerInteractionMode,
   threadShellHasStarted,
 } from "../ChatView.logic";
+import { registerPluginComposerInserter } from "../plugins/pluginComposerInserters";
 import {
   dataTransferHasComposerMention,
   makeComposerMentionDragHandlers,
@@ -2548,6 +2549,13 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   useEffect(() => {
     return setContextInsertionHandler(composerDraftTarget, insertContextReferencesAtCaretStable);
   }, [composerDraftTarget, insertContextReferencesAtCaretStable, setContextInsertionHandler]);
+  useEffect(
+    () =>
+      registerPluginComposerInserter(composerDraftTarget, (text) =>
+        insertComposerTextAtEndStable(text, { ensureLeadingBoundary: true }),
+      ),
+    [composerDraftTarget, insertComposerTextAtEndStable],
+  );
 
   // Capture drops before the editor; mention handlers own native propagation and moves.
   const composerMentionDragHandlers = makeComposerMentionDragHandlers({

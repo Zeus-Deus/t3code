@@ -1,4 +1,6 @@
 import {
+  AuthAccessWriteScope,
+  PluginError,
   AuthEnvironmentMaintainScope,
   AuthDiagnosticsReadScope,
   AuthFilesystemReadScope,
@@ -373,3 +375,142 @@ it.effect("denies manual cleanup before the handler without settings permission"
     expect(handled).toBe(false);
   }).pipe(Effect.scoped),
 );
+
+describe("community plugin RPC scope middleware", () => {
+  const tested = [
+    WS_METHODS.pluginsList,
+    WS_METHODS.pluginsInstall,
+    WS_METHODS.pluginsUpdateSettings,
+    WS_METHODS.pluginsInvoke,
+  ] as const;
+  const group = WsRpcGroup.omit(
+    ...[...WsRpcGroup.requests.keys()].filter(
+      (tag): tag is Exclude<keyof typeof RPC_REQUIRED_SCOPES, (typeof tested)[number]> =>
+        !tested.some((value) => value === tag),
+    ),
+  );
+
+  it.effect.each([
+    { scopes: [AuthOrchestrationReadScope], missing: AuthAccessWriteScope },
+    { scopes: [AuthAccessWriteScope], missing: AuthTerminalOperateScope },
+    { scopes: [AuthTerminalOperateScope], missing: AuthAccessWriteScope },
+  ])(
+    "rejects plugin execution management without $missing before the handler",
+    ({ scopes, missing }) =>
+      Effect.gen(function* () {
+        let handled = 0;
+        const client = yield* RpcTest.makeClient(group).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              group.toLayerHandler(WS_METHODS.pluginsList, () =>
+                Effect.succeed({ installations: [] }),
+              ),
+              group.toLayerHandler(WS_METHODS.pluginsInstall, () =>
+                Effect.sync(() => {
+                  handled++;
+                }).pipe(Effect.andThen(Effect.never)),
+              ),
+              group.toLayerHandler(WS_METHODS.pluginsUpdateSettings, () =>
+                Effect.sync(() => {
+                  handled++;
+                }).pipe(Effect.andThen(Effect.never)),
+              ),
+              group.toLayerHandler(WS_METHODS.pluginsInvoke, () =>
+                Effect.sync(() => {
+                  handled++;
+                }).pipe(Effect.andThen(Effect.never)),
+              ),
+              RpcAuthorization.layer(scopes),
+            ),
+          ),
+        );
+        expect(
+          yield* client[WS_METHODS.pluginsInstall]({
+            source: { kind: "local", directory: "/plugins/review" },
+          }).pipe(Effect.flip),
+        ).toMatchObject({ _tag: "EnvironmentAuthorizationError", requiredPermission: missing });
+        expect(
+          yield* client[WS_METHODS.pluginsUpdateSettings]({
+            installationId: "plugin",
+            values: { token: "private" },
+          }).pipe(Effect.flip),
+        ).toMatchObject({ _tag: "EnvironmentAuthorizationError", requiredPermission: missing });
+        expect(handled).toBe(0);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect("allows a readable catalogue and requires operation authority to invoke", () =>
+    Effect.gen(function* () {
+      let handled = 0;
+      const client = yield* RpcTest.makeClient(group).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            group.toLayerHandler(WS_METHODS.pluginsList, () =>
+              Effect.succeed({ installations: [] }),
+            ),
+            group.toLayerHandler(WS_METHODS.pluginsInstall, () => Effect.never),
+            group.toLayerHandler(WS_METHODS.pluginsUpdateSettings, () => Effect.never),
+            group.toLayerHandler(WS_METHODS.pluginsInvoke, () =>
+              Effect.sync(() => {
+                handled++;
+                return {};
+              }),
+            ),
+            RpcAuthorization.layer([AuthOrchestrationReadScope]),
+          ),
+        ),
+      );
+      expect(yield* client[WS_METHODS.pluginsList]({})).toEqual({ installations: [] });
+      expect(
+        yield* client[WS_METHODS.pluginsInvoke]({
+          installationId: "plugin",
+          generation: "one",
+          handler: "action:review",
+          operationId: "review",
+        }).pipe(Effect.flip),
+      ).toMatchObject({
+        _tag: "EnvironmentAuthorizationError",
+        requiredPermission: AuthOrchestrationOperateScope,
+      });
+      expect(handled).toBe(0);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("admits install only with both execution-management scopes", () =>
+    Effect.gen(function* () {
+      let handled = 0;
+      const client = yield* RpcTest.makeClient(group).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            group.toLayerHandler(WS_METHODS.pluginsList, () =>
+              Effect.succeed({ installations: [] }),
+            ),
+            group.toLayerHandler(WS_METHODS.pluginsInstall, () =>
+              Effect.sync(() => {
+                handled++;
+              }).pipe(
+                Effect.andThen(
+                  Effect.fail(
+                    new PluginError({
+                      reason: "invalid_source",
+                      message: "Reached the install service.",
+                    }),
+                  ),
+                ),
+              ),
+            ),
+            group.toLayerHandler(WS_METHODS.pluginsUpdateSettings, () => Effect.never),
+            group.toLayerHandler(WS_METHODS.pluginsInvoke, () => Effect.succeed({})),
+            RpcAuthorization.layer([AuthAccessWriteScope, AuthTerminalOperateScope]),
+          ),
+        ),
+      );
+      expect(
+        yield* client[WS_METHODS.pluginsInstall]({
+          source: { kind: "local", directory: "/plugins/review" },
+        }).pipe(Effect.flip),
+      ).toMatchObject({ _tag: "PluginError", reason: "invalid_source" });
+      expect(handled).toBe(1);
+    }).pipe(Effect.scoped),
+  );
+});

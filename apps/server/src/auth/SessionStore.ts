@@ -409,6 +409,9 @@ export class SessionStore extends Context.Service<
       SessionCredentialInternalError
     >;
     readonly streamChanges: Stream.Stream<SessionCredentialChange>;
+    readonly assertActive: (
+      sessionId: AuthSessionId,
+    ) => Effect.Effect<void, SessionCredentialVerificationError>;
     readonly awaitInvalidation: (
       sessionId: AuthSessionId,
     ) => Effect.Effect<void, SessionCredentialVerificationError>;
@@ -1034,6 +1037,22 @@ const make = Effect.gen(function* () {
     return revokedSessionIds.length;
   });
 
+  const assertActive = Effect.fn("SessionStore.assertActive")(function* (sessionId: AuthSessionId) {
+    const active = yield* loadActiveSession(sessionId).pipe(
+      Effect.mapError((cause) => new SessionCredentialVerificationError({ sessionId, cause })),
+    );
+    const now = yield* DateTime.now;
+    if (
+      Option.isNone(active) ||
+      active.value.expiresAt.epochMilliseconds <= now.epochMilliseconds
+    ) {
+      return yield* new SessionCredentialVerificationError({
+        sessionId,
+        cause: "inactive-session",
+      });
+    }
+  });
+
   const awaitInvalidation = Effect.fn(function* (sessionId: AuthSessionId) {
     return yield* Effect.scoped(
       Effect.gen(function* () {
@@ -1071,6 +1090,7 @@ const make = Effect.gen(function* () {
     issueWebSocketToken,
     verifyWebSocketToken,
     listActive,
+    assertActive,
     awaitInvalidation,
     get streamChanges() {
       return Stream.fromPubSub(changesPubSub);

@@ -43,6 +43,14 @@ import { advertisedJsonSchema } from "./advertisedJsonSchema.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as McpToolAccess from "./McpToolAccess.ts";
 import * as OrchestratorMcpService from "./OrchestratorMcpService.ts";
+import {
+  PluginInvokeTool,
+  PluginInvokeToolkit,
+  PluginListToolkit,
+} from "./toolkits/plugins/tools.ts";
+import * as PluginService from "../plugins/PluginService.ts";
+import * as SessionStore from "../auth/SessionStore.ts";
+import * as PluginHandlers from "./toolkits/plugins/handlers.ts";
 import { PreviewControlsToolkit } from "./toolkits/previewControls/tools.ts";
 import * as PreviewControlsHandlers from "./toolkits/previewControls/handlers.ts";
 import { EnvironmentToolkit } from "./toolkits/environment/tools.ts";
@@ -776,6 +784,97 @@ const registerDeviceScreenshot = Effect.fn("McpHttpServer.registerDeviceScreensh
 const isOrchestratorMcpFailure = Schema.is(OrchestratorMcpFailure);
 const isDeviceToolError = Schema.is(DeviceToolError);
 
+/**
+ * Plugin results can carry images the host verified. The generic toolkit would serialize their
+ * base64 into text; the model needs them as image content, and only when the caller wants them.
+ */
+const registerPluginInvoke = Effect.fn("McpHttpServer.registerPluginInvoke")(function* () {
+  const plugins = yield* PluginService.PluginService;
+  const sessions = yield* SessionStore.SessionStore;
+  const threads = yield* ThreadManagementService.ThreadManagementService;
+  const built = yield* decodeAsAdvertised(PluginInvokeToolkit);
+  const server = yield* McpServer.McpServer;
+  const tool = PluginInvokeTool;
+  yield* server.addTool({
+    tool: new McpSchema.Tool({
+      name: tool.name,
+      description: Tool.getDescription(tool),
+      inputSchema: Tool.getJsonSchema(tool),
+      annotations: {
+        readOnlyHint: Context.get(tool.annotations, Tool.Readonly),
+        destructiveHint: Context.get(tool.annotations, Tool.Destructive),
+        idempotentHint: Context.get(tool.annotations, Tool.Idempotent),
+        openWorldHint: Context.get(tool.annotations, Tool.OpenWorld),
+      },
+    }),
+    annotations: tool.annotations,
+    handle: (payload) =>
+      Effect.withFiber((fiber) => {
+        const invocation = Context.getUnsafe(
+          fiber.context,
+          McpInvocationContext.McpInvocationContext,
+        );
+        return built.handle("t3_plugin_invoke", payload).pipe(
+          Stream.unwrap,
+          Stream.run(Sink.last()),
+          Effect.flatMap(Effect.fromOption),
+          Effect.provideService(PluginService.PluginService, plugins),
+          Effect.provideService(SessionStore.SessionStore, sessions),
+          Effect.provideService(ThreadManagementService.ThreadManagementService, threads),
+          Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+          Effect.map(({ isFailure, encodedResult }) => {
+            if (isFailure)
+              return new McpSchema.CallToolResult({
+                isError: true,
+                content: [{ type: "text", text: JSON.stringify(encodedResult) }],
+              });
+            const { images, ...result } = encodedResult as {
+              readonly images?: ReadonlyArray<{ readonly mimeType: string; readonly data: string }>;
+              readonly [key: string]: unknown;
+            };
+            const includeImages =
+              (payload as { readonly includeImages?: boolean } | undefined)?.includeImages !==
+              false;
+            const metadata =
+              images === undefined || images.length === 0
+                ? result
+                : {
+                    ...result,
+                    images: images.map(({ mimeType }) => ({ mimeType })),
+                    ...(includeImages ? {} : { imagesOmitted: true }),
+                  };
+            return new McpSchema.CallToolResult({
+              isError: false,
+              structuredContent: metadata,
+              content: [
+                { type: "text", text: JSON.stringify(metadata) },
+                ...(includeImages
+                  ? (images ?? []).map((image) => ({
+                      type: "image" as const,
+                      data: new Uint8Array(Buffer.from(image.data, "base64")),
+                      mimeType: image.mimeType,
+                    }))
+                  : []),
+              ],
+            });
+          }),
+          Effect.catchCause((cause) =>
+            Cause.hasInterrupts(cause)
+              ? Effect.failCause(cause).pipe(Effect.orDie)
+              : Effect.logWarning("t3_plugin_invoke failed", { cause: Cause.pretty(cause) }).pipe(
+                  Effect.as(
+                    new McpSchema.CallToolResult({
+                      isError: true,
+                      content: [{ type: "text", text: "Plugin invocation failed." }],
+                    }),
+                  ),
+                ),
+          ),
+        );
+      }),
+  });
+});
+
 const registerHtmlPreview = Effect.fn("McpHttpServer.registerHtmlPreview")(function* () {
   const htmlRender = yield* HtmlRender.HtmlRender;
   const threads = yield* ThreadManagementService.ThreadManagementService;
@@ -1094,6 +1193,11 @@ export const layerOrchestratorToolkit = toolkitRegistration(
 
 export const layerThreadToolkit = toolkitRegistration(ThreadToolkit, ThreadHandlers.layer);
 
+export const layerPluginToolkit = Layer.mergeAll(
+  toolkitRegistration(PluginListToolkit, PluginHandlers.layerList),
+  imageToolRegistration(registerPluginInvoke(), PluginHandlers.layerInvoke),
+);
+
 const layerWorktreeToolkitRegistration = toolkitRegistration(
   WorktreeToolkit,
   WorktreeHandlers.layer,
@@ -1149,6 +1253,7 @@ export const layerTools = Layer.mergeAll(
   layerPreviewToolkit,
   layerOrchestratorToolkit,
   layerThreadToolkit,
+  layerPluginToolkit,
   layerAttachmentToolkit,
   layerProjectRegistration,
   layerEnvironmentToolkit,

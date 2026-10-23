@@ -1,4 +1,19 @@
 import {
+  PluginCatalogue,
+  PluginRepairWorkspace,
+  PluginEventBacklog,
+  PluginEventBacklogPolicy,
+  PluginError,
+  PluginInstallation,
+  PluginSource,
+  PluginGrants,
+  PluginSettingValue,
+  PluginInvokeInput,
+  PluginInvokeResult,
+  PluginViewInput,
+  PluginViewResult,
+} from "./plugins.ts";
+import {
   OrchestrationV2SearchThreadError,
   OrchestrationV2SearchThreadInput,
   OrchestrationV2SearchThreadResult,
@@ -520,6 +535,23 @@ export const WS_METHODS = {
   serverReportClientActivity: "server.reportClientActivity",
   serverGetUsageSummary: "server.getUsageSummary",
   serverRefreshUsageRates: "server.refreshUsageRates",
+
+  pluginsPrepareRepair: "plugins.prepareRepair",
+  pluginsStageRepair: "plugins.stageRepair",
+  pluginsUsePrevious: "plugins.usePrevious",
+  pluginsBacklog: "plugins.backlog",
+  pluginsList: "plugins.list",
+  pluginsSubscribe: "plugins.subscribe",
+  pluginsInstall: "plugins.install",
+  pluginsRefresh: "plugins.refresh",
+  pluginsDiscardPendingUpdate: "plugins.discardPendingUpdate",
+  pluginsConsent: "plugins.consent",
+  pluginsSetEnabled: "plugins.setEnabled",
+  pluginsRemove: "plugins.remove",
+  pluginsUpdateSettings: "plugins.updateSettings",
+  pluginsInvoke: "plugins.invoke",
+  pluginsReadView: "plugins.readView",
+  pluginsResume: "plugins.resume",
 
   scheduledTasksSubscribe: "scheduledTasks.subscribe",
   scheduledTasksUpsert: "scheduledTasks.upsert",
@@ -1825,6 +1857,118 @@ const WsSubscribeServerLifecycleRpc = Rpc.make(WS_METHODS.subscribeServerLifecyc
   stream: true,
 });
 
+const pluginRpcError = Schema.Union([PluginError, EnvironmentAuthorizationError]);
+const pluginInstallationInput = Schema.Struct({
+  installationId: PluginInstallation.fields.installationId,
+});
+const WsPluginsPrepareRepairRpc = Rpc.make(WS_METHODS.pluginsPrepareRepair, {
+  payload: pluginInstallationInput,
+  success: PluginRepairWorkspace,
+  error: pluginRpcError,
+});
+const WsPluginsStageRepairRpc = Rpc.make(WS_METHODS.pluginsStageRepair, {
+  payload: Schema.Struct({
+    ...pluginInstallationInput.fields,
+    workspaceId: PluginRepairWorkspace.fields.workspaceId,
+    baseDigest: PluginRepairWorkspace.fields.baseDigest,
+  }),
+  success: PluginInstallation,
+  error: pluginRpcError,
+});
+const WsPluginsUsePreviousRpc = Rpc.make(WS_METHODS.pluginsUsePrevious, {
+  payload: Schema.Struct({
+    ...pluginInstallationInput.fields,
+    expectedDigest: PluginInstallation.fields.digest,
+    acknowledgeCurrentData: Schema.Literal(true),
+  }),
+  success: PluginInstallation,
+  error: pluginRpcError,
+});
+const WsPluginsBacklogRpc = Rpc.make(WS_METHODS.pluginsBacklog, {
+  payload: pluginInstallationInput,
+  success: PluginEventBacklog,
+  error: pluginRpcError,
+});
+const WsPluginsListRpc = Rpc.make(WS_METHODS.pluginsList, {
+  payload: Schema.Struct({}),
+  success: PluginCatalogue,
+  error: pluginRpcError,
+});
+const WsPluginsSubscribeRpc = Rpc.make(WS_METHODS.pluginsSubscribe, {
+  payload: Schema.Struct({}),
+  success: PluginCatalogue,
+  error: pluginRpcError,
+  stream: true,
+});
+const WsPluginsInstallRpc = Rpc.make(WS_METHODS.pluginsInstall, {
+  payload: Schema.Struct({ source: PluginSource }),
+  success: PluginInstallation,
+  error: pluginRpcError,
+});
+const WsPluginsDiscardPendingUpdateRpc = Rpc.make(WS_METHODS.pluginsDiscardPendingUpdate, {
+  payload: pluginInstallationInput,
+  success: PluginInstallation,
+  error: pluginRpcError,
+});
+const WsPluginsRefreshRpc = Rpc.make(WS_METHODS.pluginsRefresh, {
+  payload: pluginInstallationInput,
+  success: PluginInstallation,
+  error: pluginRpcError,
+});
+const WsPluginsConsentRpc = Rpc.make(WS_METHODS.pluginsConsent, {
+  payload: Schema.Struct({
+    installationId: PluginInstallation.fields.installationId,
+    digest: PluginInstallation.fields.digest,
+    grants: PluginGrants,
+    eventBacklog: Schema.optionalKey(PluginEventBacklogPolicy),
+  }),
+  success: PluginInstallation,
+  error: pluginRpcError,
+});
+const WsPluginsSetEnabledRpc = Rpc.make(WS_METHODS.pluginsSetEnabled, {
+  payload: Schema.Struct({
+    installationId: PluginInstallation.fields.installationId,
+    enabled: Schema.Boolean,
+    eventBacklog: Schema.optionalKey(PluginEventBacklogPolicy),
+  }),
+  success: PluginInstallation,
+  error: pluginRpcError,
+});
+const WsPluginsRemoveRpc = Rpc.make(WS_METHODS.pluginsRemove, {
+  payload: Schema.Struct({
+    installationId: PluginInstallation.fields.installationId,
+    deleteData: Schema.optionalKey(Schema.Boolean),
+  }),
+  success: Schema.Void,
+  error: pluginRpcError,
+});
+const WsPluginsUpdateSettingsRpc = Rpc.make(WS_METHODS.pluginsUpdateSettings, {
+  payload: Schema.Struct({
+    installationId: PluginInstallation.fields.installationId,
+    values: Schema.Record(Schema.String, PluginSettingValue),
+  }),
+  success: PluginInstallation,
+  error: pluginRpcError,
+});
+const WsPluginsInvokeRpc = Rpc.make(WS_METHODS.pluginsInvoke, {
+  payload: PluginInvokeInput,
+  success: PluginInvokeResult,
+  error: pluginRpcError,
+});
+const WsPluginsReadViewRpc = Rpc.make(WS_METHODS.pluginsReadView, {
+  payload: PluginViewInput,
+  success: PluginViewResult,
+  error: pluginRpcError,
+});
+const WsPluginsResumeRpc = Rpc.make(WS_METHODS.pluginsResume, {
+  payload: Schema.Struct({
+    ...pluginInstallationInput.fields,
+    eventBacklog: Schema.optionalKey(PluginEventBacklogPolicy),
+  }),
+  success: PluginInstallation,
+  error: pluginRpcError,
+});
+
 const WsScheduledTasksSubscribeRpc = Rpc.make(WS_METHODS.scheduledTasksSubscribe, {
   payload: ScheduledTaskListInput,
   success: ScheduledTaskListResult,
@@ -1969,6 +2113,22 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerGetUsageSummaryRpc,
   WsServerRefreshUsageRatesRpc,
   WsServerSignalProcessRpc,
+  WsPluginsPrepareRepairRpc,
+  WsPluginsStageRepairRpc,
+  WsPluginsUsePreviousRpc,
+  WsPluginsBacklogRpc,
+  WsPluginsListRpc,
+  WsPluginsSubscribeRpc,
+  WsPluginsInstallRpc,
+  WsPluginsRefreshRpc,
+  WsPluginsDiscardPendingUpdateRpc,
+  WsPluginsConsentRpc,
+  WsPluginsSetEnabledRpc,
+  WsPluginsRemoveRpc,
+  WsPluginsUpdateSettingsRpc,
+  WsPluginsInvokeRpc,
+  WsPluginsReadViewRpc,
+  WsPluginsResumeRpc,
   WsScheduledTasksSubscribeRpc,
   WsScheduledTasksUpsertRpc,
   WsScheduledTasksSetEnabledRpc,

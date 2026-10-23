@@ -17,6 +17,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import * as NetService from "@t3tools/shared/Net";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { windowsSystemTar } from "./lib/windows-tar.ts";
+import { smokePluginHost } from "./lib/plugin-host-smoke.ts";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 
 export class CliArchiveSmokeError extends Schema.TaggedError<CliArchiveSmokeError>()(
@@ -113,6 +114,8 @@ const smokeCliArchive = Effect.fn("smokeCliArchive")(function* (input: {
       detail: `exit ${String(version.exitCode)}\n${version.stdout}${version.stderr}`,
     });
   }
+
+  yield* smokePluginHost({ command: executable, entrypoint: undefined });
 
   const net = yield* NetService.NetService;
   const port = yield* net.findAvailablePort(47700);

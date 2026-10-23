@@ -73,6 +73,14 @@ import {
   ThreadRouteScreen,
 } from "./features/threads/ThreadRouteScreen";
 import { McpAppFullscreenScreen } from "./features/threads/McpAppFullscreenScreen";
+import { PluginViewRouteScreen } from "./features/plugins/PluginViewRouteScreen";
+import {
+  SettingsPluginDetailRouteScreen,
+  SettingsPluginInstallRouteScreen,
+  SettingsPluginReviewRouteScreen,
+  SettingsPluginSettingsRouteScreen,
+  SettingsPluginsRouteScreen,
+} from "./features/plugins/SettingsPluginsRouteScreens";
 import { ConnectionsRouteScreen } from "./features/connection/ConnectionsRouteScreen";
 import { ConnectionsNewRouteScreen } from "./features/connection/ConnectionsNewRouteScreen";
 import { AddProjectDestinationRoute } from "./features/projects/AddProjectDestinationRoute";
@@ -453,6 +461,36 @@ const SETTINGS_SCREENS = {
       title: "License notice",
     },
   }),
+  SettingsPlugins: createNativeStackScreen({
+    screen: SettingsPluginsRouteScreen,
+    linking: "plugins",
+    options: {
+      ...SETTINGS_PAGE_OPTIONS,
+      title: "Plugins",
+      headerTitleStyle: { fontSize: 16, fontWeight: "800" },
+    },
+  }),
+  SettingsPluginInstall: createNativeStackScreen({
+    screen: SettingsPluginInstallRouteScreen,
+    linking: "plugins/install",
+    options: { ...SETTINGS_PAGE_OPTIONS, title: "Install plugin" },
+  }),
+  SettingsPluginDetail: createNativeStackScreen({
+    screen: SettingsPluginDetailRouteScreen,
+    linking: "plugins/:environmentId/:installationId",
+    options: { ...SETTINGS_PAGE_OPTIONS, title: "Plugin" },
+  }),
+  SettingsPluginReview: createNativeStackScreen({
+    screen: SettingsPluginReviewRouteScreen,
+    linking: "plugins/:environmentId/:installationId/review",
+    options: { ...SETTINGS_PAGE_OPTIONS, title: "Review plugin" },
+  }),
+  SettingsPluginSettings: createNativeStackScreen({
+    screen: SettingsPluginSettingsRouteScreen,
+    linking: "plugins/:environmentId/:installationId/settings",
+    options: { ...SETTINGS_PAGE_OPTIONS, title: "Plugin settings" },
+  }),
+
   SettingsUsage: createNativeStackScreen({
     screen: UsageRouteScreen,
     linking: "settings/usage",
@@ -857,6 +895,11 @@ const RootStackConfig = createWorkspaceStackNavigator({
       screen: ThreadFileScreen,
       linking: `${THREAD_LINKING_PREFIX}/files/:path*`,
       options: GLASS_HEADER_OPTIONS,
+    }),
+    PluginView: createNativeStackScreen({
+      screen: PluginViewRouteScreen,
+      linking: "plugin-views/:environmentId/:installationId/:viewId",
+      options: { ...GLASS_HEADER_OPTIONS, title: "Plugin" },
     }),
     ThreadMcpApp: createNativeStackScreen({
       screen: McpAppFullscreenScreen,

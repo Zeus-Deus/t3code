@@ -29,6 +29,7 @@ export type SettingsPath =
   | "/settings/browser"
   | "/settings/devices"
   | "/settings/scheduled-tasks"
+  | "/settings/plugins"
   | "/settings/source-control"
   | "/settings/worktrees"
   | "/settings/connections"
@@ -104,6 +105,7 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
   "/settings/maintenance": "Maintenance",
   "/settings/labs": "Labs",
   "/settings/about": "About",
+  "/settings/plugins": "Plugins",
   "/settings/archived": "Archive",
 };
 
@@ -1135,6 +1137,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     ],
   },
   {
+    id: "plugins",
+    title: "Plugins",
+    to: "/settings/plugins",
+    searchTerms: ["extensions install community add-ons git actions views consent permissions"],
+  },
+  {
     id: "archive",
     title: "Archived threads",
     to: "/settings/archived",
@@ -1167,6 +1175,7 @@ const SETTINGS_CATEGORY_SCOPES: Readonly<Record<SettingsPath, SettingsSearchScop
   "/settings/maintenance": null,
   "/settings/labs": null,
   "/settings/about": null,
+  "/settings/plugins": null,
   "/settings/archived": "project-defaults",
 };
 

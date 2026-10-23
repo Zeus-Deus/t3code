@@ -1,0 +1,21 @@
+{
+  "id": "test.frozen-v1",
+  "name": "Frozen API v1 fixture",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "entry": "plugin.mjs",
+  "capabilities": [
+    "storage",
+    "settings",
+    "threads.read",
+    "threads.send",
+    "threads.create",
+    "events.run-finalized",
+    "ui"
+  ],
+  "actions": [{ "id": "exercise", "title": "Exercise v1", "placements": ["palette"] }],
+  "views": [{ "id": "summary", "title": "Summary", "entry": "view.html", "placement": "page" }],
+  "settings": [
+    { "key": "autoSend", "label": "Send follow-ups", "type": "boolean", "default": false }
+  ]
+}

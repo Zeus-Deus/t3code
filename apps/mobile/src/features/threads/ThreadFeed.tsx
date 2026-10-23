@@ -55,6 +55,7 @@ import {
   type ScopedThreadRef,
 } from "@t3tools/contracts";
 import { renderAssistantCitationsAsText } from "@t3tools/shared/assistantCitations";
+import { AssistantMessagePluginMenu } from "../plugins/AssistantMessagePluginMenu";
 import { encodeComposerContextFragment } from "@t3tools/shared/composerContextClipboard";
 import { parseThreadLinkHref } from "@t3tools/shared/threadLinks";
 import { PROMPT_LINK_MAX_PROMPT_LENGTH } from "@t3tools/shared/promptLinks";
@@ -1842,13 +1843,20 @@ function renderFeedEntry(
         ) : null}
         {showAssistantMeta ? (
           <View className="mt-1 flex-row items-center gap-1">
-            <CopyTextButton
-              accessibilityLabel="Copy message"
+            <AssistantMessagePluginMenu
+              environmentId={props.environmentId}
+              threadId={props.threadId}
+              messageId={message.id}
               text={renderedText}
-              tintColor={iconSubtleColor}
-              buttonSize={28}
-              iconSize={13}
-            />
+            >
+              <CopyTextButton
+                accessibilityLabel="Copy message"
+                text={renderedText}
+                tintColor={iconSubtleColor}
+                buttonSize={28}
+                iconSize={13}
+              />
+            </AssistantMessagePluginMenu>
             {message.projectedItem ? (
               <AssistantForkButton
                 environmentId={props.environmentId}

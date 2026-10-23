@@ -4,7 +4,7 @@ import {
   type AssistantCitation,
   type ScopedThreadRef,
 } from "@t3tools/contracts";
-import { QuoteIcon } from "lucide-react";
+import { EllipsisIcon, PuzzleIcon, QuoteIcon } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -18,6 +18,11 @@ import {
   type SelectionActionPoint,
 } from "~/lib/selectionActions";
 import { Button } from "../ui/button";
+import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
+import { usePluginSelectionActions } from "../plugins/usePluginSelectionActions";
+
+// More would crowd the selection; the rest go in an overflow menu.
+const MAX_INLINE_PLUGIN_ACTIONS = 3;
 
 export function AssistantSelectionToolbar({
   viewport,
@@ -33,7 +38,12 @@ export function AssistantSelectionToolbar({
     position: SelectionActionPoint;
     sourceAnchor: AssistantCitationSourceAnchor;
   } | null>(null);
-  const toolbarRef = useRef<HTMLButtonElement>(null);
+  const toolbarRef = useRef<HTMLDivElement>(null);
+  // The overflow menu renders inside the toolbar, so the selection observer treats it as one of
+  // the toolbar's own controls instead of a click elsewhere that dismisses the selection.
+  const menuContainerRef = useRef<HTMLDivElement>(null);
+  const overflowTriggerRef = useRef<HTMLButtonElement>(null);
+  const pluginActions = usePluginSelectionActions(threadRef);
   const actionsRef = useRef<ReturnType<typeof observeSelectionActions> | null>(null);
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- measures the toolbar DOM node and clamps its position inside the window before paint
@@ -158,10 +168,11 @@ export function AssistantSelectionToolbar({
       ) {
         return;
       }
-      if (toolbar.disabled) return;
+      const first = toolbar.querySelector<HTMLButtonElement>("button:not(:disabled)");
+      if (!first) return;
       event.preventDefault();
       event.stopPropagation();
-      toolbar.focus({ preventScroll: true });
+      first.focus({ preventScroll: true });
     };
     document.addEventListener("keydown", focusActions, true);
     document.addEventListener("selectionchange", actions.selectionChanged);
@@ -185,18 +196,27 @@ export function AssistantSelectionToolbar({
     dismiss();
     return true;
   };
+  const runPluginAction = (entry: (typeof pluginActions.entries)[number]) => {
+    // The selection goes with the request; clearing it now cannot change what was sent.
+    const captured = { messageId: selection.citation.messageId, text: selection.citation.text };
+    window.getSelection()?.removeAllRanges();
+    dismiss();
+    void pluginActions.run(entry, captured);
+  };
+  const inlinePluginActions = pluginActions.entries.slice(0, MAX_INLINE_PLUGIN_ACTIONS);
+  const overflowPluginActions = pluginActions.entries.slice(MAX_INLINE_PLUGIN_ACTIONS);
   return createPortal(
-    <Button
+    <div
       ref={toolbarRef}
-      type="button"
-      size="xs"
-      variant="glass"
-      disabled={tooLong}
-      aria-label={tooLong ? "Selection is too long to cite" : "Cite selection in composer"}
-      className="fixed z-50 max-w-[calc(100vw-1rem)]"
+      role="toolbar"
+      aria-label="Selection actions"
+      className="fixed z-50 flex max-w-[calc(100vw-1rem)] items-center gap-1"
       style={{ left: selection.position.x, top: selection.position.y }}
-      onPointerDown={(event) => event.preventDefault()}
-      onClick={cite}
+      onPointerDown={(event) => {
+        // A prevented pointerdown suppresses the mousedown the menu trigger opens on, so the
+        // trigger keeps the selection by preventing its mousedown instead.
+        if (!overflowTriggerRef.current?.contains(event.target as Node)) event.preventDefault();
+      }}
       onKeyDown={(event) => {
         event.stopPropagation();
         if (event.key === "Escape" && !event.nativeEvent.isComposing) {
@@ -205,9 +225,62 @@ export function AssistantSelectionToolbar({
         }
       }}
     >
-      <QuoteIcon aria-hidden="true" className="size-3.5" />
-      {tooLong ? "Shorten selection" : "Cite"}
-    </Button>,
+      <Button
+        type="button"
+        size="xs"
+        variant="glass"
+        disabled={tooLong}
+        aria-label={tooLong ? "Selection is too long to cite" : "Cite selection in composer"}
+        onClick={cite}
+      >
+        <QuoteIcon aria-hidden="true" className="size-3.5" />
+        {tooLong ? "Shorten selection" : "Cite"}
+      </Button>
+      {inlinePluginActions.map((entry) => (
+        <Button
+          key={`${entry.installation.installationId}:${entry.action.id}`}
+          type="button"
+          size="xs"
+          variant="glass"
+          className="min-w-0"
+          // The same limit as Cite: a plugin gets the whole selection or nothing.
+          disabled={tooLong}
+          aria-label={`${entry.action.title} (${entry.installation.manifest.name})`}
+          onClick={() => runPluginAction(entry)}
+        >
+          <PuzzleIcon aria-hidden="true" className="size-3.5" />
+          <span className="max-w-40 truncate">{entry.action.title}</span>
+        </Button>
+      ))}
+      {overflowPluginActions.length > 0 ? (
+        <Menu>
+          <MenuTrigger
+            ref={overflowTriggerRef}
+            render={<Button type="button" size="xs" variant="glass" />}
+            aria-label="More selection actions"
+            onMouseDown={(event) => event.preventDefault()}
+          >
+            <EllipsisIcon aria-hidden="true" className="size-3.5" />
+          </MenuTrigger>
+          <MenuPopup portalContainer={menuContainerRef} align="end">
+            {overflowPluginActions.map((entry) => (
+              <MenuItem
+                key={`${entry.installation.installationId}:${entry.action.id}`}
+                disabled={tooLong}
+                onClick={() => runPluginAction(entry)}
+              >
+                <PuzzleIcon aria-hidden="true" />
+                <span className="min-w-0 truncate">{entry.action.title}</span>
+                <span className="ms-auto shrink-0 ps-3 text-muted-foreground text-xs">
+                  {entry.installation.manifest.name}
+                </span>
+              </MenuItem>
+            ))}
+          </MenuPopup>
+        </Menu>
+      ) : null}
+      <div ref={menuContainerRef} className="absolute" />
+    </div>,
     document.body,
   );
 }

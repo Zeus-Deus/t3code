@@ -27,6 +27,7 @@ function MenuPopup({
   anchor,
   keepMounted = false,
   width = "default",
+  portalContainer,
   ...props
 }: MenuPrimitive.Popup.Props & {
   align?: MenuPrimitive.Positioner.Props["align"];
@@ -36,9 +37,10 @@ function MenuPopup({
   anchor?: MenuPrimitive.Positioner.Props["anchor"];
   keepMounted?: boolean;
   width?: "default" | "content";
+  portalContainer?: MenuPrimitive.Portal.Props["container"];
 }) {
   return (
-    <MenuPrimitive.Portal keepMounted={keepMounted}>
+    <MenuPrimitive.Portal container={portalContainer} keepMounted={keepMounted}>
       <MenuPrimitive.Positioner
         align={align}
         alignOffset={alignOffset}

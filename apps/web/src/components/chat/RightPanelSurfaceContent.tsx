@@ -31,6 +31,9 @@ const DevicePanel = lazy(() =>
   import("../device/DevicePanel").then((module) => ({ default: module.DevicePanel })),
 );
 const FilePreviewPanel = lazy(() => import("../files/FilePreviewPanel"));
+const PluginSidePanel = lazy(() =>
+  import("../plugins/PluginViewHost").then((module) => ({ default: module.PluginSidePanel })),
+);
 
 type RightPanelTerminalProps = Omit<
   PersistentThreadTerminalPanelProps,
@@ -165,6 +168,19 @@ export function RightPanelSurfaceContent(props: {
     }
     case "pull-requests":
       return <ThreadPullRequestsPanel threadRef={threadRef} />;
+    case "plugin":
+      return (
+        <Suspense fallback={null}>
+          <PluginSidePanel
+            // A view's state belongs to its thread; switching threads loads a fresh document.
+            key={`${scopedThreadKey(threadRef)}:${surface.id}`}
+            threadRef={threadRef}
+            composerTarget={props.composerDraftTarget}
+            installationId={surface.installationId}
+            viewId={surface.viewId}
+          />
+        </Suspense>
+      );
     case "device":
       return (
         <Suspense fallback={null}>

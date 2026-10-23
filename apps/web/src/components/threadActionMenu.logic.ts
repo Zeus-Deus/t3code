@@ -25,7 +25,28 @@ export type ThreadActionMenuId =
   | "copy-thread"
   | "copy-thread-id"
   | "archive"
-  | "delete";
+  | "delete"
+  | "plugins"
+  | PluginThreadActionMenuId;
+
+/** `plugin:<installationId>:<actionId>`; neither id can contain a colon. */
+export type PluginThreadActionMenuId = `plugin:${string}:${string}`;
+
+export function pluginThreadActionMenuId(
+  installationId: string,
+  actionId: string,
+): PluginThreadActionMenuId {
+  return `plugin:${installationId}:${actionId}`;
+}
+
+export function parsePluginThreadActionMenuId(
+  id: string,
+): { readonly installationId: string; readonly actionId: string } | null {
+  const [prefix, installationId, actionId, ...rest] = id.split(":");
+  return prefix === "plugin" && installationId && actionId && rest.length === 0
+    ? { installationId, actionId }
+    : null;
+}
 
 export type DraftActionMenuId =
   | "copy"
@@ -90,6 +111,11 @@ export interface ThreadActionMenuState {
   readonly snoozePresets: ReadonlyArray<SnoozePreset>;
   /** Guest links need their own grant, so the caller checks it instead of `canOperate`. */
   readonly canShareWithGuest?: boolean;
+  /** Plugin actions placed in the thread menu, for the thread's environment. */
+  readonly pluginActions?: ReadonlyArray<{
+    readonly id: PluginThreadActionMenuId;
+    readonly label: string;
+  }>;
 }
 
 /** Local navigation, read markers, and copying remain available to read-only clients. */
@@ -219,6 +245,16 @@ export function buildThreadActionMenuItems(
       ],
     },
     { id: "project-settings", label: "Project settings", icon: "settings" },
+    ...(state.pluginActions && state.pluginActions.length > 0
+      ? [
+          {
+            id: "plugins" as const,
+            label: "Plugins",
+            icon: "puzzle",
+            children: state.pluginActions.map((action) => ({ id: action.id, label: action.label })),
+          },
+        ]
+      : []),
     {
       id: "archive",
       label: "Archive thread",

@@ -52,6 +52,8 @@
         "scripts/update-test-shard-weights.ts",
         "scripts/verify-background-live.ts",
         "src/provider/testFixtures/*.mjs",
+        // Compatibility tests load the frozen author artifact by filesystem path.
+        "src/plugins/fixtures/*/*.mjs",
         // graphqlgen reads its config.
         "graphql.config.ts",
       ],
@@ -139,6 +141,10 @@
     "packages/*": {
       // These workspace packages are private to this monorepo.
       "includeEntryExports": true,
+    },
+    "packages/plugin-sdk": {
+      // These exports are consumed by external plugin authors.
+      "includeEntryExports": false,
     },
     "packages/effect-acp": {
       "includeEntryExports": true,

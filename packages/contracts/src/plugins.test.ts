@@ -1,0 +1,219 @@
+import * as Schema from "effect/Schema";
+import { clientRpcRequiredScopes } from "./clientRpcPermissions.ts";
+import { WS_METHODS } from "./rpc.ts";
+import {
+  AuthAccessWriteScope,
+  AuthTerminalOperateScope,
+  AuthOrchestrationReadScope,
+} from "./auth.ts";
+import { describe, expect, it } from "vite-plus/test";
+
+import {
+  PluginCatalogue,
+  PluginInvokeResult,
+  PluginManifest,
+  PluginError,
+  pluginCompatibility,
+  pluginRequestedCapabilities,
+} from "./plugins.ts";
+
+const manifest = {
+  id: "test.plugin",
+  name: "Test",
+  version: "1.0.0",
+  apiVersion: 1,
+  entry: "plugin.mjs",
+  capabilities: ["storage", "future.capability"],
+  actions: [{ id: "run", title: "Run", placements: ["palette", "future-placement"] }],
+  views: [
+    { id: "known", title: "Known", entry: "known.html", placement: "page" },
+    { id: "future", title: "Future", entry: "future.html", placement: "future-placement" },
+  ],
+  settings: [],
+};
+const installation = {
+  installationId: "test.plugin",
+  generation: "one",
+  manifest,
+  source: { kind: "local", directory: "/plugins/test" },
+  digest: "a".repeat(64),
+  enabled: true,
+  consentedDigest: "a".repeat(64),
+  status: "idle",
+  error: null,
+  settings: {},
+  grants: { capabilities: ["storage", "future.capability"], projectIds: [] },
+  updatedAt: "2026-10-22T00:00:00.000Z",
+};
+const catalogueCodec = Schema.toCodecJson(PluginCatalogue);
+const decodeCatalogue = Schema.decodeUnknownSync(catalogueCodec);
+const encodeCatalogue = Schema.encodeSync(catalogueCodec);
+const decodeManifest = Schema.decodeUnknownSync(PluginManifest);
+const resultCodec = Schema.toCodecJson(PluginInvokeResult);
+const decodeResult = Schema.decodeUnknownSync(resultCodec);
+const decodePluginError = Schema.decodeUnknownSync(Schema.toCodecJson(PluginError));
+
+describe("plugin wire compatibility", () => {
+  it("keeps known catalogue features when a newer host adds capabilities and placements", () => {
+    const catalogue = decodeCatalogue({
+      installations: [
+        installation,
+        { ...installation, installationId: "future.plugin", status: "future-status" },
+        { ...installation, source: { kind: "future-source" } },
+        { ...installation, manifest: { ...manifest, apiVersion: 2 } },
+        {
+          ...installation,
+          manifest: { ...manifest, settings: [{ key: "future", label: "Future", type: "future" }] },
+        },
+      ],
+    });
+    expect(catalogue.installations).toHaveLength(1);
+    expect(catalogue.installations[0]?.manifest.capabilities).toEqual([
+      "storage",
+      "future.capability",
+    ]);
+    expect(catalogue.installations[0]?.grants.capabilities).toEqual(["storage"]);
+    expect(catalogue.installations[0]?.manifest.actions[0]?.placements).toEqual(["palette"]);
+    expect(catalogue.installations[0]?.manifest.views.map((view) => view.id)).toEqual(["known"]);
+    expect(decodeCatalogue(encodeCatalogue(catalogue))).toEqual(catalogue);
+  });
+
+  it("still validates author manifests strictly", () => {
+    expect(() => decodeManifest(manifest)).toThrow();
+  });
+
+  it("preserves independent observer health and tolerant pending update manifests", () => {
+    const decoded = decodeCatalogue({
+      installations: [
+        {
+          ...installation,
+          observerError: "Observer paused after a handler failure.",
+          pendingUpdate: {
+            manifest,
+            source: installation.source,
+            digest: "b".repeat(64),
+            generation: "two",
+            updatedAt: installation.updatedAt,
+          },
+        },
+      ],
+    }).installations[0];
+    expect(decoded?.observerError).toBe("Observer paused after a handler failure.");
+    expect(decoded?.status).toBe("idle");
+    expect(decoded?.error).toBeNull();
+    expect(decoded?.pendingUpdate?.manifest.actions[0]?.placements).toEqual(["palette"]);
+  });
+
+  it("preserves known intents and counts unsupported intents across repeated wire round trips", () => {
+    const decoded = decodeResult({
+      message: "Already performed the action",
+      intents: [
+        { type: "composer.insert", text: "hello" },
+        { type: "future.intent", payload: "ignored" },
+        { type: "preview.open", url: "https://example.com" },
+      ],
+      unsupportedIntentCount: 2,
+    });
+    expect(decoded).toEqual({
+      message: "Already performed the action",
+      intents: [
+        { type: "composer.insert", text: "hello" },
+        { type: "preview.open", url: "https://example.com" },
+      ],
+      unsupportedIntentCount: 3,
+    });
+    const encoded = Schema.encodeSync(resultCodec)(decoded);
+    expect(decodeResult(encoded)).toEqual(decoded);
+    expect(decodeResult(Schema.encodeSync(resultCodec)(decodeResult(encoded)))).toEqual(decoded);
+    expect(decodeResult({ intents: [{ type: "future.intent" }] })).toEqual({
+      intents: [],
+      unsupportedIntentCount: 1,
+    });
+    expect(decodeResult({ intents: [] })).toEqual({ intents: [] });
+    expect(decodeResult({ unsupportedIntentCount: 1 })).toEqual({ unsupportedIntentCount: 1 });
+  });
+
+  it("rejects malformed known intents, invalid metadata and excessive intent counts", () => {
+    for (const raw of [
+      { intents: [{ type: "composer.insert", text: false }] },
+      { intents: [{ type: "preview.open", url: "file:///secret" }] },
+      { intents: [{ payload: "missing tag" }] },
+      { unsupportedIntentCount: -1 },
+      { unsupportedIntentCount: 0.5 },
+      { intents: Array.from({ length: 21 }, () => ({ type: "future.intent" })) },
+    ]) {
+      expect(() => decodeResult(raw)).toThrow();
+    }
+  });
+});
+
+it("distinguishes unsupported required capabilities from degrading optional features", () => {
+  const required = {
+    capabilities: ["storage", "future.required"],
+    optionalCapabilities: ["future.optional", "storage"],
+  };
+  expect(pluginCompatibility(required)).toEqual({
+    available: false,
+    missingCapabilities: ["future.required"],
+  });
+  expect(pluginCompatibility({ capabilities: ["storage"] })).toEqual({
+    available: true,
+    missingCapabilities: [],
+  });
+  expect(pluginRequestedCapabilities(required)).toEqual([
+    "storage",
+    "future.required",
+    "future.optional",
+  ]);
+});
+
+it("retains recovery metadata and unknown error codes without adding status values", () => {
+  const decoded = decodeCatalogue({
+    executionDisabled: true,
+    unavailable: { message: "Catalogue unavailable" },
+    installations: [
+      {
+        ...installation,
+        recordIssue: "newer",
+        compatibility: { available: false, missingCapabilities: ["future.required"] },
+        attention: {
+          kind: "future-attention",
+          message: "Update this host",
+          since: installation.updatedAt,
+        },
+        recovery: {
+          activeSource: "local-repair",
+          previous: { version: "0.9.0", digest: "b".repeat(64), source: installation.source },
+        },
+      },
+    ],
+  });
+  expect(decoded.executionDisabled).toBe(true);
+  expect(decoded.installations[0]?.recordIssue).toBe("newer");
+  expect(decoded.installations[0]?.recovery?.previous?.version).toBe("0.9.0");
+  expect(decodeCatalogue(encodeCatalogue(decoded))).toEqual(decoded);
+  const error = decodePluginError({
+    _tag: "PluginError",
+    reason: "future_reason",
+    message: "New host explanation",
+    code: "future_code",
+  });
+  expect(error.reason).toBe("future_reason");
+  expect(error.message).toBe("New host explanation");
+  expect(error.code).toBe("future_code");
+});
+
+it("requires installation-management scopes for recovery mutations and read scope for backlog inspection", () => {
+  for (const method of [
+    WS_METHODS.pluginsPrepareRepair,
+    WS_METHODS.pluginsStageRepair,
+    WS_METHODS.pluginsUsePrevious,
+  ])
+    expect(clientRpcRequiredScopes(method, {})).toEqual([
+      AuthAccessWriteScope,
+      AuthTerminalOperateScope,
+    ]);
+  expect(clientRpcRequiredScopes(WS_METHODS.pluginsBacklog, {})).toEqual([
+    AuthOrchestrationReadScope,
+  ]);
+});

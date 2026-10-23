@@ -1,3 +1,13 @@
+import * as PluginReceipts from "./plugins/PluginReceipts.ts";
+import * as PluginStore from "./plugins/PluginStore.ts";
+import * as PluginDatabase from "./plugins/PluginDatabase.ts";
+import * as PluginHost from "./plugins/PluginHost.ts";
+import * as PluginService from "./plugins/PluginService.ts";
+import * as PluginGitSource from "./plugins/PluginGitSource.ts";
+import * as PluginSupervisor from "./plugins/PluginSupervisor.ts";
+import * as PluginEventDelivery from "./plugins/PluginEventDelivery.ts";
+import * as PluginExecutionPolicy from "./plugins/PluginExecutionPolicy.ts";
+import packageJson from "../package.json" with { type: "json" };
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import type { RelayManagedEndpointRuntimeConfig } from "@t3tools/contracts/relay";
 import * as Random from "effect/Random";
@@ -693,7 +703,30 @@ const layerRuntimeCoreDependencies = layerRuntimeCoreDependenciesBase.pipe(
   ),
 );
 
-const layerRuntimeDependencies = layerRuntimeCoreDependencies.pipe(
+const layerPlugins = PluginService.layer.pipe(
+  Layer.provideMerge(PluginHost.layer),
+  Layer.provideMerge(PluginStore.layer.pipe(Layer.provide(PluginDatabase.layer))),
+  Layer.provideMerge(PluginReceipts.layer),
+  Layer.provide(PluginGitSource.layer),
+  Layer.provide(PluginSupervisor.layer),
+);
+
+const layerPluginRuntime = PluginEventDelivery.layer.pipe(
+  Layer.provideMerge(layerPlugins),
+  Layer.provide(
+    Layer.effect(
+      PluginExecutionPolicy.PluginExecutionPolicy,
+      Effect.map(ServerConfig.ServerConfig, (config) => ({
+        safeMode: config.pluginsEnabled === false,
+        hostVersion: packageJson.version,
+        nodeVersion: process.versions.node,
+      })),
+    ),
+  ),
+);
+
+const layerRuntimeDependencies = layerPluginRuntime.pipe(
+  Layer.provideMerge(layerRuntimeCoreDependencies),
   Layer.provideMerge(layerUsage),
   Layer.provideMerge(layerBackground),
   Layer.provideMerge(layerResourceDiagnostics),

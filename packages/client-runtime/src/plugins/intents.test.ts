@@ -1,0 +1,97 @@
+import { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import { describe, expect, it } from "vite-plus/test";
+
+import {
+  planPluginIntents,
+  pluginUnsupportedIntentCount,
+  type PluginInvocationOrigin,
+} from "./intents.ts";
+
+const origin: PluginInvocationOrigin = {
+  environmentId: EnvironmentId.make("env-1"),
+  installationId: "inst-1",
+  locationKey: "/env-1/thread-a",
+  composerKey: "env-1:thread-a",
+  threadId: ThreadId.make("thread-a"),
+};
+const manifest = {
+  views: [{ id: "board", title: "Board", entry: "view.html", placement: "page" as const }],
+};
+
+describe("planPluginIntents", () => {
+  it("inserts into the composer the action was invoked from, even after the user moved on", () => {
+    const steps = planPluginIntents({
+      origin,
+      manifest,
+      intents: [{ type: "composer.insert", text: "one\n\ntwo", quote: true }],
+      currentLocationKey: "/env-1/thread-b",
+      canOpenPreview: true,
+    });
+    expect(steps).toEqual([
+      { kind: "insert", composerKey: "env-1:thread-a", text: "> one\n>\n> two", visible: false },
+    ]);
+  });
+
+  it("offers navigation instead of moving a user who left the origin", () => {
+    const steps = planPluginIntents({
+      origin,
+      manifest,
+      intents: [{ type: "thread.reveal", threadId: ThreadId.make("thread-c") }],
+      currentLocationKey: "/settings/plugins",
+      canOpenPreview: true,
+    });
+    expect(steps).toMatchObject([{ kind: "navigate", mode: "offer" }]);
+  });
+
+  it("applies at most one navigation while the user stays put", () => {
+    const steps = planPluginIntents({
+      origin,
+      manifest,
+      intents: [
+        { type: "preview.open", url: "https://tickets.example/T-1" },
+        { type: "view.open", viewId: "board" },
+      ],
+      currentLocationKey: origin.locationKey,
+      canOpenPreview: true,
+    });
+    expect(steps.map((step) => (step.kind === "navigate" ? step.mode : step.kind))).toEqual([
+      "apply",
+      "offer",
+    ]);
+  });
+
+  it("offers a preview link when there is no thread to open it beside", () => {
+    const steps = planPluginIntents({
+      origin: { ...origin, threadId: null, composerKey: null },
+      manifest,
+      intents: [{ type: "preview.open", url: "https://tickets.example/T-1" }],
+      currentLocationKey: origin.locationKey,
+      canOpenPreview: true,
+    });
+    expect(steps).toMatchObject([{ kind: "navigate", mode: "offer" }]);
+  });
+
+  it("rejects undeclared views and inserts without a composer", () => {
+    const steps = planPluginIntents({
+      origin: { ...origin, composerKey: null },
+      manifest,
+      intents: [
+        { type: "view.open", viewId: "settings-hijack" },
+        { type: "composer.insert", text: "hello" },
+      ],
+      currentLocationKey: origin.locationKey,
+      canOpenPreview: true,
+    });
+    expect(steps.map((step) => step.kind)).toEqual(["rejected", "rejected"]);
+  });
+});
+
+describe("pluginUnsupportedIntentCount", () => {
+  it("counts intents a newer plugin API sent, and nothing for older servers", () => {
+    expect(pluginUnsupportedIntentCount({ message: "done" })).toBe(0);
+    expect(pluginUnsupportedIntentCount({ intents: [], unsupportedIntentCount: 2 } as never)).toBe(
+      2,
+    );
+    expect(pluginUnsupportedIntentCount({ unsupportedIntentCount: -1 } as never)).toBe(0);
+  });
+});

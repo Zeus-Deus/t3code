@@ -1,0 +1,1007 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Repository Lens</title>
+    <style>
+      /*
+       * T3 Code applies its theme as CSS variables on <html> through the plugin bridge
+       * (window.t3). System colors keep the page readable before the first context arrives.
+       */
+      :root {
+        --bg: var(--color-background-primary, Canvas);
+        --surface: var(--color-background-secondary, Canvas);
+        --muted-bg: var(--color-background-tertiary, Canvas);
+        --fg: var(--color-text-primary, CanvasText);
+        --muted: var(--color-text-secondary, GrayText);
+        --border: var(--color-border-primary, GrayText);
+        --input: var(--color-border-secondary, GrayText);
+        --ring: var(--color-ring-primary, Highlight);
+        --danger: var(--color-text-danger, CanvasText);
+        --success: var(--color-text-success, CanvasText);
+        --warning: var(--color-text-warning, CanvasText);
+        --info: var(--color-text-info, CanvasText);
+        --radius: var(--border-radius-md, 8px);
+        --font: var(--font-sans, system-ui, sans-serif);
+        --mono: var(--font-mono, ui-monospace, monospace);
+        color-scheme: light dark;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: var(--bg);
+        color: var(--fg);
+        font: 13px/1.45 var(--font);
+      }
+      [hidden] {
+        display: none !important;
+      }
+      main {
+        display: flex;
+        flex-direction: column;
+        height: 100%;
+      }
+      header {
+        display: flex;
+        align-items: flex-start;
+        gap: 8px;
+        padding: 10px 12px 8px;
+        border-bottom: 1px solid var(--border);
+      }
+      .repo {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+      .branch {
+        display: flex;
+        align-items: baseline;
+        gap: 6px;
+        min-width: 0;
+      }
+      .branch-label,
+      .path,
+      .status,
+      .hint,
+      .note {
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .branch-name {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-family: var(--mono);
+        font-weight: 500;
+      }
+      .path {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .status.error,
+      .hint.error {
+        color: var(--danger);
+      }
+      .content {
+        flex: 1;
+        min-height: 0;
+        overflow: auto;
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+        padding: 12px;
+      }
+      .content[aria-busy="true"] .changes,
+      .content[aria-busy="true"] .commits {
+        opacity: 0.6;
+      }
+      .col {
+        display: contents;
+      }
+      #changes-section {
+        order: 1;
+      }
+      #diff-section {
+        order: 2;
+      }
+      #commits-section {
+        order: 3;
+      }
+      section {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        min-width: 0;
+      }
+      .section-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        min-height: 24px;
+      }
+      h2,
+      h3 {
+        margin: 0;
+        font-size: 12px;
+        font-weight: 500;
+        color: var(--muted);
+      }
+      h3 {
+        padding: 6px 8px 2px;
+      }
+      .count {
+        font-variant-numeric: tabular-nums;
+      }
+      button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        height: 28px;
+        padding: 0 10px;
+        border: 1px solid var(--input);
+        border-radius: calc(var(--radius) - 2px);
+        background: var(--bg);
+        color: var(--fg);
+        font: inherit;
+        font-size: 12px;
+        cursor: pointer;
+        white-space: nowrap;
+        flex-shrink: 0;
+      }
+      button:hover:not(:disabled) {
+        background: var(--muted-bg);
+      }
+      button:disabled {
+        opacity: 0.5;
+        cursor: default;
+      }
+      button:focus-visible {
+        outline: 2px solid var(--ring);
+        outline-offset: 1px;
+      }
+      button.primary {
+        background: var(--fg);
+        border-color: var(--fg);
+        color: var(--bg);
+      }
+      button.primary:hover:not(:disabled) {
+        background: var(--fg);
+        opacity: 0.9;
+      }
+      button.ghost {
+        border-color: transparent;
+        background: transparent;
+        color: var(--muted);
+      }
+      button.ghost:hover:not(:disabled) {
+        color: var(--fg);
+      }
+      .changes,
+      .commits {
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 2px;
+      }
+      ul,
+      ol {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+      }
+      button.file {
+        display: flex;
+        justify-content: flex-start;
+        width: 100%;
+        height: auto;
+        min-height: 28px;
+        padding: 4px 8px;
+        border: 0;
+        border-radius: calc(var(--radius) - 3px);
+        background: transparent;
+        text-align: left;
+        font-size: 13px;
+      }
+      button.file[aria-pressed="true"] {
+        background: var(--muted-bg);
+      }
+      .code {
+        flex-shrink: 0;
+        width: 2.5ch;
+        font-family: var(--mono);
+        font-size: 12px;
+        font-weight: 600;
+      }
+      .code.added {
+        color: var(--success);
+      }
+      .code.modified {
+        color: var(--warning);
+      }
+      .code.deleted,
+      .code.conflict {
+        color: var(--danger);
+      }
+      .code.renamed {
+        color: var(--info);
+      }
+      .file-name {
+        flex-shrink: 1;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .file-dir {
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .commits li {
+        display: flex;
+        align-items: baseline;
+        gap: 8px;
+        padding: 4px 8px;
+        min-width: 0;
+      }
+      .hash {
+        flex-shrink: 0;
+        font-family: var(--mono);
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .subject {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .placeholder {
+        padding: 16px 8px;
+        text-align: center;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .placeholder strong {
+        display: block;
+        color: var(--fg);
+        font-size: 13px;
+        font-weight: 500;
+      }
+      .diff-path {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-family: var(--mono);
+        font-size: 12px;
+      }
+      pre {
+        margin: 0;
+        padding: 6px 0;
+        overflow: auto;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: var(--surface);
+        font: 12px/1.5 var(--mono);
+        tab-size: 4;
+      }
+      pre:focus-visible {
+        outline: 2px solid var(--ring);
+        outline-offset: 1px;
+      }
+      /* Inline-block so every line is as wide as the longest and backgrounds span the scroll. */
+      .lines {
+        display: inline-block;
+        min-width: 100%;
+      }
+      .lines span {
+        display: block;
+        padding: 0 10px;
+        white-space: pre;
+      }
+      pre .add {
+        background: color-mix(in srgb, var(--success) 12%, transparent);
+      }
+      pre .del {
+        background: color-mix(in srgb, var(--danger) 12%, transparent);
+      }
+      pre .hunk {
+        color: var(--info);
+      }
+      pre .meta {
+        color: var(--muted);
+      }
+      pre .label {
+        font-weight: 600;
+      }
+      pre .label:not(:first-child) {
+        margin-top: 8px;
+      }
+      .alert {
+        padding: 10px 12px;
+        border: 1px solid var(--color-border-danger, var(--border));
+        border-radius: var(--radius);
+        background: var(--color-background-danger, var(--surface));
+      }
+      .alert strong {
+        display: block;
+        font-weight: 500;
+        color: var(--danger);
+      }
+      .alert p {
+        margin: 4px 0 0;
+        overflow-wrap: anywhere;
+      }
+      .alert p.note {
+        margin-top: 8px;
+      }
+      footer {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        padding: 8px 12px;
+        border-top: 1px solid var(--border);
+      }
+      .footer-text {
+        flex: 1 1 200px;
+        min-width: 0;
+      }
+      .hint,
+      .target {
+        margin: 0;
+      }
+      /* Ellipsis hides the path's tail, so the hint above repeats the folder name. */
+      .target {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .target-path {
+        font-family: var(--mono);
+      }
+      @media (min-width: 720px) {
+        .content {
+          display: grid;
+          grid-template-columns: minmax(240px, 2fr) minmax(0, 3fr);
+          overflow: hidden;
+          padding: 0;
+          gap: 0;
+        }
+        .col {
+          display: flex;
+          flex-direction: column;
+          gap: 16px;
+          min-height: 0;
+          overflow: auto;
+          padding: 12px;
+          border-right: 1px solid var(--border);
+        }
+        #diff-section {
+          min-height: 0;
+          overflow: auto;
+          padding: 12px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div class="repo">
+          <div class="branch">
+            <span class="branch-label">Branch</span>
+            <span class="branch-name" id="branch">…</span>
+          </div>
+          <div class="path" id="path"></div>
+          <div class="status" id="status" role="status" aria-live="polite"></div>
+        </div>
+        <button type="button" id="refresh" disabled>Refresh</button>
+      </header>
+      <div class="content" id="content" aria-busy="true">
+        <div class="alert" id="failure" role="alert" hidden>
+          <strong>Couldn't read the repository</strong>
+          <p id="failure-message"></p>
+          <p class="note">
+            Repository Lens reads the Repository path setting in Settings › Plugins. It must be an
+            absolute path to a Git working tree on the machine running the T3 Code server, not this
+            device. Fix the setting, then choose Refresh.
+          </p>
+        </div>
+        <div class="col" id="overview">
+          <section id="changes-section" aria-labelledby="changes-title">
+            <div class="section-head">
+              <h2 id="changes-title">Changes <span class="count" id="changes-count"></span></h2>
+            </div>
+            <div class="changes" id="changes"></div>
+          </section>
+          <section id="commits-section" aria-labelledby="commits-title">
+            <div class="section-head">
+              <h2 id="commits-title">Recent commits</h2>
+            </div>
+            <div class="commits" id="commits"></div>
+          </section>
+        </div>
+        <section id="diff-section" aria-labelledby="diff-title">
+          <div class="section-head">
+            <h2 id="diff-title" class="diff-path">Diff</h2>
+            <button type="button" class="ghost" id="close-diff" hidden>Close diff</button>
+          </div>
+          <div id="diff"></div>
+        </section>
+      </div>
+      <footer>
+        <div class="footer-text">
+          <p class="hint" id="insert-hint" role="status" aria-live="polite">Connecting…</p>
+          <p class="target" id="insert-target" hidden>
+            Repository path <span class="target-path" id="insert-target-path"></span>
+          </p>
+        </div>
+        <button type="button" class="primary" id="insert" disabled>Insert review request</button>
+      </footer>
+    </main>
+    <script>
+      (function () {
+        "use strict";
+        // Buttons only, no <form>: the view's sandbox has no allow-forms, so submit never fires.
+        var bridge = window.t3;
+        var STATUS = {
+          M: { word: "Modified", tone: "modified" },
+          T: { word: "Type changed", tone: "modified" },
+          A: { word: "Added", tone: "added" },
+          D: { word: "Deleted", tone: "deleted" },
+          R: { word: "Renamed", tone: "renamed" },
+          C: { word: "Copied", tone: "renamed" },
+        };
+        var GROUPS = [
+          { key: "conflicts", title: "Conflicts" },
+          { key: "staged", title: "Staged" },
+          { key: "unstaged", title: "Unstaged" },
+          { key: "untracked", title: "Untracked" },
+        ];
+        var state = {
+          context: null,
+          snapshot: null,
+          inspectError: null,
+          inspecting: false,
+          inspectSeq: 0,
+          readAt: null,
+          selected: null,
+          diff: null,
+          diffError: null,
+          diffLoading: false,
+          diffSeq: 0,
+          inserting: false,
+          insertResult: null,
+        };
+        var $ = function (id) {
+          return document.getElementById(id);
+        };
+        var wide = window.matchMedia("(min-width: 720px)");
+
+        function el(tag, attrs, children) {
+          var node = document.createElement(tag);
+          for (var key in attrs || {}) {
+            if (key === "text") node.textContent = attrs[key];
+            else if (key === "onclick") node.addEventListener("click", attrs[key]);
+            else node.setAttribute(key, attrs[key]);
+          }
+          (children || []).forEach(function (child) {
+            if (child) node.appendChild(child);
+          });
+          return node;
+        }
+
+        function message(error, fallback) {
+          return (error && error.message) || fallback;
+        }
+
+        function call(name, input) {
+          if (!bridge) return Promise.reject(new Error("Open this view inside T3 Code."));
+          return bridge.invoke(name, input);
+        }
+
+        function isSnapshot(data) {
+          return (
+            data &&
+            typeof data.repositoryPath === "string" &&
+            typeof data.branch === "string" &&
+            Array.isArray(data.files) &&
+            Array.isArray(data.commits)
+          );
+        }
+
+        function isConflict(x, y) {
+          return x === "U" || y === "U" || (x === "A" && y === "A") || (x === "D" && y === "D");
+        }
+
+        // Porcelain XY codes: X is the index (staged), Y the working tree (unstaged).
+        function groupFiles(files) {
+          var groups = { conflicts: [], staged: [], unstaged: [], untracked: [] };
+          files.forEach(function (file) {
+            var x = file.indexStatus;
+            var y = file.worktreeStatus;
+            if (x === "?" || y === "?") {
+              groups.untracked.push({ file: file, code: "?", word: "Untracked", tone: "added" });
+            } else if (isConflict(x, y)) {
+              groups.conflicts.push({
+                file: file,
+                code: x + y,
+                word: "Conflict",
+                tone: "conflict",
+              });
+            } else {
+              if (x !== " " && x !== "!") groups.staged.push(entry(file, x));
+              if (y !== " " && y !== "!") groups.unstaged.push(entry(file, y));
+            }
+          });
+          return groups;
+        }
+
+        function entry(file, code) {
+          var known = STATUS[code] || { word: "Changed", tone: "modified" };
+          return { file: file, code: code, word: known.word, tone: known.tone };
+        }
+
+        function splitPath(path) {
+          var slash = path.lastIndexOf("/");
+          return slash < 0
+            ? { name: path, dir: "" }
+            : { name: path.slice(slash + 1), dir: path.slice(0, slash) };
+        }
+
+        function fileLabel(file) {
+          return file.originalPath ? file.originalPath + " → " + file.path : file.path;
+        }
+
+        function renderFile(item) {
+          var file = item.file;
+          var parts = splitPath(file.path);
+          var dir = file.originalPath ? "from " + file.originalPath : parts.dir;
+          return el("li", {}, [
+            el(
+              "button",
+              {
+                type: "button",
+                class: "file",
+                "data-path": file.path,
+                "aria-pressed": String(state.selected === file.path),
+                "aria-label": item.word + ": " + fileLabel(file),
+                title: fileLabel(file),
+                onclick: function () {
+                  selectFile(file.path);
+                },
+              },
+              [
+                el("span", { class: "code " + item.tone, "aria-hidden": "true", text: item.code }),
+                el("span", { class: "file-name", text: parts.name }),
+                dir ? el("span", { class: "file-dir", text: dir }) : null,
+              ],
+            ),
+          ]);
+        }
+
+        function placeholder(title, detail) {
+          return el("div", { class: "placeholder" }, [
+            title ? el("strong", { text: title }) : null,
+            detail ? el("span", { text: detail }) : null,
+          ]);
+        }
+
+        function renderHeader() {
+          var snapshot = state.snapshot;
+          $("branch").textContent = snapshot
+            ? snapshot.branch
+            : state.inspectError
+              ? "Unavailable"
+              : "…";
+          $("path").textContent = snapshot ? snapshot.repositoryPath : "";
+          $("path").title = snapshot ? snapshot.repositoryPath : "";
+          $("refresh").disabled = !bridge || state.inspecting;
+          $("refresh").textContent = state.inspecting && state.readAt ? "Refreshing…" : "Refresh";
+          $("content").setAttribute("aria-busy", String(state.inspecting));
+        }
+
+        function renderChanges() {
+          var container = $("changes");
+          var snapshot = state.snapshot;
+          container.replaceChildren();
+          $("changes-count").textContent = snapshot ? "(" + snapshot.files.length + ")" : "";
+          if (!snapshot) {
+            container.appendChild(placeholder(null, "Reading repository…"));
+            return;
+          }
+          if (snapshot.files.length === 0) {
+            container.appendChild(
+              placeholder("Working tree clean", "No staged, unstaged, or untracked changes."),
+            );
+            return;
+          }
+          var groups = groupFiles(snapshot.files);
+          GROUPS.forEach(function (group) {
+            var items = groups[group.key];
+            if (items.length === 0) return;
+            var id = "group-" + group.key;
+            container.appendChild(
+              el("h3", { id: id, text: group.title + " (" + items.length + ")" }),
+            );
+            container.appendChild(el("ul", { "aria-labelledby": id }, items.map(renderFile)));
+          });
+          if (snapshot.truncated) {
+            container.appendChild(
+              el("p", {
+                class: "note placeholder",
+                text: "Repository Lens shows a bounded snapshot; some changes or commits are not listed.",
+              }),
+            );
+          }
+        }
+
+        function renderCommits() {
+          var container = $("commits");
+          var snapshot = state.snapshot;
+          container.replaceChildren();
+          if (!snapshot) {
+            container.appendChild(placeholder(null, "Reading repository…"));
+            return;
+          }
+          if (snapshot.commits.length === 0) {
+            container.appendChild(placeholder(null, "No commits yet."));
+            return;
+          }
+          container.appendChild(
+            el(
+              "ol",
+              {},
+              snapshot.commits.map(function (commit) {
+                return el("li", { title: commit.hash }, [
+                  el("code", { class: "hash", text: commit.hash.slice(0, 7) }),
+                  el("span", { class: "subject", text: commit.subject || "(no subject)" }),
+                ]);
+              }),
+            ),
+          );
+        }
+
+        // plugin.mjs heads each part of a combined diff with one of these labels.
+        var DIFF_LABELS = { "Staged changes": true, "Unstaged changes": true };
+
+        function diffLine(line) {
+          var kind = DIFF_LABELS[line]
+            ? "label"
+            : line.indexOf("+++") === 0 || line.indexOf("---") === 0
+              ? "meta"
+              : line.charAt(0) === "+"
+                ? "add"
+                : line.charAt(0) === "-"
+                  ? "del"
+                  : line.indexOf("@@") === 0
+                    ? "hunk"
+                    : line.charAt(0) === " " || line === ""
+                      ? ""
+                      : "meta";
+          return el("span", kind ? { class: kind, text: line } : { text: line });
+        }
+
+        function renderDiff() {
+          var section = $("diff-section");
+          var container = $("diff");
+          var title = $("diff-title");
+          container.replaceChildren();
+          $("close-diff").hidden = state.selected === null;
+          // Narrow layouts show the diff only for a selection; wide ones keep the column.
+          section.hidden = state.selected === null && (!wide.matches || !state.snapshot);
+          if (state.selected === null) {
+            title.textContent = "Diff";
+            title.removeAttribute("title");
+            container.appendChild(placeholder(null, "Select a changed file to see its diff."));
+            return;
+          }
+          title.textContent = state.selected;
+          title.title = state.selected;
+          if (state.diffLoading) {
+            container.appendChild(placeholder(null, "Loading diff…"));
+            return;
+          }
+          if (state.diffError) {
+            container.appendChild(
+              el("div", { class: "alert", role: "alert" }, [
+                el("strong", { text: "Couldn't load this diff" }),
+                el("p", { text: state.diffError }),
+              ]),
+            );
+            return;
+          }
+          var diff = state.diff;
+          if (!diff) return;
+          var text = diff.diff.replace(/\n$/, "");
+          // A single line is never a unified diff; it explains why there is none (untracked, etc.).
+          if (text.indexOf("\n") === -1) {
+            container.appendChild(
+              placeholder(null, text || diff.message || "No textual changes to show."),
+            );
+            return;
+          }
+          if (diff.message) container.appendChild(el("p", { class: "note", text: diff.message }));
+          var lines = text.split("\n");
+          container.appendChild(
+            el("pre", { tabindex: "0", "aria-label": "Diff of " + diff.path }, [
+              el("div", { class: "lines" }, lines.map(diffLine)),
+            ]),
+          );
+          if (diff.truncated) {
+            container.appendChild(el("p", { class: "note", text: "Diff truncated at 16 KiB." }));
+          }
+        }
+
+        function canInsert() {
+          var context = state.context;
+          return Boolean(
+            context &&
+            context.thread &&
+            context.placement === "side-panel" &&
+            context.platform !== "mobile",
+          );
+        }
+
+        function folderName(path) {
+          return (
+            path
+              .replace(/[\\/]+$/, "")
+              .split(/[\\/]/)
+              .pop() || path
+          );
+        }
+
+        // The setting is environment-wide, not the thread's project, so name what a request targets.
+        function renderTarget() {
+          var path = state.snapshot ? state.snapshot.repositoryPath : "";
+          $("insert-target").hidden = !path;
+          $("insert-target").title = path;
+          $("insert-target-path").textContent = path;
+        }
+
+        function renderInsert() {
+          var hint = $("insert-hint");
+          var button = $("insert");
+          var context = state.context;
+          renderTarget();
+          var reason = !bridge
+            ? "Open this view inside T3 Code."
+            : !context
+              ? "Connecting…"
+              : context.platform === "mobile"
+                ? "To add a review request on mobile, choose Insert repository review request from the thread's menu."
+                : !canInsert()
+                  ? "Open Repository Lens beside a thread, or choose Insert repository review request from the thread's menu."
+                  : !state.snapshot
+                    ? "Load the repository to request a review."
+                    : null;
+          button.disabled = reason !== null || state.inserting || state.inspecting;
+          if (state.insertResult && reason === null) {
+            hint.textContent = state.insertResult.text;
+            hint.className = state.insertResult.error ? "hint error" : "hint";
+            return;
+          }
+          hint.className = "hint";
+          hint.textContent =
+            reason ||
+            "Adds a review request for " +
+              folderName(state.snapshot.repositoryPath) +
+              " to this thread's composer. Nothing is sent.";
+        }
+
+        function render() {
+          var failed = state.inspectError !== null;
+          $("failure").hidden = !failed;
+          $("failure-message").textContent = state.inspectError || "";
+          $("overview").hidden = failed;
+          renderHeader();
+          renderChanges();
+          renderCommits();
+          renderDiff();
+          if (failed) $("diff-section").hidden = true;
+          renderInsert();
+        }
+
+        function setStatus(text, isError) {
+          var status = $("status");
+          status.textContent = text || "";
+          status.className = isError ? "status error" : "status";
+        }
+
+        function clearSelection() {
+          state.diffSeq += 1;
+          state.selected = null;
+          state.diff = null;
+          state.diffError = null;
+          state.diffLoading = false;
+        }
+
+        function markSelection() {
+          document.querySelectorAll("button.file").forEach(function (row) {
+            row.setAttribute(
+              "aria-pressed",
+              String(row.getAttribute("data-path") === state.selected),
+            );
+          });
+        }
+
+        function selectFile(path) {
+          if (state.selected === path && !state.diffError) return;
+          var seq = ++state.diffSeq;
+          state.selected = path;
+          state.diff = null;
+          state.diffError = null;
+          state.diffLoading = true;
+          // Update rows in place so the focused row keeps focus.
+          markSelection();
+          renderDiff();
+          if (!wide.matches) $("diff-section").scrollIntoView({ block: "nearest" });
+          call("diff", { path: path })
+            .then(function (result) {
+              if (seq !== state.diffSeq) return;
+              var data = result && result.data;
+              if (!data || typeof data.diff !== "string") {
+                throw new Error("Repository Lens returned an unexpected diff.");
+              }
+              state.diff = {
+                path: typeof data.path === "string" ? data.path : path,
+                diff: data.diff,
+                truncated: Boolean(data.truncated),
+                message: result.message || "",
+              };
+            })
+            .catch(function (error) {
+              if (seq !== state.diffSeq) return;
+              state.diffError = message(error, "Could not load the diff.");
+            })
+            .then(function () {
+              if (seq !== state.diffSeq) return;
+              state.diffLoading = false;
+              renderDiff();
+            });
+        }
+
+        function inspect() {
+          var seq = ++state.inspectSeq;
+          var refreshing = state.readAt !== null;
+          state.inspecting = true;
+          state.insertResult = null;
+          setStatus(refreshing ? "Refreshing…" : "", false);
+          render();
+          call("inspect")
+            .then(function (result) {
+              if (seq !== state.inspectSeq) return;
+              var data = result && result.data;
+              if (!isSnapshot(data)) {
+                throw new Error("Repository Lens returned an unexpected response.");
+              }
+              var keep =
+                state.selected !== null &&
+                data.files.some(function (file) {
+                  return file.path === state.selected;
+                });
+              var previous = state.selected;
+              state.snapshot = data;
+              state.inspectError = null;
+              state.readAt = new Date();
+              clearSelection();
+              setStatus("Read at " + state.readAt.toLocaleTimeString() + ". Refresh to update.");
+              state.inspecting = false;
+              render();
+              // The working tree changed under the old diff; read it again from the new snapshot.
+              if (keep) selectFile(previous);
+            })
+            .catch(function (error) {
+              if (seq !== state.inspectSeq) return;
+              state.snapshot = null;
+              state.inspectError = message(error, "Could not read the repository.");
+              state.readAt = state.readAt || new Date();
+              clearSelection();
+              setStatus("");
+              state.inspecting = false;
+              render();
+            });
+        }
+
+        function insertReview() {
+          if ($("insert").disabled) return;
+          state.inserting = true;
+          state.insertResult = null;
+          renderInsert();
+          call("insert-review")
+            .then(function (result) {
+              state.insertResult = {
+                text: (result && result.message) || "Review request prepared.",
+                error: false,
+              };
+            })
+            .catch(function (error) {
+              state.insertResult = {
+                text: message(error, "Could not insert the review request."),
+                error: true,
+              };
+            })
+            .then(function () {
+              state.inserting = false;
+              renderInsert();
+            });
+        }
+
+        function closeDiff() {
+          var path = state.selected;
+          clearSelection();
+          markSelection();
+          renderDiff();
+          var row =
+            path && document.querySelector('button.file[data-path="' + CSS.escape(path) + '"]');
+          if (row) row.focus();
+        }
+
+        // Arrow keys move between changed files; Escape closes the open diff.
+        document.addEventListener("keydown", function (event) {
+          if (event.key === "Escape" && state.selected !== null) {
+            event.preventDefault();
+            closeDiff();
+            return;
+          }
+          var target = event.target;
+          if (!target.classList || !target.classList.contains("file")) return;
+          var rows = Array.prototype.slice.call(document.querySelectorAll("button.file"));
+          var index = rows.indexOf(target);
+          var next =
+            event.key === "ArrowDown"
+              ? rows[index + 1]
+              : event.key === "ArrowUp"
+                ? rows[index - 1]
+                : event.key === "Home"
+                  ? rows[0]
+                  : event.key === "End"
+                    ? rows[rows.length - 1]
+                    : null;
+          if (next) {
+            event.preventDefault();
+            next.focus();
+          }
+        });
+        wide.addEventListener("change", renderDiff);
+        $("refresh").addEventListener("click", inspect);
+        $("insert").addEventListener("click", insertReview);
+        $("close-diff").addEventListener("click", closeDiff);
+
+        function applyContext(context) {
+          state.context = context;
+          renderInsert();
+        }
+
+        if (!bridge) {
+          state.inspectError = "Open this view inside T3 Code.";
+          render();
+          return;
+        }
+        render();
+        bridge.onContext(applyContext);
+        bridge.ready.then(applyContext);
+        inspect();
+      })();
+    </script>
+  </body>
+</html>

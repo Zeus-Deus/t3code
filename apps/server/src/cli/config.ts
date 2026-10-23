@@ -144,6 +144,7 @@ const EnvServerConfig = Config.all({
     Config.option,
     Config.map(Option.getOrUndefined),
   ),
+  pluginsEnabled: Config.Boolean("T3CODE_PLUGINS").pipe(Config.withDefault(true)),
   bootstrapFd: Config.Int("T3CODE_BOOTSTRAP_FD").pipe(
     Config.option,
     Config.map(Option.getOrUndefined),
@@ -492,6 +493,7 @@ export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(funct
     ...(devAuthToken === undefined ? {} : { devAuthToken }),
     devAllowedOrigins: env.devAllowedOrigins,
     noBrowser,
+    ...(env.pluginsEnabled ? {} : { pluginsEnabled: false }),
     startupPresentation,
     desktopBootstrapToken,
     ...(desktopBootstrapSecret === undefined ? {} : { desktopBootstrapSecret }),

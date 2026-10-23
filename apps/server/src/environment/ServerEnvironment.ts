@@ -214,6 +214,11 @@ export const make = Effect.gen(function* () {
     serverVersion: packageJson.version,
     orchestrationProtocolVersion: ORCHESTRATION_PROTOCOL_VERSION,
     capabilities: {
+      plugins: {
+        apiVersion: 1,
+        recovery: true,
+        ...(serverConfig.pluginsEnabled === false ? { executionDisabled: true } : {}),
+      },
       repositoryIdentity: true,
       connectionProbe: true,
       attachmentUploads: true,
@@ -279,7 +284,10 @@ export const make = Effect.gen(function* () {
     getDescriptor: readAgentActivityPublishingActive(secrets).pipe(
       Effect.map((agentActivityPublishing) => ({
         ...descriptor,
-        capabilities: { ...descriptor.capabilities, agentActivityPublishing },
+        capabilities: {
+          ...descriptor.capabilities,
+          agentActivityPublishing,
+        },
       })),
     ),
   });
