@@ -136,6 +136,7 @@ export type PluginTreeNode =
   | {
       readonly id: string;
       readonly parentId?: string;
+      /** Applies to group and project headings; native thread rows remain expanded. */
       readonly collapsedByDefault?: boolean;
       readonly kind: "thread";
       readonly threadId: string;

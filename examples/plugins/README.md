@@ -203,6 +203,9 @@ on selection and semantic changes rather than on row renders or search input.
 See the SDK for snapshot limits; do not send transcripts or copy live status
 into group labels to force frequent refreshes.
 
+`collapsedByDefault` folds group and project headings. Native thread rows stay
+expanded; wrap a branch in a group when it needs a foldable heading.
+
 ## Develop and verify
 
 Install from a local directory in an isolated development environment. After
