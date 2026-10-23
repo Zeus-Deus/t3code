@@ -408,6 +408,7 @@ type SidebarProjectSection = ProjectViewSection<SidebarProjectSnapshot, Environm
   readonly tree?: {
     readonly heading: PluginTreeHeading<SidebarProjectSnapshot> | null;
     readonly depth: number;
+    readonly rowDepth: number;
     readonly collapsedByDefault: boolean;
   };
 };
@@ -431,6 +432,7 @@ function treeSectionAsProjectSection(
     tree: {
       heading: section.heading,
       depth: section.depth,
+      rowDepth: section.rowDepth,
       collapsedByDefault: section.collapsedByDefault,
     },
   };
@@ -3557,7 +3559,8 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                             <SidebarProjectThreadTree
                               key={`tree:${section.key}`}
                               rows={section.rows}
-                              depth={tree?.depth ?? 0}
+                              // A heading's rows sit flush with it, as in the project view.
+                              depth={tree === undefined ? 0 : Math.max(tree.rowDepth - 1, 0)}
                               renderRow={(thread) =>
                                 renderThreadRow(
                                   thread,

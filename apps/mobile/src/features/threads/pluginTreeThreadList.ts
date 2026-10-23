@@ -116,7 +116,7 @@ export function buildPluginTreeThreadListItems(input: {
         foldable: true,
       });
     }
-    addRows(section.rows, section.depth + (heading === null ? 0 : 1));
+    addRows(section.rows, section.rowDepth);
   }
   const threadItems = buildThreadListV2ListItems({
     items: rows.map((row) => row.item),

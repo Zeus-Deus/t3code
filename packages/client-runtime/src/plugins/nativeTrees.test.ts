@@ -240,6 +240,34 @@ describe("buildPluginTreeLayout", () => {
       threads: [thread("a"), thread("b"), thread("c")],
     });
     expect(outline(result)).toEqual(['Work 3: ["a"]', '  Nested 1: ["b"]', '  - 1: ["c"]']);
+    // "c" is Work's row, so it lines up with "a" rather than with Nested's rows.
+    const rowDepthOf = (id: string) =>
+      result.sections.find((section) => section.rows.some((row) => row.thread.id === id))?.rowDepth;
+    expect([rowDepthOf("a"), rowDepthOf("b"), rowDepthOf("c")]).toEqual([1, 2, 1]);
+  });
+
+  it("puts a merged project's own rows before its nested headings", () => {
+    // Each environment's shape from a Projects-style tree: live rows, then a folded shelf.
+    const projectTree = (projectId: string, live: string, parked: string) => [
+      project("p", projectId),
+      placed("n-live", live, "p"),
+      group("shelf", "Snoozed", "p", true),
+      placed("n-parked", parked, "shelf"),
+    ];
+    const result = layout({
+      sources: [
+        { environmentId: local, nodes: projectTree("app-local", "a", "s") },
+        { environmentId: remote, nodes: projectTree("app-remote", "b", "r") },
+      ],
+      threads: [thread("a"), thread("s"), thread("b", remote), thread("r", remote)],
+      parked: [thread("s"), thread("r", remote)],
+    });
+    // Groups never merge across environments, so each keeps its own shelf.
+    expect(outline(result)).toEqual([
+      'app-local 4: ["a","b"]',
+      "  Snoozed (folded) 1: []",
+      "  Snoozed (folded) 1: []",
+    ]);
   });
 
   it("lists unplaced live threads with their own lineage, even through a cycle", () => {

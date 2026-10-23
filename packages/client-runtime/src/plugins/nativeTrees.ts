@@ -32,6 +32,11 @@ export interface PluginTreeSection<TProject, TThread> {
   readonly heading: PluginTreeHeading<TProject> | null;
   /** Headings above this one. */
   readonly depth: number;
+  /**
+   * Headings above its rows: one more than `depth` under a heading. Rows without a heading are
+   * the ones listed after a nested heading, so they sit at the level of the heading they continue.
+   */
+  readonly rowDepth: number;
   readonly folded: boolean;
   /** The plugin's initial fold, for toggling; the person's choice is kept against it. */
   readonly collapsedByDefault: boolean;
@@ -90,6 +95,8 @@ interface HeadingNode<TProject, TThread> {
   readonly heading: PluginTreeHeading<TProject>;
   readonly collapsedByDefault: boolean;
   readonly children: Array<TreeEntry<TProject, TThread>>;
+  /** Root project headings that took in another node of the same logical project. */
+  merged: boolean;
 }
 
 interface ThreadNode<TProject, TThread> {
@@ -191,13 +198,17 @@ export function buildPluginTreeLayout<TProject, TThread extends PluginTreeThread
             heading: { kind: "group", title: node.title },
             collapsedByDefault: collapsedByDefault(node),
             children: [],
+            merged: false,
           };
           return { entry, attachTo: headingParent, container: entry };
         }
         const project = input.project(environmentId, node.projectId);
         if (project === null) return { entry: null, attachTo: null, container: headingParent };
         const merged = headingParent === null ? rootProjects.get(project.key) : undefined;
-        if (merged !== undefined) return { entry: null, attachTo: null, container: merged };
+        if (merged !== undefined) {
+          merged.merged = true;
+          return { entry: null, attachTo: null, container: merged };
+        }
         const entry: Heading = {
           kind: "heading",
           key:
@@ -205,6 +216,7 @@ export function buildPluginTreeLayout<TProject, TThread extends PluginTreeThread
           heading: { kind: "project", project: project.project },
           collapsedByDefault: collapsedByDefault(node),
           children: [],
+          merged: false,
         };
         if (headingParent === null) rootProjects.set(project.key, entry);
         return { entry, attachTo: headingParent, container: entry };
@@ -293,6 +305,7 @@ export function buildPluginTreeLayout<TProject, TThread extends PluginTreeThread
     key: string,
     heading: PluginTreeHeading<TProject> | null,
     depth: number,
+    rowDepth: number,
     rows: ReadonlyArray<PluginTreeRow<TThread>>,
     count = flatten(rows).length,
     folded = false,
@@ -301,6 +314,7 @@ export function buildPluginTreeLayout<TProject, TThread extends PluginTreeThread
     key,
     heading,
     depth,
+    rowDepth,
     folded,
     collapsedByDefault,
     count,
@@ -316,7 +330,9 @@ export function buildPluginTreeLayout<TProject, TThread extends PluginTreeThread
     readonly sections: PluginTreeSection<TProject, TThread>[];
   }
   // A heading's own rows come first; rows listed after a nested heading keep their place in a
-  // section without a heading, so the plugin's order holds.
+  // section without a heading, so the plugin's order holds. A merged project lists every
+  // environment's own rows first, so a later environment's rows do not follow an earlier one's
+  // nested headings.
   const lay = (
     entries: ReadonlyArray<TreeEntry<TProject, TThread>>,
     depth: number,
@@ -327,7 +343,7 @@ export function buildPluginTreeLayout<TProject, TThread extends PluginTreeThread
     let continuation = 0;
     const flush = () => {
       if (loose.length === 0) return;
-      laid.sections.push(section(`${key}:${continuation++}`, null, depth, loose));
+      laid.sections.push(section(`${key}:${continuation++}`, null, depth, depth, loose));
       loose = [];
     };
     for (const entry of entries) {
@@ -340,7 +356,13 @@ export function buildPluginTreeLayout<TProject, TThread extends PluginTreeThread
         continue;
       }
       flush();
-      const inner = lay(entry.children, depth + 1, entry.key);
+      const children = entry.merged
+        ? [
+            ...entry.children.filter((child) => child.kind === "thread"),
+            ...entry.children.filter((child) => child.kind === "heading"),
+          ]
+        : entry.children;
+      const inner = lay(children, depth + 1, entry.key);
       laid.count += inner.count;
       laid.allRows.push(...inner.allRows);
       if (
@@ -356,6 +378,7 @@ export function buildPluginTreeLayout<TProject, TThread extends PluginTreeThread
           entry.key,
           entry.heading,
           depth,
+          depth + 1,
           folded ? findRoute(inner.allRows) : inner.rows,
           inner.count,
           folded,
@@ -370,7 +393,7 @@ export function buildPluginTreeLayout<TProject, TThread extends PluginTreeThread
 
   const top = lay(roots, 0, "tree-root");
   const sections: PluginTreeSection<TProject, TThread>[] = [];
-  if (top.rows.length > 0) sections.push(section("tree-root", null, 0, top.rows));
+  if (top.rows.length > 0) sections.push(section("tree-root", null, 0, 0, top.rows));
   sections.push(...top.sections);
 
   if (others.length > 0) {
@@ -391,6 +414,7 @@ export function buildPluginTreeLayout<TProject, TThread extends PluginTreeThread
         PLUGIN_TREE_OTHER_SECTION_KEY,
         { kind: "other" },
         0,
+        1,
         folded ? findRoute(rows) : rows,
         flatten(rows).length,
         folded,

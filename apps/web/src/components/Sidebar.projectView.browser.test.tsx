@@ -382,6 +382,14 @@ const rowTitles = () =>
     .elements()
     .map((element) => element.textContent);
 
+const rowLefts = () =>
+  new Map(
+    page
+      .getByTestId("thread-row")
+      .elements()
+      .map((element) => [element.textContent, Math.round(element.getBoundingClientRect().left)]),
+  );
+
 describe("Sidebar project view", () => {
   it("nests forks and T3 delegations recursively, hiding provider subagents", async () => {
     const parent = thread("parent", laptop, "p1");
@@ -744,6 +752,67 @@ describe("Sidebar plugin tree", () => {
     await act(() => data.update({ installations: [treePlugin(false)] }));
     await expect.poll(sectionNames).toEqual([]);
     await expect.element(page.getByText("a")).toHaveAttribute("aria-current", "page");
+  });
+
+  it("lines up rows listed after a nested heading with the rows of the heading they continue", async () => {
+    const [a, b, c] = ["a", "b", "c"].map((id) => thread(id, laptop, "p1"));
+    setupTree({
+      threads: [a!, b!, c!],
+      route: null,
+      trees: new Map([
+        [
+          laptop,
+          [
+            treeGroup("work", "Work"),
+            treeThread("n-a", "a", "work"),
+            treeGroup("nested", "Nested", { parentId: "work" }),
+            treeThread("n-b", "b", "nested"),
+            treeThread("n-c", "c", "work"),
+          ],
+        ],
+      ]),
+    });
+    await using _screen = await renderSidebar();
+    await expect.poll(rowTitles).toEqual(["a", "b", "c"]);
+    const left = rowLefts();
+    expect(left.get("c")).toBe(left.get("a"));
+    expect(left.get("b")).toBeGreaterThan(left.get("a")!);
+  });
+
+  it("keeps each environment's own rows of a merged project ahead of its shelves", async () => {
+    const a = thread("a", laptop, "p1");
+    const s = thread("s", laptop, "p1", settled);
+    const b = thread("b", server, "p9");
+    const r = thread("r", server, "p9", settled);
+    // The shape a Projects-style tree serves per environment: live rows, then a folded shelf.
+    const projectTree = (projectId: string, live: string, parked: string) => [
+      treeProject("p", projectId),
+      treeThread("t-live", live, "p"),
+      treeGroup("shelf", "Settled", { parentId: "p", collapsedByDefault: true }),
+      treeThread("t-parked", parked, "shelf"),
+    ];
+    setupTree({
+      threads: [a, b, s, r],
+      route: null,
+      trees: new Map([
+        [laptop, projectTree("p1", "a", "s")],
+        [server, projectTree("p9", "b", "r")],
+      ]),
+    });
+    await using _screen = await renderSidebar();
+    await expect
+      .poll(sectionNames)
+      .toEqual(["project:repo:app", `tree:${laptop}:shelf`, `tree:${server}:shelf`]);
+    // Both live rows come before either shelf heading and line up as the project's own rows.
+    expect(
+      [
+        ...document.querySelectorAll(
+          '[data-testid="sidebar-project-section"], [data-testid="thread-row"]',
+        ),
+      ].map((element) => element.getAttribute("data-project-key") ?? element.textContent),
+    ).toEqual(["project:repo:app", "a", "b", `tree:${laptop}:shelf`, `tree:${server}:shelf`]);
+    const left = rowLefts();
+    expect(left.get("b")).toBe(left.get("a"));
   });
 
   it("folds as the plugin asks until the person chooses, keeping the open thread", async () => {

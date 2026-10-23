@@ -84,4 +84,26 @@ describe("buildPluginTreeThreadListItems", () => {
     );
     expect(outline(result)).toEqual(["0#Quiet (folded)", "0#Later (folded)", "0#Now", "1:b:card"]);
   });
+
+  it("lines up rows listed after a nested heading with the heading they continue", () => {
+    const result = build(
+      [
+        { id: "work", kind: "group", title: "Work" },
+        { id: "a", kind: "thread", threadId: ThreadId.make("a"), parentId: "work" },
+        { id: "nested", kind: "group", title: "Nested", parentId: "work" },
+        { id: "b", kind: "thread", threadId: ThreadId.make("b"), parentId: "nested" },
+        { id: "c", kind: "thread", threadId: ThreadId.make("c"), parentId: "work" },
+        { id: "d", kind: "thread", threadId: ThreadId.make("d") },
+      ],
+      [thread("a"), thread("b"), thread("c"), thread("d")],
+    );
+    expect(outline(result)).toEqual([
+      "0#Work",
+      "1:a:card",
+      "1#Nested",
+      "2:b:card|",
+      "1:c:card|",
+      "0:d:card",
+    ]);
+  });
 });
