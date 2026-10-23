@@ -72,6 +72,7 @@ import { Tool } from "effect/ai";
 import { formatClaudeResumeCompactionQuestion } from "@t3tools/shared/claudeCompaction";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
+import { pluginCardFromToolItem } from "@t3tools/shared/toolOutput";
 import { SpawnExecutableResolution } from "@t3tools/shared/shell";
 
 import * as PortScanner from "../../preview/PortScanner.ts";
@@ -4239,6 +4240,95 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
         ),
       ),
+  );
+
+  it.effect.each([
+    { structured: false, isError: false },
+    { structured: true, isError: false },
+    { structured: true, isError: true },
+  ])("preserves plugin cards in native Claude results with %j", ({ structured, isError }) =>
+    Effect.gen(function* () {
+      const harness = yield* makeWakeHarness;
+      const card = {
+        installationId: "tasks",
+        generation: "generation-1",
+        dataOwner: "retained-tasks",
+        viewId: "launch",
+        summary: "Proposed two tasks.",
+        data: { planId: "plan-1" },
+      };
+      yield* harness.runtime.startTurn(
+        makeClaudeTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: harness.providerThread,
+          now: yield* DateTime.now,
+          attemptId: RunAttemptId.make("plugin-proposal"),
+          text: "Propose two tasks without starting them.",
+          attachments: [],
+        }),
+      );
+      yield* harness.offerAndWait(
+        claudeSdkFrame({
+          type: "assistant",
+          uuid: "plugin-proposal-assistant",
+          session_id: WAKE_NATIVE_SESSION,
+          parent_tool_use_id: null,
+          message: {
+            id: "plugin-proposal-message",
+            type: "message",
+            role: "assistant",
+            model: "claude-opus-5-5",
+            content: [
+              {
+                type: "tool_use",
+                id: "plugin-proposal",
+                name: "mcp__t3-code__t3_plugin_invoke",
+                input: { actionId: "propose", operationId: "proposal-1" },
+              },
+            ],
+          },
+        }),
+      );
+      yield* harness.offerAndWait(
+        claudeSdkFrame({
+          type: "user",
+          uuid: "plugin-proposal-result",
+          session_id: WAKE_NATIVE_SESSION,
+          parent_tool_use_id: null,
+          ...(structured ? { tool_use_result: { card, message: card.summary } } : {}),
+          message: {
+            role: "user",
+            content: [
+              {
+                type: "tool_result",
+                tool_use_id: "plugin-proposal",
+                content: JSON.stringify({ card, message: card.summary }),
+                is_error: isError,
+              },
+            ],
+          },
+        }),
+      );
+      yield* Queue.offer(
+        harness.sdkMessages,
+        makeResultFrame({ uuid: "plugin-proposal-terminal", result: "Tasks proposed." }),
+      );
+      yield* Queue.take(harness.terminalReceipts);
+      const items = harness.events.flatMap((event) =>
+        event.type === "turn_item.updated" &&
+        event.turnItem.type === "dynamic_tool" &&
+        event.turnItem.status === (isError ? "failed" : "completed")
+          ? [event.turnItem]
+          : [],
+      );
+      assert.lengthOf(items, 1);
+      assert.deepEqual(pluginCardFromToolItem(items[0]!), isError ? undefined : card);
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+      ),
+    ),
   );
 
   // regression: #15475 MCP title arriving after the tool starts must survive to completion

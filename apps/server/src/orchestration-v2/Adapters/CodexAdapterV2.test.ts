@@ -40,6 +40,7 @@ import * as Effect from "effect/Effect";
 import * as Predicate from "effect/Predicate";
 import * as FileSystem from "effect/FileSystem";
 import { MCP_APP_OUTPUT_KEY, readMcpAppReference } from "@t3tools/shared/mcpApp";
+import { pluginCardFromToolItem } from "@t3tools/shared/toolOutput";
 import { resolveAttachmentPathById } from "../../attachmentStore.ts";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
@@ -5121,6 +5122,99 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         assert.include(stored, "connect-src https://api.weather.test");
         assert.isBelow(stored.indexOf("Content-Security-Policy"), stored.indexOf("<script>"));
         assert.isFalse(yield* harness.hasPendingBackgroundWork);
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+    ),
+  );
+
+  it.effect("preserves plugin cards in native Codex MCP results", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const card = {
+          installationId: "tasks",
+          generation: "generation-1",
+          dataOwner: "retained-tasks",
+          viewId: "launch",
+          summary: "Proposed two tasks.",
+          data: { planId: "plan-1" },
+        };
+        for (const structured of [true, false]) {
+          const result = { card, message: card.summary };
+          const item = {
+            type: "mcpToolCall",
+            id: "plugin-proposal",
+            server: "t3-code",
+            tool: "t3_plugin_invoke",
+            arguments: { actionId: "propose", operationId: "proposal-1" },
+          };
+          const transcript = makeCodexReplayTranscript({
+            scenario: `plugin-card-${structured}`,
+            entries: [
+              ...codexReplayPreamble({
+                nativeThreadId: MCP_APP_NATIVE_THREAD,
+                nativeTurnId: MCP_APP_NATIVE_TURN,
+                prompt: "Propose two tasks without starting them.",
+              }),
+              ...(["started", "completed"] as const).map((phase) => ({
+                type: "emit_inbound" as const,
+                label: `item/${phase}/plugin`,
+                frame: {
+                  method: `item/${phase}`,
+                  params: {
+                    item: {
+                      ...item,
+                      status: phase === "started" ? "inProgress" : "completed",
+                      ...(phase === "started"
+                        ? {}
+                        : {
+                            result: {
+                              content: [{ type: "text", text: JSON.stringify(result) }],
+                              ...(structured ? { structuredContent: result } : {}),
+                            },
+                          }),
+                    },
+                    threadId: MCP_APP_NATIVE_THREAD,
+                    turnId: MCP_APP_NATIVE_TURN,
+                  },
+                },
+              })),
+              {
+                type: "emit_inbound",
+                label: "turn/completed",
+                frame: {
+                  method: "turn/completed",
+                  params: {
+                    threadId: MCP_APP_NATIVE_THREAD,
+                    turn: makeCodexReplayTurn({ id: MCP_APP_NATIVE_TURN, status: "completed" }),
+                  },
+                },
+              },
+            ],
+          });
+          const harness = yield* makeCodexReplayHarness(transcript);
+          yield* harness.runtime.startTurn(
+            makeCodexTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now: yield* DateTime.now,
+              attemptId: RunAttemptId.make(`attempt-plugin-card-${structured}`),
+              text: "Propose two tasks without starting them.",
+            }),
+          );
+          yield* harness.awaitTerminal(1);
+          const completed = harness.events.flatMap((event) =>
+            event.type === "turn_item.updated" &&
+            event.turnItem.type === "dynamic_tool" &&
+            event.turnItem.status === "completed"
+              ? [event.turnItem]
+              : [],
+          );
+          assert.lengthOf(completed, 1);
+          assert.deepEqual(pluginCardFromToolItem(completed[0]!), card);
+        }
       }).pipe(
         Effect.provide(
           Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
