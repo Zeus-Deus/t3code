@@ -4589,6 +4589,7 @@ it.effect(
       f.setHandler(() =>
         Effect.succeed({
           card: { viewId: "card", summary: "Historical proposal", data: { planId: "one" } },
+          data: "x".repeat(20_000),
         }),
       );
       const result = yield* f.plugins.invoke(
@@ -4601,6 +4602,7 @@ it.effect(
         actor,
       );
       expect(result.message).toContain("Historical proposal: Historical proposal");
+      expect(result.data).toBe("x".repeat(20_000));
       expect(result.card).toMatchObject({
         installationId: enabled.installationId,
         generation: enabled.generation,
