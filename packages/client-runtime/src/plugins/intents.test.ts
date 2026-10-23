@@ -124,4 +124,17 @@ describe("pluginUnsupportedIntentCount", () => {
     );
     expect(pluginUnsupportedIntentCount({ unsupportedIntentCount: -1 } as never)).toBe(0);
   });
+
+  it("does not open a card's conversation view as a page", () => {
+    const steps = planPluginIntents({
+      origin,
+      manifest: {
+        views: [{ id: "card", title: "Task", entry: "card.html", placement: "conversation" }],
+      },
+      intents: [{ type: "view.open", viewId: "card" }],
+      currentLocationKey: origin.locationKey,
+      canOpenPreview: true,
+    });
+    expect(steps).toMatchObject([{ kind: "rejected" }]);
+  });
 });

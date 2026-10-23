@@ -1,10 +1,11 @@
 import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
-import { pluginSidebarViewKey } from "@t3tools/client-runtime/plugins";
+import { pluginSidebarTreeKey, pluginSidebarViewKey } from "@t3tools/client-runtime/plugins";
 import {
   EnvironmentId,
   ProjectId,
   ThreadId,
   type PluginInstallation,
+  type PluginTreeNode,
   type ScopedThreadRef,
 } from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
@@ -37,6 +38,10 @@ const data = vi.hoisted(() => {
     projects: [] as unknown[],
     installations: [] as unknown[],
     route: null as { environmentId: string; threadId: string } | null,
+    // A plugin tree as each environment serves it, and how often it signalled a change.
+    trees: new Map<string, unknown[]>(),
+    treeRevision: 0,
+    treeReads: [] as string[],
   };
   return {
     read: () => snapshot,
@@ -101,10 +106,31 @@ vi.mock("../hooks/useThreadRouteTarget", async (original) => {
     },
   };
 });
+vi.mock("../state/use-atom-command", async (original) => {
+  const actual = await original<typeof import("../state/use-atom-command")>();
+  return {
+    ...actual,
+    useAtomCommand: (command: { label: string }, options?: never) => {
+      const real = actual.useAtomCommand(command as never, options);
+      if (command.label !== "environment-command:plugins:read-tree") return real;
+      return async (request: { environmentId: string }) => {
+        data.read().treeReads.push(request.environmentId);
+        const nodes = data.read().trees.get(request.environmentId);
+        return nodes === undefined
+          ? { _tag: "Failure", cause: { _tag: "Fail", error: new Error("unavailable") } }
+          : { _tag: "Success", value: { nodes } };
+      };
+    },
+  };
+});
 vi.mock("../state/plugins", async (original) => {
   const { useSyncExternalStore } = await import("react");
   return {
     ...(await original<object>()),
+    usePluginChangeRevision: (environmentId: string | null) => {
+      const revision = useSyncExternalStore(data.subscribe, () => data.read().treeRevision);
+      return environmentId === null ? null : revision;
+    },
     usePluginCatalogue: () => ({
       availability: "available",
       loaded: true,
@@ -583,5 +609,167 @@ describe("Sidebar project view", () => {
     await userEvent.click(page.getByRole("button", { name: "Toggle Projects view", exact: true }));
     await expect.poll(sectionNames).toEqual(["repo:app"]);
     await expect.element(page.getByText("a1")).toHaveAttribute("aria-current", "page");
+  });
+});
+
+function treePlugin(enabled = true): PluginInstallation {
+  const base = projectsPlugin(enabled);
+  return {
+    ...base,
+    manifest: {
+      ...base.manifest,
+      capabilities: ["ui.native-trees", "threads.read"],
+      sidebarViews: [],
+      nativeTrees: [{ id: "focus", title: "Focus" }],
+    },
+    grants: { capabilities: ["ui.native-trees", "threads.read"], projectIds: [] },
+  };
+}
+
+const treeGroup = (id: string, title: string, extra: Partial<PluginTreeNode> = {}) =>
+  ({ id, kind: "group", title, ...extra }) as PluginTreeNode;
+const treeProject = (id: string, projectId: string, parentId?: string): PluginTreeNode => ({
+  id,
+  kind: "project",
+  projectId: ProjectId.make(projectId),
+  ...(parentId === undefined ? {} : { parentId }),
+});
+const treeThread = (id: string, threadId: string, parentId?: string): PluginTreeNode => ({
+  id,
+  kind: "thread",
+  threadId: ThreadId.make(threadId),
+  ...(parentId === undefined ? {} : { parentId }),
+});
+
+function setupTree(input: {
+  threads: Thread[];
+  route: Thread | null;
+  trees: ReadonlyMap<string, PluginTreeNode[]>;
+}) {
+  setup({ threads: input.threads, route: input.route, chooseProjects: false });
+  data.update({
+    installations: [treePlugin()],
+    trees: new Map(input.trees),
+    treeRevision: 0,
+    treeReads: [],
+  });
+  window.localStorage.setItem(
+    "t3code:sidebar:view",
+    JSON.stringify({
+      kind: "tree",
+      key: pluginSidebarTreeKey("zeus-deus.projects", "focus"),
+      environmentId: laptop,
+      pluginId: "zeus-deus.projects",
+      pluginName: "Projects",
+      tree: { id: "focus", title: "Focus" },
+    }),
+  );
+}
+
+describe("Sidebar plugin tree", () => {
+  it("renders the plugin's arrangement with native rows and keeps every thread reachable", async () => {
+    const focus = thread("focus", laptop, "p1");
+    const parent = thread("parent", server, "p9");
+    const launched = thread("launched", server, "p9");
+    const loose = thread("loose", laptop, "p1");
+    const parkedPlaced = thread("parked-placed", laptop, "p1", settled);
+    const parkedLoose = thread("parked-loose", laptop, "p1", settled);
+    setupTree({
+      threads: [focus, parent, launched, loose, parkedPlaced, parkedLoose],
+      route: loose,
+      trees: new Map([
+        [
+          laptop,
+          [
+            treeGroup("now", "Now"),
+            treeThread("n1", "focus", "now"),
+            treeThread("n2", "parked-placed", "now"),
+          ],
+        ],
+        // The server's project groups with the laptop's App; the launched thread nests by display.
+        [
+          server,
+          [
+            treeProject("app", "p9"),
+            treeThread("t1", "parent", "app"),
+            treeThread("t2", "launched", "t1"),
+          ],
+        ],
+      ]),
+    });
+    await using _screen = await renderSidebar();
+
+    await expect
+      .poll(sectionNames)
+      .toEqual([`tree:${laptop}:now`, "project:repo:app", "\0plugin-tree-other"]);
+    expect(rowTitles()).toEqual(["focus", "parked-placed", "parent", "launched", "loose"]);
+    // The tree placed one settled thread; the other stays on the host's closed shelf.
+    await expect
+      .element(page.getByTestId("sidebar-settled-shelf-toggle"))
+      .toHaveTextContent("Settled (1)");
+    expect(
+      document
+        .querySelector(`[data-thread-item="${scopedThreadKey(routeTo(launched))}"]`)
+        ?.closest("[data-parent-thread-key]")
+        ?.getAttribute("data-parent-thread-key"),
+    ).toBe(scopedThreadKey(routeTo(parent)));
+    await expect.element(page.getByText("loose")).toHaveAttribute("aria-current", "page");
+  });
+
+  it("reads again only when the tree changes, and falls back to activity when withdrawn", async () => {
+    const a = thread("a", laptop, "p1");
+    const b = thread("b", laptop, "p1");
+    setupTree({
+      threads: [a, b],
+      route: a,
+      trees: new Map([[laptop, [treeGroup("g", "Mine"), treeThread("n", "a", "g")]]]),
+    });
+    await using _screen = await renderSidebar();
+    await expect.poll(rowTitles).toEqual(["a", "b"]);
+    const reads = data.read().treeReads.length;
+
+    // Ordinary re-renders do not ask the plugin again.
+    await act(() => data.update({ threads: [a, { ...b, title: "b" }] }));
+    expect(data.read().treeReads).toHaveLength(reads);
+
+    await act(() =>
+      data.update({
+        trees: new Map([[laptop, [treeGroup("g", "Mine"), treeThread("n", "b", "g")]]]),
+        treeRevision: 1,
+      }),
+    );
+    await expect.poll(rowTitles).toEqual(["b", "a"]);
+    expect(data.read().treeReads.length).toBeGreaterThan(reads);
+
+    await act(() => data.update({ installations: [treePlugin(false)] }));
+    await expect.poll(sectionNames).toEqual([]);
+    await expect.element(page.getByText("a")).toHaveAttribute("aria-current", "page");
+  });
+
+  it("folds as the plugin asks until the person chooses, keeping the open thread", async () => {
+    const a = thread("a", laptop, "p1");
+    const b = thread("b", laptop, "p1");
+    setupTree({
+      threads: [a, b],
+      route: b,
+      trees: new Map([
+        [
+          laptop,
+          [
+            treeGroup("quiet", "Quiet", { collapsedByDefault: true }),
+            treeThread("n1", "a", "quiet"),
+            treeThread("n2", "b", "quiet"),
+          ],
+        ],
+      ]),
+    });
+    await using _screen = await renderSidebar();
+    await expect.poll(rowTitles).toEqual(["b"]);
+
+    await userEvent.click(page.getByRole("button", { name: "Quiet, 2 active" }));
+    await expect.poll(rowTitles).toEqual(["a", "b"]);
+    expect(window.localStorage.getItem("t3code:sidebar:project-folds")).toBe(
+      JSON.stringify([`+tree:${laptop}:quiet`]),
+    );
   });
 });

@@ -107,6 +107,13 @@ export function planPluginIntents(input: {
         if (!input.manifest.views.some((view) => view.id === intent.viewId)) {
           return { kind: "rejected", intent, reason: `The plugin has no view "${intent.viewId}".` };
         }
+        if (
+          input.manifest.views.some(
+            (view) => view.id === intent.viewId && view.placement === "conversation",
+          )
+        ) {
+          return { kind: "rejected", intent, reason: "That view only opens from a card in chat." };
+        }
         return navigate(intent, true);
       case "thread.reveal":
         return navigate(intent, true);

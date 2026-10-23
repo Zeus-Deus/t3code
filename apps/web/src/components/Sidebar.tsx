@@ -1,6 +1,13 @@
 import { attachSidebarTree, SIDEBAR_TREE_PROPS } from "../lib/sidebarTree";
 import { type EnvironmentId, type PluginSidebarView, type ScopedProjectRef } from "@t3tools/contracts";
 import type { EnvironmentServerConfig } from "@t3tools/client-runtime/connection";
+import {
+  buildPluginTreeLayout,
+  isPluginSidebarTreeOption,
+  type PluginTreeHeading,
+  type PluginTreeSection,
+  type PluginTreeSource,
+} from "@t3tools/client-runtime/plugins";
 import { ThreadContextDragGhost } from "./chat/ThreadContextDragGhost";
 import {
   dropThreadContext,
@@ -249,7 +256,8 @@ import {
   type SidebarSweepAction,
 } from "./sidebar/SidebarThreadRow";
 import { SidebarDraftBlock } from "./sidebar/SidebarDraftBlock";
-import { buildProjectView } from "./sidebar/projectView.logic";
+import { buildProjectView, type ProjectViewSection } from "./sidebar/projectView.logic";
+import { PluginTreeSnapshotSources, usePluginTreeSources } from "./sidebar/pluginTreeSources";
 import {
   SidebarProjectSectionHeader,
   SidebarQuietProjectsToggle,
@@ -395,6 +403,53 @@ function resolveDraggedOrders(input: {
   };
 }
 
+type SidebarProjectSection = ProjectViewSection<SidebarProjectSnapshot, EnvironmentThreadShell> & {
+  /** Set on a plugin tree's sections: their heading, nesting and the plugin's initial fold. */
+  readonly tree?: {
+    readonly heading: PluginTreeHeading<SidebarProjectSnapshot> | null;
+    readonly depth: number;
+    readonly collapsedByDefault: boolean;
+  };
+};
+
+interface SidebarProjectLayout {
+  readonly sections: ReadonlyArray<SidebarProjectSection>;
+  readonly quietSections: ReadonlyArray<SidebarProjectSection>;
+}
+
+function treeSectionAsProjectSection(
+  section: PluginTreeSection<SidebarProjectSnapshot, EnvironmentThreadShell>,
+): SidebarProjectSection {
+  return {
+    key: section.key,
+    group: section.heading?.kind === "project" ? section.heading.project : null,
+    threads: section.threads,
+    rows: section.rows,
+    liveCount: section.count,
+    lastActivityAt: null,
+    folded: section.folded,
+    tree: {
+      heading: section.heading,
+      depth: section.depth,
+      collapsedByDefault: section.collapsedByDefault,
+    },
+  };
+}
+
+/** A tree names an environment's project; the host's grouping decides which heading that is. */
+function projectGroupResolver(groups: readonly SidebarProjectSnapshot[]) {
+  const byProject = new Map<string, SidebarProjectSnapshot>();
+  for (const group of groups) {
+    for (const ref of group.memberProjectRefs) {
+      byProject.set(`${ref.environmentId}:${ref.projectId}`, group);
+    }
+  }
+  return (environmentId: EnvironmentId, projectId: string) => {
+    const group = byProject.get(`${environmentId}:${projectId}`);
+    return group === undefined ? null : { key: group.projectKey, project: group };
+  };
+}
+
 function routeThreadOnly(
   threads: readonly EnvironmentThreadShell[],
   routeThreadKey: string | null,
@@ -419,7 +474,9 @@ function useSidebarThreads(input: {
   readonly keepEmptyFolders: boolean;
   /** A plugin-declared project view replaces the pinned, active and working lists. */
   readonly projectView: {
-    readonly view: PluginSidebarView;
+    readonly rules:
+      | { readonly kind: "declared"; readonly view: PluginSidebarView }
+      | { readonly kind: "tree"; readonly sources: ReadonlyArray<PluginTreeSource> };
     readonly groups: readonly SidebarProjectSnapshot[];
     readonly foldedKeys: ReadonlySet<string>;
   } | null;
@@ -486,8 +543,38 @@ function useSidebarThreads(input: {
     showDelegatedThreads: projectView !== null,
   });
 
-  const { pinnedThreads, activeThreads, workingThreads, snoozedThreads, settledThreads } =
-    partition;
+  const { pinnedThreads, activeThreads, workingThreads } = partition;
+  const searchableThreads = [
+    ...pinnedThreads,
+    ...activeThreads,
+    ...workingThreads,
+    ...partition.snoozedThreads,
+    ...partition.settledThreads,
+  ];
+  const liveThreads = [
+    ...pinnedThreads,
+    ...sortThreadsForSidebar([...activeThreads, ...workingThreads]),
+  ];
+  const treeLayout =
+    projectView?.rules.kind !== "tree"
+      ? null
+      : buildPluginTreeLayout({
+          sources: projectView.rules.sources,
+          // Live threads first, in activity order, so rows the tree leaves out hold still.
+          threads: [...liveThreads, ...partition.snoozedThreads, ...partition.settledThreads],
+          liveThreadKeys: new Set(liveThreads.map(threadShellKey)),
+          project: projectGroupResolver(projectView.groups),
+          showsEmptyProject: (group) =>
+            projectScopeKey === null || group.projectKey === projectScopeKey,
+          folds: projectView.foldedKeys,
+          routeThreadKey: routeRowThreadKey,
+        });
+  const shelved = (list: readonly EnvironmentThreadShell[]) =>
+    treeLayout === null
+      ? list
+      : list.filter((thread) => !treeLayout.placedKeys.has(threadShellKey(thread)));
+  const snoozedThreads = shelved(partition.snoozedThreads);
+  const settledThreads = shelved(partition.settledThreads);
   // Older settled threads load in pages; the shelf lists them only as far as they are loaded.
   const olderSettledShelf = useOlderSettledShelf({
     scopes: olderSettledScopes([...serverConfigs.keys()], scopedProjectKeys),
@@ -540,31 +627,23 @@ function useSidebarThreads(input: {
               : EMPTY_THREADS,
           };
         });
-  const searchableThreads = [
-    ...pinnedThreads,
-    ...activeThreads,
-    ...workingThreads,
-    ...snoozedThreads,
-    ...settledThreads,
-  ];
   // Live threads keep their activity order within each project: pins first, then the stable
   // active order, so rows hold still while agents run. Parked threads stay on the shelves.
-  const projectLayout =
-    projectView === null
-      ? null
-      : buildProjectView({
-          view: projectView.view,
-          groups: projectView.groups,
-          liveThreads: [
-            ...pinnedThreads,
-            ...sortThreadsForSidebar([...activeThreads, ...workingThreads]),
-          ],
-          allThreads: searchableThreads,
-          foldedKeys: projectView.foldedKeys,
-          routeThreadKey: routeRowThreadKey,
-          scopedProjectKey: projectScopeKey,
-          now: Date.parse(partition.snoozeNow),
-        });
+  const projectLayout: SidebarProjectLayout | null =
+    treeLayout !== null
+      ? { sections: treeLayout.sections.map(treeSectionAsProjectSection), quietSections: [] }
+      : projectView?.rules.kind !== "declared"
+        ? null
+        : buildProjectView({
+            view: projectView.rules.view,
+            groups: projectView.groups,
+            liveThreads,
+            allThreads: searchableThreads,
+            foldedKeys: projectView.foldedKeys,
+            routeThreadKey: routeRowThreadKey,
+            scopedProjectKey: projectScopeKey,
+            now: Date.parse(partition.snoozeNow),
+          });
   const orderedThreads = [
     ...(projectLayout === null ? [
     ...pinnedThreads,
@@ -577,17 +656,20 @@ function useSidebarThreads(input: {
     ...renderedSettledThreads,
   ];
   const sectionByThreadKey = new Map<string, SidebarSection>();
+  // Rows keep their real section wherever a tree puts them, so settle and snooze act as usual.
   for (const [list, section] of [
     [pinnedThreads, "pinned"],
     [activeThreads, "active"],
     [workingThreads, "working"],
-    [snoozedThreads, "snoozed"],
-    [settledThreads, "settled"],
+    [partition.snoozedThreads, "snoozed"],
+    [partition.settledThreads, "settled"],
   ] as const) {
     for (const thread of list) sectionByThreadKey.set(threadShellKey(thread), section);
   }
   return {
     ...partition,
+    snoozedThreads,
+    settledThreads,
     threads,
     workingShelfEnabled,
     projectLayout,
@@ -1278,10 +1360,26 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   );
 
   const sidebarView = useSidebarView();
-  const { foldedKeys: foldedProjectKeys, toggleFold: toggleProjectFold } = useSidebarProjectFolds();
+  const {
+    foldedKeys: foldedProjectKeys,
+    toggleFold: toggleProjectFold,
+    toggleTreeFold,
+  } = useSidebarProjectFolds();
   const quietProjectsExpanded = useSidebarViewSessionStore((state) => state.quietProjectsExpanded);
   const toggleQuietProjects = useSidebarViewSessionStore((state) => state.toggleQuietProjects);
-  const projectViewRules = sidebarView.selected?.view ?? null;
+  const selectedTree =
+    sidebarView.selected !== null && isPluginSidebarTreeOption(sidebarView.selected)
+      ? sidebarView.selected
+      : null;
+  const treeSources = usePluginTreeSources(selectedTree);
+  const projectViewRules =
+    sidebarView.selected === null
+      ? null
+      : isPluginSidebarTreeOption(sidebarView.selected)
+        ? treeSources === null
+          ? null
+          : { kind: "tree" as const, sources: treeSources }
+        : { kind: "declared" as const, view: sidebarView.selected.view };
   const {
     workingShelfEnabled,
     projectLayout,
@@ -1332,7 +1430,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
         ? projectGroups
         : scopedProjectGroups
       : null,
-    projectView: projectViewRules === null ? null : { view: projectViewRules, groups: projectGroups, foldedKeys: foldedProjectKeys },
+    projectView: projectViewRules === null ? null : { rules: projectViewRules, groups: projectGroups, foldedKeys: foldedProjectKeys },
     keepEmptyFolders: scopedProjectGroups.length > 0,
   });
 
@@ -2996,6 +3094,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   const newThreadInProjectShortcutLabel = shortcutLabelForCommand(keybindings, "chat.newLocal");
   return (
     <>
+      {selectedTree === null ? null : <PluginTreeSnapshotSources choice={selectedTree} />}
       <ThreadContextDragGhost />
       <SidebarChromeHeader isElectron={isElectron} />
       <SidebarContent
@@ -3430,26 +3529,35 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                       ];
                       let projectRowCount = 0;
                       if (projectLayout !== null) {
-                        const renderSection = (
-                          section: (typeof projectLayout.sections)[number],
-                        ) => {
-                          items.push(
-                            <SidebarProjectSectionHeader
-                              key={`project:${section.key}`}
-                              project={section.group}
-                              sectionKey={section.key}
-                              liveCount={section.liveCount}
-                              lastActivityAt={section.lastActivityAt}
-                              folded={section.folded}
-                              onToggleFold={toggleProjectFold}
-                              onNewThread={startThreadInProject}
-                              onOpenSettings={openProjectSettingsFromHeader}
-                            />,
-                          );
+                        const renderSection = (section: SidebarProjectSection) => {
+                          const tree = section.tree;
+                          const heading = tree === undefined ? undefined : tree.heading;
+                          if (heading !== null) {
+                            items.push(
+                              <SidebarProjectSectionHeader
+                                key={`project:${section.key}`}
+                                project={section.group}
+                                title={heading?.kind === "group" ? heading.title : undefined}
+                                depth={tree?.depth ?? 0}
+                                sectionKey={section.key}
+                                liveCount={section.liveCount}
+                                lastActivityAt={section.lastActivityAt}
+                                folded={section.folded}
+                                onToggleFold={
+                                  tree === undefined
+                                    ? toggleProjectFold
+                                    : (key) => toggleTreeFold(key, tree.collapsedByDefault)
+                                }
+                                onNewThread={startThreadInProject}
+                                onOpenSettings={openProjectSettingsFromHeader}
+                              />,
+                            );
+                          }
                           items.push(
                             <SidebarProjectThreadTree
                               key={`tree:${section.key}`}
                               rows={section.rows}
+                              depth={tree?.depth ?? 0}
                               renderRow={(thread) =>
                                 renderThreadRow(
                                   thread,

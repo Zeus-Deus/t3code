@@ -2,6 +2,7 @@ import { useAtomValue } from "@effect/atom-react";
 import {
   pluginActionEntries,
   pluginRunnableInstallations,
+  pluginSidebarChoiceTitle,
   pluginViewEntries,
 } from "@t3tools/client-runtime/plugins";
 import type {
@@ -90,8 +91,15 @@ export function useSidebarViewPaletteItems(): ReadonlyArray<CommandPaletteAction
     .map((option) => ({
       kind: "action",
       value: `sidebar-view:${option.key}`,
-      searchTerms: ["sidebar", "view", "switch", "group", option.view.title, option.pluginName],
-      title: `Show ${option.view.title} in sidebar`,
+      searchTerms: [
+        "sidebar",
+        "view",
+        "switch",
+        "group",
+        pluginSidebarChoiceTitle(option),
+        option.pluginName,
+      ],
+      title: `Show ${pluginSidebarChoiceTitle(option)} in sidebar`,
       description: option.pluginName,
       icon: <FolderTreeIcon className={ITEM_ICON_CLASS} />,
       run: async () => sidebarView.select(option),

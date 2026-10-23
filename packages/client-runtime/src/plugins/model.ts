@@ -91,7 +91,10 @@ export function pluginActionEntries(
     .sort(byTitle((entry) => entry.action.title));
 }
 
-/** Views need the `ui` capability granted; the server refuses to read them otherwise. */
+/**
+ * Views a person can open on their own. They need the `ui` capability granted; the server refuses
+ * to read them otherwise. Conversation views render a card and only open from one.
+ */
 export function pluginViewEntries(
   installations: ReadonlyArray<PluginInstallation>,
 ): ReadonlyArray<PluginViewEntry> {
@@ -100,7 +103,11 @@ export function pluginViewEntries(
       (installation) =>
         isPluginActive(installation) && installation.grants.capabilities.includes("ui"),
     )
-    .flatMap((installation) => installation.manifest.views.map((view) => ({ installation, view })))
+    .flatMap((installation) =>
+      installation.manifest.views
+        .filter((view) => view.placement !== "conversation")
+        .map((view) => ({ installation, view })),
+    )
     .sort(byTitle((entry) => entry.view.title));
 }
 
@@ -211,6 +218,32 @@ const CAPABILITY_TEXT: Record<
     detail:
       "Offer another layout for your thread list. T3 draws it; the plugin never reads threads.",
     projectScoped: false,
+  },
+  "ui.native-trees": {
+    title: "Arrange threads in the sidebar",
+    detail: "Group and nest the threads it can read in its own sidebar layout. T3 draws the rows.",
+    projectScoped: false,
+  },
+  "ui.conversation-cards": {
+    title: "Show cards in chat",
+    detail: "Show its own interactive cards in a conversation when an agent uses it.",
+    projectScoped: false,
+  },
+  "ui.changes": {
+    title: "Refresh its views",
+    detail: "Tell its open views and sidebar layout when its data changed.",
+    projectScoped: false,
+  },
+  "worktrees.create": {
+    title: "Create worktrees",
+    detail: "Start new threads in a new git worktree of the projects you choose.",
+    projectScoped: true,
+  },
+  "workflow.query": {
+    title: "List projects, threads and models",
+    detail:
+      "See titles, states and settings of threads in the projects you choose, without their messages, and the models they can use.",
+    projectScoped: true,
   },
 };
 

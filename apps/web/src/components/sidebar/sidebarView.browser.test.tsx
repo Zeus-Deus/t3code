@@ -1,4 +1,5 @@
 import { EnvironmentId, type PluginInstallation } from "@t3tools/contracts";
+import { pluginSidebarChoiceTitle } from "@t3tools/client-runtime/plugins";
 import { page, userEvent } from "vite-plus/test/browser";
 import { describe, expect, it, vi } from "vite-plus/test";
 
@@ -81,8 +82,12 @@ function projectsPlugin(overrides: Partial<PluginInstallation> = {}): PluginInst
 
 function SidebarList(props: { onRender?: (view: string) => void }) {
   const view = useSidebarView();
-  props.onRender?.(view.selected?.view.title ?? "Activity");
-  return <output data-testid="list-view">{view.selected?.view.title ?? "Activity"}</output>;
+  props.onRender?.(view.selected === null ? "Activity" : pluginSidebarChoiceTitle(view.selected));
+  return (
+    <output data-testid="list-view">
+      {view.selected === null ? "Activity" : pluginSidebarChoiceTitle(view.selected)}
+    </output>
+  );
 }
 
 function Harness() {
@@ -90,7 +95,9 @@ function Harness() {
   return (
     <SidebarProvider>
       <PluginSidebarViewSources />
-      <output data-testid="rendered-view">{view.selected?.view.title ?? "Activity"}</output>
+      <output data-testid="rendered-view">
+        {view.selected === null ? "Activity" : pluginSidebarChoiceTitle(view.selected)}
+      </output>
       {view.options.length > 0 || view.selected !== null ? (
         <SidebarViewSwitch
           options={view.options}

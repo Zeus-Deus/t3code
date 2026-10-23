@@ -1,5 +1,11 @@
-import type { PluginClientIntent, PluginInvokeResult } from "@t3tools/contracts";
+import {
+  PluginClientIntent,
+  type PluginConversationCard,
+  type PluginInvokeResult,
+} from "@t3tools/contracts";
+import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
+import * as Schema from "effect/Schema";
 
 import { pluginUnsupportedIntentCount } from "./intents.ts";
 import { isPluginViewHandlerName } from "./model.ts";
@@ -14,15 +20,47 @@ const MAX_MESSAGE_BYTES = 256 * 1024;
 const MAX_PENDING_REQUESTS = 8;
 const encoder = new TextEncoder();
 
+/**
+ * What this client's bridge adds to v1 beyond `ready`, `context`, `invoke` and `onContext`. A view
+ * checks `t3.features` and keeps a fallback, because older clients serve the same document without
+ * them. Which ones a document gets depends on where it is shown.
+ */
+export type PluginViewBridgeFeature = "changes" | "local-intents" | "resize" | "card-context";
+
 export interface PluginViewContext {
   readonly theme: "light" | "dark";
   /** The same `--color-*` / `--font-*` variables MCP Apps receive, applied to the root element. */
   readonly styles: Readonly<Record<string, string>>;
   readonly platform: "web" | "desktop" | "mobile";
-  readonly placement: "page" | "side-panel";
+  readonly placement: "page" | "side-panel" | "conversation";
   readonly view: { readonly installationId: string; readonly viewId: string };
   readonly thread: { readonly threadId: string; readonly projectId: string | null } | null;
+  /** Present only in documents that also list them in `t3.features`. */
+  readonly features?: ReadonlyArray<PluginViewBridgeFeature>;
+  /**
+   * The card this conversation view renders, as the agent's tool result recorded it. Presentation
+   * data only: it authorizes nothing, and a handler must check anything it acts on.
+   */
+  readonly card?: PluginConversationCard;
 }
+
+/**
+ * The features a document gets where it is shown. Local intents need only this client; change
+ * signals need the server's subscription; cards alone size to their content.
+ */
+export function pluginViewBridgeFeatures(input: {
+  readonly placement: PluginViewContext["placement"];
+  readonly changes: boolean;
+}): ReadonlyArray<PluginViewBridgeFeature> {
+  return [
+    ...(input.changes ? (["changes"] as const) : []),
+    "local-intents",
+    ...(input.placement === "conversation" ? (["resize", "card-context"] as const) : []),
+  ];
+}
+
+/** Tallest a card may ask to be; taller content scrolls inside it. */
+export const MAX_PLUGIN_CARD_HEIGHT = 720;
 
 export interface PluginViewHostOptions<Origin> {
   /**
@@ -45,14 +83,22 @@ export interface PluginViewHostOptions<Origin> {
     origin: Origin,
     unsupported: number,
   ) => void;
+  /** Must match the list baked into the document by `buildPluginViewDocument`. */
+  readonly features?: ReadonlyArray<PluginViewBridgeFeature>;
+  /** The height the view asked for, clamped; only with the `resize` feature. */
+  readonly onResize?: (height: number) => void;
 }
 
 export interface PluginViewHost {
   /** One message the frame posted; the caller has checked it came from that frame. */
   readonly receive: (data: unknown) => void;
   readonly sendContext: () => void;
+  /** Tells the view a topic it may care about changed; it decides whether to fetch again. */
+  readonly changed: (topic: string) => void;
   readonly dispose: () => void;
 }
+
+const decodeIntent = Schema.decodeUnknownOption(PluginClientIntent);
 
 const jsonBytes = (value: unknown): number => {
   try {
@@ -83,6 +129,7 @@ export function pluginViewFailure(error: unknown): PluginViewFailure {
 export function makePluginViewHost<Origin>(options: PluginViewHostOptions<Origin>): PluginViewHost {
   let disposed = false;
   let pending = 0;
+  const features = new Set(options.features ?? []);
   const post = (message: Record<string, unknown>) => {
     if (!disposed) options.post({ t3Plugin: PLUGIN_VIEW_BRIDGE_VERSION, ...message });
   };
@@ -103,6 +150,31 @@ export function makePluginViewHost<Origin>(options: PluginViewHostOptions<Origin
       if (data.kind === "connect") return;
       if (data.kind === "ready") {
         post({ kind: "context", context: options.context() });
+        return;
+      }
+      if (data.kind === "resize") {
+        if (!features.has("resize") || typeof data.height !== "number") return;
+        if (!Number.isFinite(data.height)) return;
+        options.onResize?.(Math.min(Math.max(Math.ceil(data.height), 0), MAX_PLUGIN_CARD_HEIGHT));
+        return;
+      }
+      if (data.kind === "intent" && isRequestId(data.id)) {
+        if (!features.has("local-intents")) {
+          fail(data.id, "unsupported", "This app does not take requests from views directly.");
+          return;
+        }
+        if (jsonBytes(data) > MAX_MESSAGE_BYTES) {
+          fail(data.id, "invalid_input", "Request too large.");
+          return;
+        }
+        const intent = decodeIntent(data.intent);
+        if (Option.isNone(intent)) {
+          fail(data.id, "unsupported", "This app cannot do that request.");
+          return;
+        }
+        // Judged like a result's intents, against where the user is right now.
+        options.onIntents([intent.value], options.captureOrigin(), 0);
+        post({ kind: "result", id: data.id, ok: true, value: {} });
         return;
       }
       if (data.kind !== "invoke" || !isRequestId(data.id)) return;
@@ -148,6 +220,9 @@ export function makePluginViewHost<Origin>(options: PluginViewHostOptions<Origin
       );
     },
     sendContext: () => post({ kind: "context", context: options.context() }),
+    changed: (topic) => {
+      if (features.has("changes")) post({ kind: "changed", topic });
+    },
     dispose: () => {
       disposed = true;
     },
@@ -177,24 +252,37 @@ export const PLUGIN_VIEW_CONTENT_SECURITY_POLICY = [
 // The author-facing API. Kept in ES5 so it runs before any author code on every engine.
 // Runs before author code. The bridge makes the channel and hands the host one end, so a page the
 // frame navigates to cannot reach the old document's end.
-const bridgeScript = (token: string) => `(function(){"use strict";
-var token=${JSON.stringify(token).replace(/</g, "\\u003c")},channel=new MessageChannel(),port=channel.port1,
-pending={},next=1,ctx=null,listeners=[],resolveReady,ready=new Promise(function(r){resolveReady=r;});
+const bridgeScript = (
+  token: string,
+  features: ReadonlyArray<PluginViewBridgeFeature>,
+) => `(function(){"use strict";
+var token=${JSON.stringify(token).replace(/</g, "\\u003c")},features=Object.freeze(${JSON.stringify(features)}),
+channel=new MessageChannel(),port=channel.port1,
+pending={},next=1,ctx=null,listeners=[],changeListeners=[],resolveReady,ready=new Promise(function(r){resolveReady=r;});
 function send(m){m.t3Plugin=1;m.token=token;port.postMessage(m);}
+function has(f){return features.indexOf(f)>=0;}
 function apply(c){var root=document.documentElement;root.dataset.t3Theme=c.theme;root.style.colorScheme=c.theme;
 for(var k in c.styles){if(Object.prototype.hasOwnProperty.call(c.styles,k))root.style.setProperty(k,c.styles[k]);}}
+function request(m){return new Promise(function(resolve,reject){var id=next++;pending[id]=[resolve,reject];m.id=id;
+try{send(m);}catch(e){delete pending[id];reject(e);}});}
+function listen(list,f){list.push(f);return function(){var i=list.indexOf(f);if(i>=0)list.splice(i,1);};}
 port.onmessage=function(e){var m=e.data;if(!m||m.t3Plugin!==1)return;
 if(m.kind==="context"){ctx=Object.freeze(m.context);apply(ctx);resolveReady(ctx);
 listeners.slice().forEach(function(f){try{f(ctx);}catch(_){}});return;}
+if(m.kind==="changed"){var c=Object.freeze({topic:String(m.topic)});
+changeListeners.slice().forEach(function(f){try{f(c);}catch(_){}});return;}
 if(m.kind==="result"){var p=pending[m.id];if(!p)return;delete pending[m.id];
 if(m.ok)p[0](m.value);else{var err=new Error(m.error&&m.error.message||"Request failed.");err.reason=m.error&&m.error.reason;p[1](err);}}};
-var api=Object.freeze({apiVersion:1,ready:ready,
+var api={apiVersion:1,ready:ready,features:features,
 get context(){return ctx;},
-invoke:function(name,input){return new Promise(function(resolve,reject){var id=next++;pending[id]=[resolve,reject];
-try{send({kind:"invoke",id:id,name:String(name),input:input});}
-catch(e){delete pending[id];reject(e);}});},
-onContext:function(f){listeners.push(f);return function(){var i=listeners.indexOf(f);if(i>=0)listeners.splice(i,1);};}});
-Object.defineProperty(window,"t3",{value:api,writable:false,configurable:false});
+invoke:function(name,input){return request({kind:"invoke",name:String(name),input:input});},
+onContext:function(f){return listen(listeners,f);}};
+if(has("changes"))api.onChanged=function(f){return listen(changeListeners,f);};
+if(has("local-intents"))api.intent=function(intent){return request({kind:"intent",intent:intent}).then(function(){});};
+if(has("resize")){api.resize=function(height){send({kind:"resize",height:Number(height)});};
+if(typeof ResizeObserver==="function")ready.then(function(){var last=-1;new ResizeObserver(function(){
+var h=Math.ceil(document.documentElement.getBoundingClientRect().height);if(h!==last){last=h;api.resize(h);}}).observe(document.documentElement);});}
+Object.defineProperty(window,"t3",{value:Object.freeze(api),writable:false,configurable:false});
 window.parent.postMessage({t3Plugin:1,token:token,kind:"connect"},"*",[channel.port2]);
 send({kind:"ready"});})();`;
 
@@ -204,8 +292,12 @@ send({kind:"ready"});})();`;
  * the browser ignores it. A later author `<head>` is dropped by the parser; its metadata still
  * lands in head.
  */
-export function buildPluginViewDocument(html: string, token: string): string {
-  const preamble = `<meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${PLUGIN_VIEW_CONTENT_SECURITY_POLICY}"><script>${bridgeScript(token)}</script>`;
+export function buildPluginViewDocument(
+  html: string,
+  token: string,
+  features: ReadonlyArray<PluginViewBridgeFeature> = [],
+): string {
+  const preamble = `<meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${PLUGIN_VIEW_CONTENT_SECURITY_POLICY}"><script>${bridgeScript(token, features)}</script>`;
   const body = html.replace(/^\uFEFF?\s*<!doctype[^>]*>/i, "");
   return `<!doctype html><html><head>${preamble}</head>${body}`;
 }

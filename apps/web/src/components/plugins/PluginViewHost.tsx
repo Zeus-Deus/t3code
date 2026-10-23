@@ -6,14 +6,19 @@ import {
   makePluginViewHost,
   notifyPluginThreadActivity,
   pluginInactiveReason,
+  pluginChangesSupported,
+  pluginViewBridgeFeatures,
   pluginViewHandler,
   pluginViewFailure,
+  pluginViewTopic,
+  type PluginViewBridgeFeature,
   type PluginViewContext,
   type PluginViewHost,
 } from "@t3tools/client-runtime/plugins";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type {
   EnvironmentId,
+  PluginCardReference,
   PluginInstallation,
   PluginView,
   ScopedThreadRef,
@@ -25,9 +30,15 @@ import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "re
 import type { ComposerThreadTarget } from "../../composerDraftStore";
 import { isElectron } from "../../env";
 import { useHtmlRenderTheme } from "../../hooks/useHtmlRenderTheme";
+import { useEnvironment } from "../../state/environments";
 import { useThreadShell } from "../../state/entities";
-import { pluginEnvironment, usePluginCatalogue } from "../../state/plugins";
+import {
+  pluginEnvironment,
+  usePluginCatalogue,
+  usePluginChangeRevision,
+} from "../../state/plugins";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { cn } from "~/lib/utils";
 import { Button } from "../ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "../ui/empty";
 import { Spinner } from "../ui/spinner";
@@ -35,7 +46,13 @@ import { newPluginOperationId, usePluginIntentApplier } from "./usePluginActions
 
 type LoadState =
   | { readonly kind: "loading" }
-  | { readonly kind: "ready"; readonly document: string; readonly token: string }
+  | {
+      readonly kind: "ready";
+      readonly document: string;
+      readonly token: string;
+      /** Baked into the document; the host must offer the same ones. */
+      readonly features: ReadonlyArray<PluginViewBridgeFeature>;
+    }
   | { readonly kind: "failed"; readonly message: string };
 
 const documentToken = () =>
@@ -43,22 +60,34 @@ const documentToken = () =>
     byte.toString(16).padStart(2, "0"),
   ).join("");
 
+type PluginViewPlacement = PluginViewContext["placement"];
+
 /**
  * One plugin view document. It is keyed by installation generation, so a refreshed or re-enabled
  * plugin reloads instead of letting an old document call into the new code.
  */
-function PluginViewFrame(props: {
+export function PluginViewFrame(props: {
   readonly environmentId: EnvironmentId;
   readonly installation: PluginInstallation;
   readonly view: PluginView;
-  readonly placement: "page" | "side-panel";
+  readonly placement: PluginViewPlacement;
   readonly threadRef: ScopedThreadRef | null;
   readonly composerTarget: ComposerThreadTarget | null;
+  /** A conversation card: served only after the server checks where the card came from. */
+  readonly card?: PluginCardReference;
+  /** A card's frame is sized by its content; failures show this instead of a page notice. */
+  readonly renderFailure?: (message: string, retry: () => void) => ReactNode;
 }) {
   const { environmentId, installation, view } = props;
   const theme = useHtmlRenderTheme();
   const router = useRouter();
+  const environment = useEnvironment(environmentId);
+  const features = pluginViewBridgeFeatures({
+    placement: props.placement,
+    changes: pluginChangesSupported(environment?.serverConfig?.environment.capabilities),
+  });
   const readView = useAtomCommand(pluginEnvironment.readView, { reportFailure: false });
+  const readCardView = useAtomCommand(pluginEnvironment.readCardView, { reportFailure: false });
   const invoke = useAtomCommand(pluginEnvironment.invoke, { reportFailure: false });
   const applyIntents = usePluginIntentApplier();
   const thread = useThreadShell(props.threadRef);
@@ -68,45 +97,70 @@ function PluginViewFrame(props: {
   const [load, setLoad] = useState<LoadState>({ kind: "loading" });
   const [stopped, setStopped] = useState(false);
   const [attempt, setAttempt] = useState(0);
+  const [cardHeight, setCardHeight] = useState<number | null>(null);
 
   // Read by the bridge on each message, so it sees current values without being rebuilt.
-  const live = { props, theme, thread, invoke, readView, applyIntents, router };
+  const live = {
+    props,
+    theme,
+    thread,
+    features,
+    invoke,
+    readView,
+    readCardView,
+    applyIntents,
+    router,
+  };
   const latest = useRef(live);
   useEffect(() => {
     latest.current = live;
   });
 
   const { installationId, generation } = installation;
+  const card = props.card ?? null;
+  const cardKey = card === null ? null : JSON.stringify(card);
   useEffect(() => {
     let cancelled = false;
-    void latest.current
-      .readView({
-        environmentId,
-        input: { installationId, generation, viewId: view.id },
-      })
-      .then((result) => {
-        if (cancelled) return;
-        const token = documentToken();
-        setLoad(
-          result._tag === "Success"
-            ? { kind: "ready", document: buildPluginViewDocument(result.value.html, token), token }
-            : {
-                kind: "failed",
-                message: pluginViewFailure(squashAtomCommandFailure(result)).message,
-              },
-        );
-      });
+    const current = latest.current;
+    const card = current.props.card;
+    void (
+      card === undefined
+        ? current.readView({
+            environmentId,
+            input: { installationId, generation, viewId: view.id },
+          })
+        : current.readCardView({ environmentId, input: { installationId, generation, card } })
+    ).then((result) => {
+      if (cancelled) return;
+      const token = documentToken();
+      const { features } = latest.current;
+      setLoad(
+        result._tag === "Success"
+          ? {
+              kind: "ready",
+              document: buildPluginViewDocument(result.value.html, token, features),
+              token,
+              features,
+            }
+          : {
+              kind: "failed",
+              message: pluginViewFailure(squashAtomCommandFailure(result)).message,
+            },
+      );
+    });
     return () => {
       cancelled = true;
     };
     // oxlint-disable-next-line react/exhaustive-effect-dependencies -- Retry asks for the document again.
-  }, [environmentId, installationId, generation, view.id, attempt]);
+  }, [latest, environmentId, installationId, generation, view.id, cardKey, attempt]);
 
   const document = load.kind === "ready" ? load.document : null;
   const token = load.kind === "ready" ? load.token : null;
+  const documentFeatures = load.kind === "ready" ? load.features : null;
   // A layout effect, so the host listens before the frame's first script can post.
   useLayoutEffect(() => {
-    if (document === null || token === null) return;
+    if (document === null || token === null || documentFeatures === null) return;
+    const features = documentFeatures;
     loads.current = 0;
     const context = (): PluginViewContext => {
       const current = latest.current;
@@ -123,6 +177,16 @@ function PluginViewFrame(props: {
                 threadId: current.props.threadRef.threadId,
                 projectId: current.thread?.projectId ?? null,
               },
+        features,
+        ...(current.props.card === undefined
+          ? {}
+          : {
+              card: {
+                viewId: current.props.card.viewId,
+                summary: current.props.card.summary,
+                ...(current.props.card.data === undefined ? {} : { data: current.props.card.data }),
+              },
+            }),
       };
     };
     const channel = bindPluginViewChannel({
@@ -174,6 +238,8 @@ function PluginViewFrame(props: {
       },
       onIntents: (intents, origin, unsupported) =>
         latest.current.applyIntents(origin, intents, unsupported),
+      features,
+      onResize: setCardHeight,
     });
     hostRef.current = host;
     return () => {
@@ -181,15 +247,51 @@ function PluginViewFrame(props: {
       host.dispose();
       hostRef.current = null;
     };
+  }, [
+    latest,
+    document,
+    token,
+    documentFeatures,
+    environmentId,
+    installationId,
+    generation,
+    view.id,
     // The document string can repeat across a reload; `attempt` still means a new frame.
     // oxlint-disable-next-line react/exhaustive-effect-dependencies -- A reloaded frame needs a new host.
-  }, [document, token, environmentId, installationId, generation, view.id, attempt]);
+    attempt,
+  ]);
 
   useEffect(() => {
     hostRef.current?.sendContext();
     // oxlint-disable-next-line react/exhaustive-effect-dependencies -- A theme change is resent.
   }, [theme]);
 
+  // Only a mounted document listens; a hidden or closed view holds no subscription.
+  const topic = pluginViewTopic(view.id);
+  const revision = usePluginChangeRevision(features.includes("changes") ? environmentId : null, {
+    installationId,
+    generation,
+    topic,
+  });
+  const seenRevision = useRef(revision);
+  useEffect(() => {
+    if (revision === null) return;
+    const seen = seenRevision.current;
+    seenRevision.current = revision;
+    if (seen !== null && seen !== revision) hostRef.current?.changed(topic);
+  }, [revision, topic]);
+
+  const retry = () => {
+    setStopped(false);
+    setLoad({ kind: "loading" });
+    setAttempt((value) => value + 1);
+  };
+  if (load.kind === "failed" && props.renderFailure !== undefined) {
+    return props.renderFailure(load.message, retry);
+  }
+  if (stopped && props.renderFailure !== undefined) {
+    return props.renderFailure("The card tried to leave its page.", retry);
+  }
   if (load.kind === "failed") {
     return (
       <PluginViewNotice
@@ -234,7 +336,7 @@ function PluginViewFrame(props: {
     );
   }
   if (document === null) {
-    return (
+    return props.placement === "conversation" ? null : (
       <div className="flex size-full items-center justify-center">
         <Spinner className="size-4" />
       </div>
@@ -258,8 +360,16 @@ function PluginViewFrame(props: {
         }
         hostRef.current?.sendContext();
       }}
-      className="block size-full border-0 bg-transparent"
-      style={{ colorScheme: theme.appearance }}
+      className={cn(
+        "block w-full border-0 bg-transparent",
+        props.placement === "conversation" ? "h-24" : "h-full",
+      )}
+      style={{
+        colorScheme: theme.appearance,
+        ...(props.placement === "conversation" && cardHeight !== null
+          ? { height: cardHeight }
+          : {}),
+      }}
     />
   );
 }
@@ -338,6 +448,14 @@ function PluginViewResolver(props: {
             Open plugin settings
           </Button>
         }
+      />
+    );
+  }
+  if (entry !== null && entry.view.placement === "conversation") {
+    return (
+      <PluginViewNotice
+        title="View unavailable"
+        description="This view only opens from a card in chat."
       />
     );
   }

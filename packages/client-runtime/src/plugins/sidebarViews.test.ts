@@ -2,13 +2,19 @@ import { EnvironmentId, type PluginInstallation } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import { pluginRunnableInstallations } from "./model.ts";
+import * as Schema from "effect/Schema";
+
 import {
+  findPluginTreeInstallation,
+  PluginSidebarChoice,
+  pluginSidebarTreeOptions,
   pluginSidebarViewOptions,
   resolvePluginSidebarView,
   type PluginSidebarViewSource,
 } from "./sidebarViews.ts";
 import { pluginInstallationFixture } from "./testFixtures.ts";
 
+const decodeChoice = Schema.decodeUnknownSync(PluginSidebarChoice);
 const local = EnvironmentId.make("env-local");
 const remote = EnvironmentId.make("env-remote");
 
@@ -119,6 +125,40 @@ describe("plugin sidebar views", () => {
       remembered: stale!,
       sources: new Map([[local, ready(local, [projectsPlugin({}, 14)])]]),
     });
-    expect(selected?.view.quietAfterDays).toBe(14);
+    expect(selected).toMatchObject({ view: { quietAfterDays: 14 } });
+  });
+
+  it("offers a native tree only with both its own grant and thread reads", () => {
+    const base = pluginInstallationFixture();
+    const treePlugin = (capabilities: ReadonlyArray<string>): PluginInstallation => ({
+      ...base,
+      manifest: {
+        ...base.manifest,
+        id: "t3code.projects",
+        name: "Projects",
+        capabilities: ["ui.native-trees", "threads.read"],
+        nativeTrees: [{ id: "projects", title: "Projects" }],
+      },
+      grants: {
+        capabilities: capabilities as PluginInstallation["grants"]["capabilities"],
+        projectIds: [],
+      },
+    });
+    const granted = treePlugin(["ui.native-trees", "threads.read"]);
+    const [option] = pluginSidebarTreeOptions(local, [granted]);
+    expect(option).toMatchObject({ kind: "tree", key: "t3code.projects/tree:projects" });
+    expect(pluginSidebarTreeOptions(local, [treePlugin(["ui.native-trees"])])).toEqual([]);
+    expect(findPluginTreeInstallation([granted], option!)).toBe(granted);
+    expect(findPluginTreeInstallation([treePlugin(["threads.read"])], option!)).toBeNull();
+    // A remembered tree resolves like a declared view, and a choice saved before trees existed
+    // still decodes.
+    expect(
+      resolvePluginSidebarView({
+        remembered: option!,
+        sources: new Map([[local, { status: "ready", options: [option!] }]]),
+      }).selected,
+    ).toBe(option);
+    const [saved] = pluginSidebarViewOptions(local, [projectsPlugin()]);
+    expect(decodeChoice(JSON.parse(JSON.stringify(saved)))).toEqual(saved);
   });
 });

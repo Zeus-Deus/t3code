@@ -4,7 +4,9 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   buildPluginViewDocument,
   makePluginViewHost,
+  MAX_PLUGIN_CARD_HEIGHT,
   PLUGIN_VIEW_CONTENT_SECURITY_POLICY,
+  type PluginViewBridgeFeature,
   type PluginViewContext,
 } from "./viewHost.ts";
 import { acceptPluginViewPort } from "./viewChannel.ts";
@@ -30,8 +32,12 @@ function deferred<A>() {
 
 const TOKEN = "doc-token-1";
 
-function setup(invoke: (name: string, input: unknown) => Promise<PluginInvokeResult>) {
+function setup(
+  invoke: (name: string, input: unknown) => Promise<PluginInvokeResult>,
+  features: ReadonlyArray<PluginViewBridgeFeature> = [],
+) {
   const posted: unknown[] = [];
+  const heights: number[] = [];
   const intents: unknown[] = [];
   const origins: unknown[] = [];
   const unsupported: number[] = [];
@@ -47,10 +53,13 @@ function setup(invoke: (name: string, input: unknown) => Promise<PluginInvokeRes
       origins.push(origin);
       unsupported.push(skipped);
     },
+    features,
+    onResize: (height) => heights.push(height),
   });
   return {
     host,
     posted,
+    heights,
     intents,
     origins,
     unsupported,
@@ -203,6 +212,62 @@ describe("makePluginViewHost", () => {
         error: { reason: "permission_denied", message: "Not granted." },
       },
     ]);
+  });
+});
+
+describe("bridge features", () => {
+  it("offers changes, local intents and resizing only to documents built with them", () => {
+    const old = setup(() => Promise.resolve({}));
+    old.host.changed("view:board");
+    old.host.receive({ t3Plugin: 1, token: TOKEN, kind: "resize", height: 300 });
+    old.host.receive({
+      t3Plugin: 1,
+      token: TOKEN,
+      kind: "intent",
+      id: 1,
+      intent: { type: "view.open", viewId: "board" },
+    });
+    expect(old.heights).toEqual([]);
+    expect(old.intents).toEqual([]);
+    expect(old.posted).toMatchObject([{ id: 1, ok: false, error: { reason: "unsupported" } }]);
+
+    const card = setup(() => Promise.resolve({}), ["changes", "local-intents", "resize"]);
+    card.host.changed("view:board");
+    card.host.receive({ t3Plugin: 1, token: TOKEN, kind: "resize", height: 120.2 });
+    card.host.receive({ t3Plugin: 1, token: TOKEN, kind: "resize", height: 1e9 });
+    card.host.receive({ t3Plugin: 1, token: TOKEN, kind: "resize", height: Number.NaN });
+    expect(card.heights).toEqual([121, MAX_PLUGIN_CARD_HEIGHT]);
+    expect(card.posted).toEqual([{ t3Plugin: 1, kind: "changed", topic: "view:board" }]);
+  });
+
+  it("applies a valid local intent where the user is, and refuses what this app cannot do", () => {
+    const { host, posted, intents, origins, moveTo } = setup(
+      () => Promise.resolve({}),
+      ["local-intents"],
+    );
+    moveTo("/env/thread-b");
+    const reveal = { type: "thread.reveal", threadId: "thread-a" };
+    host.receive({ t3Plugin: 1, token: TOKEN, kind: "intent", id: 4, intent: reveal });
+    host.receive({
+      t3Plugin: 1,
+      token: TOKEN,
+      kind: "intent",
+      id: 5,
+      intent: { type: "workspace.format-disk" },
+    });
+    expect(intents).toEqual([reveal]);
+    expect(origins).toEqual([{ location: "/env/thread-b" }]);
+    expect(posted).toMatchObject([
+      { id: 4, ok: true, value: {} },
+      { id: 5, ok: false, error: { reason: "unsupported" } },
+    ]);
+  });
+
+  it("stops delivering changes once the view is gone", () => {
+    const { host, posted } = setup(() => Promise.resolve({}), ["changes"]);
+    host.dispose();
+    host.changed("view:board");
+    expect(posted).toEqual([]);
   });
 });
 

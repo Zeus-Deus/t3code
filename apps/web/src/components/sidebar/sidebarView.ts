@@ -1,6 +1,7 @@
 import {
-  PluginSidebarViewOption,
+  PluginSidebarChoice,
   resolvePluginSidebarView,
+  togglePluginTreeFold,
   type PluginSidebarViewSource,
 } from "@t3tools/client-runtime/plugins";
 import type { EnvironmentId } from "@t3tools/contracts";
@@ -13,7 +14,7 @@ import { useEnvironmentIdentities, usePrimaryEnvironmentId } from "../../state/e
 
 /** The remembered sidebar view on this device; null is the built-in activity list. */
 const SIDEBAR_VIEW_KEY = "t3code:sidebar:view";
-const SidebarViewPreference = Schema.NullOr(PluginSidebarViewOption);
+const SidebarViewPreference = Schema.NullOr(PluginSidebarChoice);
 const PENDING: PluginSidebarViewSource = { status: "pending" };
 
 interface SidebarViewSourceState {
@@ -75,7 +76,7 @@ export function useSidebarView() {
   return {
     options,
     selected,
-    select: (option: PluginSidebarViewOption | null) => setRemembered(option),
+    select: (option: PluginSidebarChoice | null) => setRemembered(option),
   };
 }
 
@@ -93,7 +94,10 @@ const SIDEBAR_PROJECT_FOLDS_KEY = "t3code:sidebar:project-folds";
 const FoldedProjects = Schema.Array(Schema.String);
 const NO_FOLDS: ReadonlyArray<string> = [];
 
-/** Folded project headings in project views, per device and shared across views. */
+/**
+ * Folded project headings in project views, per device and shared across views. Plugin trees keep
+ * their headings here too, including ones the person opened against the plugin's default.
+ */
 export function useSidebarProjectFolds() {
   const [folded, setFolded] = useLocalStorage(SIDEBAR_PROJECT_FOLDS_KEY, NO_FOLDS, FoldedProjects);
   return {
@@ -104,5 +108,7 @@ export function useSidebarProjectFolds() {
           ? current.filter((key) => key !== projectKey)
           : [...current, projectKey],
       ),
+    toggleTreeFold: (sectionKey: string, collapsedByDefault: boolean) =>
+      setFolded((current) => togglePluginTreeFold(current, sectionKey, collapsedByDefault)),
   };
 }

@@ -1,5 +1,8 @@
 import { WS_METHODS, type EnvironmentId } from "@t3tools/contracts";
+import * as Stream from "effect/Stream";
 import type { Atom } from "effect/reactivity";
+
+import { EMPTY_PLUGIN_CHANGE_REVISIONS, recordPluginChange } from "../plugins/changes.ts";
 
 import type { EnvironmentRegistry } from "../connection/registry.ts";
 import {
@@ -98,6 +101,23 @@ export function createPluginEnvironmentAtoms<R, E>(
     readView: createEnvironmentRpcCommand(runtime, {
       label: "environment-command:plugins:read-view",
       tag: WS_METHODS.pluginsReadView,
+    }),
+    /** One full tree snapshot; only a mounted tree asks, on selection, change and reconnect. */
+    readTree: createEnvironmentRpcCommand(runtime, {
+      label: "environment-command:plugins:read-tree",
+      tag: WS_METHODS.pluginsReadTree,
+    }),
+    /** A conversation card's view; the server checks the card's provenance before serving it. */
+    readCardView: createEnvironmentRpcCommand(runtime, {
+      label: "environment-command:plugins:read-card-view",
+      tag: WS_METHODS.pluginsReadCardView,
+    }),
+    /** Per-topic change counts for the environment, while anything that reads them is mounted. */
+    changes: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+      label: "environment-data:plugins:changes",
+      tag: WS_METHODS.pluginsSubscribeChanges,
+      transform: (stream) =>
+        stream.pipe(Stream.scan(() => EMPTY_PLUGIN_CHANGE_REVISIONS, recordPluginChange)),
     }),
   };
 }

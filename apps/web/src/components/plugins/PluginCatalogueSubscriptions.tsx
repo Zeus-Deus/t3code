@@ -1,5 +1,6 @@
 import {
   pluginRunnableInstallations,
+  pluginSidebarTreeOptions,
   pluginSidebarViewOptions,
   type PluginSidebarViewSource,
 } from "@t3tools/client-runtime/plugins";
@@ -38,7 +39,10 @@ function PluginSidebarViewSource(props: { readonly environmentId: EnvironmentId 
       ? { status: "pending" }
       : {
           status: "ready",
-          options: pluginSidebarViewOptions(environmentId, pluginRunnableInstallations(catalogue)),
+          options: [
+            ...pluginSidebarViewOptions(environmentId, pluginRunnableInstallations(catalogue)),
+            ...pluginSidebarTreeOptions(environmentId, pluginRunnableInstallations(catalogue)),
+          ],
         };
   useEffect(() => {
     report(environmentId, source);

@@ -780,7 +780,11 @@ function PluginContributions(props: {
           <div className="min-w-0 flex-1">
             <p className="truncate text-sm">{view.title}</p>
             <p className="truncate text-xs text-muted-foreground">
-              {view.placement === "page" ? "Page" : "Side panel beside a thread"}
+              {view.placement === "page"
+                ? "Page"
+                : view.placement === "conversation"
+                  ? "Card in chat"
+                  : "Side panel beside a thread"}
             </p>
           </div>
           <Button

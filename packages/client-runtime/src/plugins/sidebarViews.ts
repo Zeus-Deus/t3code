@@ -1,5 +1,6 @@
 import {
   PLUGIN_SIDEBAR_VIEW_CAPABILITY,
+  PluginNativeTree,
   PluginSidebarView,
   type EnvironmentId,
   type PluginInstallation,
@@ -20,12 +21,80 @@ export const PluginSidebarViewOption = Schema.Struct({
 });
 export type PluginSidebarViewOption = typeof PluginSidebarViewOption.Type;
 
+/**
+ * A plugin's native tree as a sidebar choice. Every environment whose installation offers the same
+ * key contributes its own snapshot; `environmentId` only says which one the choice came from.
+ */
+export const PluginSidebarTreeOption = Schema.Struct({
+  kind: Schema.Literal("tree"),
+  key: Schema.String,
+  environmentId: Schema.String,
+  pluginId: Schema.String,
+  pluginName: Schema.String,
+  tree: PluginNativeTree,
+});
+export type PluginSidebarTreeOption = typeof PluginSidebarTreeOption.Type;
+
+/** What the sidebar can show besides activity. Choices saved before trees existed still decode. */
+export const PluginSidebarChoice = Schema.Union([PluginSidebarViewOption, PluginSidebarTreeOption]);
+export type PluginSidebarChoice = typeof PluginSidebarChoice.Type;
+
+export const isPluginSidebarTreeOption = (
+  choice: PluginSidebarChoice,
+): choice is PluginSidebarTreeOption => "kind" in choice && choice.kind === "tree";
+
+export const pluginSidebarChoiceTitle = (choice: PluginSidebarChoice) =>
+  isPluginSidebarTreeOption(choice) ? choice.tree.title : choice.view.title;
+
 /** What one environment currently contributes. `pending` until its catalogue has been read. */
 export type PluginSidebarViewSource =
   | { readonly status: "pending" }
-  | { readonly status: "ready"; readonly options: ReadonlyArray<PluginSidebarViewOption> };
+  | { readonly status: "ready"; readonly options: ReadonlyArray<PluginSidebarChoice> };
 
 export const pluginSidebarViewKey = (pluginId: string, viewId: string) => `${pluginId}/${viewId}`;
+// Tree and view ids share no namespace in the manifest, so their keys must not collide.
+export const pluginSidebarTreeKey = (pluginId: string, treeId: string) =>
+  `${pluginId}/tree:${treeId}`;
+
+const PLUGIN_NATIVE_TREE_CAPABILITY = "ui.native-trees";
+
+/** Trees read threads, so they need that grant as well as their own. */
+const offersNativeTrees = (installation: PluginInstallation) =>
+  isPluginActive(installation) &&
+  installation.grants.capabilities.includes(PLUGIN_NATIVE_TREE_CAPABILITY) &&
+  installation.grants.capabilities.includes("threads.read");
+
+/** Pass the environment's runnable installations, so safe mode contributes nothing. */
+export function pluginSidebarTreeOptions(
+  environmentId: EnvironmentId,
+  installations: ReadonlyArray<PluginInstallation>,
+): ReadonlyArray<PluginSidebarTreeOption> {
+  return installations.filter(offersNativeTrees).flatMap((installation) =>
+    (installation.manifest.nativeTrees ?? []).map((tree) => ({
+      kind: "tree" as const,
+      key: pluginSidebarTreeKey(installation.manifest.id, tree.id),
+      environmentId,
+      pluginId: installation.manifest.id,
+      pluginName: installation.manifest.name,
+      tree,
+    })),
+  );
+}
+
+/** The installation that serves a tree choice on one environment, if it offers it right now. */
+export function findPluginTreeInstallation(
+  installations: ReadonlyArray<PluginInstallation>,
+  choice: Pick<PluginSidebarTreeOption, "pluginId" | "tree">,
+): PluginInstallation | null {
+  return (
+    installations.find(
+      (installation) =>
+        offersNativeTrees(installation) &&
+        installation.manifest.id === choice.pluginId &&
+        (installation.manifest.nativeTrees ?? []).some((tree) => tree.id === choice.tree.id),
+    ) ?? null
+  );
+}
 
 /**
  * Pass the environment's runnable installations, so safe mode contributes nothing. Like views and
@@ -62,13 +131,13 @@ export function pluginSidebarViewOptions(
  * `sources` lists every known environment in priority order; the first to offer a key wins.
  */
 export function resolvePluginSidebarView(input: {
-  readonly remembered: PluginSidebarViewOption | null;
+  readonly remembered: PluginSidebarChoice | null;
   readonly sources: ReadonlyMap<EnvironmentId, PluginSidebarViewSource>;
 }): {
-  readonly options: ReadonlyArray<PluginSidebarViewOption>;
-  readonly selected: PluginSidebarViewOption | null;
+  readonly options: ReadonlyArray<PluginSidebarChoice>;
+  readonly selected: PluginSidebarChoice | null;
 } {
-  const byKey = new Map<string, PluginSidebarViewOption>();
+  const byKey = new Map<string, PluginSidebarChoice>();
   for (const source of input.sources.values()) {
     if (source.status !== "ready") continue;
     for (const option of source.options) if (!byKey.has(option.key)) byKey.set(option.key, option);

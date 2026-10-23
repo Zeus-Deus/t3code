@@ -1,4 +1,7 @@
-import type { PluginSidebarViewOption } from "@t3tools/client-runtime/plugins";
+import {
+  pluginSidebarChoiceTitle,
+  type PluginSidebarChoice,
+} from "@t3tools/client-runtime/plugins";
 import { ChevronRightIcon, FolderIcon, ListTreeIcon, SquarePenIcon } from "lucide-react";
 import { Fragment, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 
@@ -20,18 +23,19 @@ const ACTIVITY_VALUE = "activity";
  * One offered view toggles directly; several views use a menu without growing the header.
  */
 export function SidebarViewSwitch(props: {
-  options: ReadonlyArray<PluginSidebarViewOption>;
+  options: ReadonlyArray<PluginSidebarChoice>;
   selectedKey: string | null;
-  onSelect: (option: PluginSidebarViewOption | null) => void;
+  onSelect: (option: PluginSidebarChoice | null) => void;
 }) {
   if (props.options.length === 0) return null;
   const selected = props.options.find((option) => option.key === props.selectedKey);
   const first = props.options[0]!;
   if (props.options.length === 1) {
+    const title = pluginSidebarChoiceTitle(first);
     return (
       <SidebarHeaderIconButton
-        label={`Toggle ${first.view.title} view`}
-        tooltip={selected ? "Show Activity in sidebar" : `Show ${first.view.title} in sidebar`}
+        label={`Toggle ${title} view`}
+        tooltip={selected ? "Show Activity in sidebar" : `Show ${title} in sidebar`}
         aria-pressed={selected !== undefined}
         active={selected !== undefined}
         onClick={() => props.onSelect(selected ? null : first)}
@@ -46,7 +50,7 @@ export function SidebarViewSwitch(props: {
         render={
           <SidebarHeaderIconButton
             label="Sidebar view"
-            tooltip={`Sidebar view: ${selected?.view.title ?? "Activity"}`}
+            tooltip={`Sidebar view: ${selected === undefined ? "Activity" : pluginSidebarChoiceTitle(selected)}`}
           />
         }
       >
@@ -64,7 +68,7 @@ export function SidebarViewSwitch(props: {
           </MenuRadioItem>
           {props.options.map((option) => (
             <MenuRadioItem key={option.key} value={option.key} closeOnClick>
-              {option.view.title}
+              {pluginSidebarChoiceTitle(option)}
             </MenuRadioItem>
           ))}
         </MenuRadioGroup>
@@ -73,10 +77,26 @@ export function SidebarViewSwitch(props: {
   );
 }
 
+// Plugin trees nest headings; deeper levels stop indenting so rows keep room for their titles.
+const DEPTH_INDENT = ["", "pl-4", "pl-8", "pl-12"] as const;
+const depthIndent = (depth: number) => DEPTH_INDENT[Math.min(Math.max(depth, 0), 3)];
+
 export function SidebarProjectThreadTree<TThread>(props: {
   rows: ReadonlyArray<ProjectViewRow<TThread>>;
   renderRow: (thread: TThread) => ReactNode;
+  /** Headings above these rows in a plugin tree. */
+  depth?: number;
 }) {
+  const depth = props.depth ?? 0;
+  if (depth > 0 && props.rows.length > 0) {
+    return (
+      <li role="presentation" className={cn("list-none", depthIndent(depth))}>
+        <ul role="presentation" className="flex flex-col gap-px">
+          <SidebarProjectThreadTree rows={props.rows} renderRow={props.renderRow} />
+        </ul>
+      </li>
+    );
+  }
   return props.rows.map((row) => (
     <Fragment key={row.key}>
       {props.renderRow(row.thread)}
@@ -104,9 +124,16 @@ function ProjectAge(props: { timestamp: string }) {
 const headingClassName =
   "flex h-8 min-w-0 flex-1 items-center gap-2.5 rounded-md px-2.5 text-left text-sm text-sidebar-foreground/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70";
 
-/** One project's heading in a project view: folds its rows and starts a thread there. */
+/**
+ * One heading in a project view or plugin tree: folds its rows, and for a project starts a thread
+ * there. Without a project it is a plugin's group, or the threads nothing else placed.
+ */
 export function SidebarProjectSectionHeader(props: {
   project: SidebarProjectSnapshot | null;
+  /** A plugin group's name; ignored for projects. */
+  title?: string | undefined;
+  /** Headings above this one in a plugin tree. */
+  depth?: number;
   sectionKey: string;
   liveCount: number;
   lastActivityAt: string | null;
@@ -117,7 +144,7 @@ export function SidebarProjectSectionHeader(props: {
   onOpenSettings: (event: ReactMouseEvent, project: SidebarProjectSnapshot) => void;
 }) {
   const { project } = props;
-  const name = project?.displayName ?? "Other threads";
+  const name = project?.displayName ?? props.title ?? "Other threads";
   const foldable = props.liveCount > 0;
   const openSettings = (event: ReactMouseEvent) => {
     if (project) props.onOpenSettings(event, project);
@@ -166,7 +193,10 @@ export function SidebarProjectSectionHeader(props: {
   );
   return (
     <li
-      className="group/project-section mt-2 flex h-8 list-none items-center gap-1 first:mt-0"
+      className={cn(
+        "group/project-section mt-2 flex h-8 list-none items-center gap-1 first:mt-0",
+        depthIndent(props.depth ?? 0),
+      )}
       data-thread-selection-safe
       data-testid="sidebar-project-section"
       data-project-key={props.sectionKey}
