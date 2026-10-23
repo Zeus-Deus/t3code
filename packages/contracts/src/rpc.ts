@@ -1,4 +1,8 @@
 import {
+  PluginTreeInput,
+  PluginTreeSnapshot,
+  PluginChanged,
+  PluginCardViewInput,
   PluginCatalogue,
   PluginRepairWorkspace,
   PluginEventBacklog,
@@ -551,6 +555,9 @@ export const WS_METHODS = {
   pluginsUpdateSettings: "plugins.updateSettings",
   pluginsInvoke: "plugins.invoke",
   pluginsReadView: "plugins.readView",
+  pluginsReadTree: "plugins.readTree",
+  pluginsSubscribeChanges: "plugins.subscribeChanges",
+  pluginsReadCardView: "plugins.readCardView",
   pluginsResume: "plugins.resume",
 
   scheduledTasksSubscribe: "scheduledTasks.subscribe",
@@ -1960,6 +1967,22 @@ const WsPluginsReadViewRpc = Rpc.make(WS_METHODS.pluginsReadView, {
   success: PluginViewResult,
   error: pluginRpcError,
 });
+const WsPluginsReadTreeRpc = Rpc.make(WS_METHODS.pluginsReadTree, {
+  payload: PluginTreeInput,
+  success: PluginTreeSnapshot,
+  error: pluginRpcError,
+});
+const WsPluginsSubscribeChangesRpc = Rpc.make(WS_METHODS.pluginsSubscribeChanges, {
+  payload: Schema.Struct({}),
+  success: PluginChanged,
+  error: pluginRpcError,
+  stream: true,
+});
+const WsPluginsReadCardViewRpc = Rpc.make(WS_METHODS.pluginsReadCardView, {
+  payload: PluginCardViewInput,
+  success: PluginViewResult,
+  error: pluginRpcError,
+});
 const WsPluginsResumeRpc = Rpc.make(WS_METHODS.pluginsResume, {
   payload: Schema.Struct({
     ...pluginInstallationInput.fields,
@@ -2128,6 +2151,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsPluginsUpdateSettingsRpc,
   WsPluginsInvokeRpc,
   WsPluginsReadViewRpc,
+  WsPluginsReadTreeRpc,
+  WsPluginsSubscribeChangesRpc,
+  WsPluginsReadCardViewRpc,
   WsPluginsResumeRpc,
   WsScheduledTasksSubscribeRpc,
   WsScheduledTasksUpsertRpc,

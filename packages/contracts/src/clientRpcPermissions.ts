@@ -32,6 +32,9 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.pluginsList]: AuthOrchestrationReadScope,
   [WS_METHODS.pluginsSubscribe]: AuthOrchestrationReadScope,
   [WS_METHODS.pluginsReadView]: AuthOrchestrationReadScope,
+  [WS_METHODS.pluginsReadTree]: AuthOrchestrationReadScope,
+  [WS_METHODS.pluginsSubscribeChanges]: AuthOrchestrationReadScope,
+  [WS_METHODS.pluginsReadCardView]: AuthOrchestrationReadScope,
   [WS_METHODS.previewClose]: AuthPreviewOperateScope,
   // Stopping a server signals its processes, as closing a terminal does.
   [WS_METHODS.previewStopLocalServer]: AuthTerminalOperateScope,

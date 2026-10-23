@@ -13,6 +13,9 @@ import {
   PluginInvokeResult,
   PluginManifest,
   PluginError,
+  PluginTreeSnapshot,
+  PluginThreadCreateInput,
+  PluginCardReference,
   pluginCompatibility,
   pluginRequestedCapabilities,
 } from "./plugins.ts";
@@ -52,6 +55,45 @@ const decodeManifest = Schema.decodeUnknownSync(PluginManifest);
 const resultCodec = Schema.toCodecJson(PluginInvokeResult);
 const decodeResult = Schema.decodeUnknownSync(resultCodec);
 const decodePluginError = Schema.decodeUnknownSync(Schema.toCodecJson(PluginError));
+
+it("decodes additive workflow choices, bounded native trees and historical card references", () => {
+  expect(
+    Schema.decodeUnknownSync(PluginThreadCreateInput)({
+      projectId: "p",
+      text: "start",
+      idempotencyKey: "one",
+      modelSelection: {
+        instanceId: "codex",
+        model: "custom",
+        options: { reasoningEffort: "high" },
+      },
+      runtimeMode: "auto",
+      interactionMode: "plan",
+      workspaceStrategy: { type: "worktree", baseRef: "HEAD", branch: "task/test" },
+    }),
+  ).toMatchObject({ workspaceStrategy: { type: "worktree" }, modelSelection: { model: "custom" } });
+  expect(
+    Schema.decodeUnknownSync(PluginTreeSnapshot)({
+      nodes: [
+        { id: "project", kind: "project", projectId: "p" },
+        { id: "thread", parentId: "project", kind: "thread", threadId: "t" },
+      ],
+    }).nodes,
+  ).toHaveLength(2);
+  expect(
+    Schema.decodeUnknownSync(PluginCardReference)({
+      installationId: "test.plugin",
+      generation: "one",
+      dataOwner: "owner",
+      viewId: "card",
+      summary: "Historical proposal",
+      data: { planId: "one" },
+    }).data,
+  ).toEqual({ planId: "one" });
+  expect(() =>
+    Schema.decodeUnknownSync(PluginCardReference)({ viewId: "card", summary: "unowned" }),
+  ).toThrow();
+});
 
 describe("plugin wire compatibility", () => {
   it("keeps known catalogue features when a newer host adds capabilities and placements", () => {
@@ -266,4 +308,22 @@ it("requires installation-management scopes for recovery mutations and read scop
   expect(clientRpcRequiredScopes(WS_METHODS.pluginsBacklog, {})).toEqual([
     AuthOrchestrationReadScope,
   ]);
+});
+
+it("protects contribution reads with read authority and keeps unknown required feature names incompatible", () => {
+  for (const method of [
+    WS_METHODS.pluginsReadTree,
+    WS_METHODS.pluginsSubscribeChanges,
+    WS_METHODS.pluginsReadCardView,
+  ])
+    expect(clientRpcRequiredScopes(method, {})).toEqual([AuthOrchestrationReadScope]);
+  expect(
+    pluginCompatibility({
+      capabilities: ["ui.native-trees", "ui.conversation-cards", "ui.changes", "worktrees.create"],
+    }).available,
+  ).toBe(true);
+  expect(pluginCompatibility({ capabilities: ["ui.native-trees", "ui.future-required"] })).toEqual({
+    available: false,
+    missingCapabilities: ["ui.future-required"],
+  });
 });

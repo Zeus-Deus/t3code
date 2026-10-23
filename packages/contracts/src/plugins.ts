@@ -13,6 +13,10 @@ import {
   ThreadId,
 } from "./baseSchemas.ts";
 
+import { ModelSelection } from "./modelSelection.ts";
+import { RuntimeMode, ProviderInteractionMode } from "./providerPolicy.ts";
+import { ProviderOptionDescriptor } from "./model.ts";
+
 const text = (maximum: number) => Schema.String.check(Schema.isMaxLength(maximum));
 const identifier = text(128).check(Schema.isPattern(/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/));
 const relativeEntry = text(512).check(
@@ -29,6 +33,10 @@ export const PLUGIN_CAPABILITIES = [
   "events.run-finalized",
   "ui",
   "ui.sidebar-views",
+  "ui.native-trees",
+  "ui.conversation-cards",
+  "ui.changes",
+  "worktrees.create",
 ] as const;
 export const PluginCapability = Schema.Literals(PLUGIN_CAPABILITIES);
 export type PluginCapability = typeof PluginCapability.Type;
@@ -48,7 +56,7 @@ export const PluginView = Schema.Struct({
   id: identifier,
   title: text(200),
   entry: relativeEntry.check(Schema.isPattern(/\.html$/)),
-  placement: Schema.Literals(["page", "side-panel"]),
+  placement: Schema.Literals(["page", "side-panel", "conversation"]),
 });
 export type PluginView = typeof PluginView.Type;
 
@@ -91,6 +99,165 @@ export const PluginSidebarView = Schema.Struct({
 export type PluginSidebarView = typeof PluginSidebarView.Type;
 export const PLUGIN_SIDEBAR_VIEW_CAPABILITY: PluginCapability = "ui.sidebar-views";
 
+export const PluginNativeTree = Schema.Struct({
+  id: identifier,
+  title: text(40).check(Schema.isMinLength(1)),
+  description: Schema.optionalKey(text(300)),
+});
+export type PluginNativeTree = typeof PluginNativeTree.Type;
+export const MAX_PLUGIN_TREE_NODES = 2_000;
+export const MAX_PLUGIN_TREE_DEPTH = 16;
+export const MAX_PLUGIN_TREE_BYTES = 128_000;
+const treeNodeFields = {
+  id: identifier,
+  parentId: Schema.optionalKey(identifier),
+  collapsedByDefault: Schema.optionalKey(Schema.Boolean),
+};
+export const PluginTreeNode = Schema.Union([
+  Schema.Struct({
+    ...treeNodeFields,
+    kind: Schema.Literal("group"),
+    title: text(200).check(Schema.isMinLength(1)),
+  }),
+  Schema.Struct({ ...treeNodeFields, kind: Schema.Literal("project"), projectId: ProjectId }),
+  Schema.Struct({ ...treeNodeFields, kind: Schema.Literal("thread"), threadId: ThreadId }),
+]);
+export type PluginTreeNode = typeof PluginTreeNode.Type;
+export const PluginTreeSnapshot = Schema.Struct({
+  nodes: Schema.Array(PluginTreeNode).check(Schema.isMaxLength(MAX_PLUGIN_TREE_NODES)),
+});
+export type PluginTreeSnapshot = typeof PluginTreeSnapshot.Type;
+export const PluginTreeInput = Schema.Struct({
+  installationId: identifier,
+  generation: identifier,
+  treeId: identifier,
+  operationId: identifier,
+});
+export type PluginTreeInput = typeof PluginTreeInput.Type;
+export const PluginChanged = Schema.Struct({
+  installationId: identifier,
+  generation: identifier,
+  topic: text(256).check(Schema.isPattern(/^(?:tree|view|status):[a-zA-Z0-9][a-zA-Z0-9._-]*$/)),
+});
+export type PluginChanged = typeof PluginChanged.Type;
+export const PluginInvalidateInput = Schema.Struct({
+  topics: Schema.Array(PluginChanged.fields.topic).check(Schema.isMaxLength(36)),
+});
+export const PLUGIN_VIEW_BRIDGE_FEATURES = [
+  "changes",
+  "local-intents",
+  "resize",
+  "card-context",
+] as const;
+export const MAX_PLUGIN_CARD_DATA_BYTES = 2_048;
+export const MAX_PLUGIN_CARD_BYTES = 4_096;
+export const PluginConversationCard = Schema.Struct({
+  viewId: identifier,
+  summary: text(1_000).check(Schema.isMinLength(1)),
+  data: Schema.optionalKey(Schema.Json),
+});
+export type PluginConversationCard = typeof PluginConversationCard.Type;
+/** Host-stamped provenance. A retained data owner may mount a prior generation; identity grants no authority. */
+export const PluginCardReference = Schema.Struct({
+  ...PluginConversationCard.fields,
+  installationId: identifier,
+  generation: identifier,
+  dataOwner: identifier,
+});
+export type PluginCardReference = typeof PluginCardReference.Type;
+export const PluginCardViewInput = Schema.Struct({
+  installationId: identifier,
+  generation: identifier,
+  card: PluginCardReference,
+});
+export type PluginCardViewInput = typeof PluginCardViewInput.Type;
+export const PluginWorkspaceStrategy = Schema.Union([
+  Schema.Struct({ type: Schema.Literal("root") }),
+  Schema.Struct({
+    type: Schema.Literal("worktree"),
+    branch: Schema.optionalKey(text(256)),
+    baseRef: text(256),
+    startFromOrigin: Schema.optionalKey(Schema.Boolean),
+  }),
+]);
+export const PluginThreadCreateInput = Schema.Struct({
+  idempotencyKey: identifier,
+  projectId: ProjectId,
+  title: Schema.optionalKey(text(200).check(Schema.isMinLength(1))),
+  text: text(64_000).check(Schema.isMinLength(1)),
+  modelSelection: Schema.optionalKey(ModelSelection),
+  runtimeMode: Schema.optionalKey(RuntimeMode),
+  interactionMode: Schema.optionalKey(ProviderInteractionMode),
+  workspaceStrategy: Schema.optionalKey(PluginWorkspaceStrategy),
+});
+export type PluginThreadCreateInput = typeof PluginThreadCreateInput.Type;
+const pluginPageFields = {
+  cursor: Schema.optionalKey(NonNegativeInt),
+  limit: Schema.optionalKey(
+    Schema.Int.check(Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(200)),
+  ),
+};
+export const PluginProjectsListInput = Schema.Struct(pluginPageFields);
+export const PluginThreadsListInput = Schema.Struct({ ...pluginPageFields, projectId: ProjectId });
+export const PluginThreadMetadataInput = Schema.Struct({ threadId: ThreadId });
+export const PluginProjectMetadata = Schema.Struct({
+  id: ProjectId,
+  title: text(200),
+  workspaceRoot: text(4_096),
+  defaultModelSelection: Schema.optionalKey(ModelSelection),
+  createdAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+});
+export type PluginProjectMetadata = typeof PluginProjectMetadata.Type;
+export const PluginThreadMetadata = Schema.Struct({
+  isRunning: Schema.optionalKey(Schema.Boolean),
+  needsAttention: Schema.optionalKey(Schema.Boolean),
+  id: ThreadId,
+  projectId: ProjectId,
+  title: text(200),
+  modelSelection: ModelSelection,
+  runtimeMode: RuntimeMode,
+  interactionMode: ProviderInteractionMode,
+  createdAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+  archivedAt: Schema.NullOr(IsoDateTime),
+  settledAt: Schema.NullOr(IsoDateTime),
+  settledOverride: Schema.NullOr(Schema.Literals(["settled", "active"])),
+  snoozedUntil: Schema.NullOr(IsoDateTime),
+  snoozedAt: Schema.NullOr(IsoDateTime),
+  pinnedAt: Schema.NullOr(IsoDateTime),
+  branch: Schema.NullOr(text(256)),
+  worktreePath: Schema.NullOr(text(4_096)),
+  lineage: Schema.Struct({
+    parentThreadId: Schema.NullOr(ThreadId),
+    relationshipToParent: Schema.NullOr(Schema.Literals(["fork", "subagent"])),
+    rootThreadId: ThreadId,
+  }),
+  launchedFrom: Schema.optionalKey(Schema.Struct({ threadId: ThreadId })),
+});
+export type PluginThreadMetadata = typeof PluginThreadMetadata.Type;
+export const PluginProjectsList = Schema.Struct({
+  projects: Schema.Array(PluginProjectMetadata).check(Schema.isMaxLength(200)),
+  nextCursor: Schema.NullOr(NonNegativeInt),
+});
+export const PluginThreadsList = Schema.Struct({
+  threads: Schema.Array(PluginThreadMetadata).check(Schema.isMaxLength(200)),
+  nextCursor: Schema.NullOr(NonNegativeInt),
+});
+export const PluginModel = Schema.Struct({
+  modelSelection: ModelSelection,
+  title: text(200),
+  providerTitle: text(200),
+  options: Schema.Array(ProviderOptionDescriptor).check(Schema.isMaxLength(32)),
+});
+export type PluginModel = typeof PluginModel.Type;
+export const PluginModelsListInput = Schema.Struct({ ...pluginPageFields, projectId: ProjectId });
+export const PluginModelsList = Schema.Struct({
+  models: Schema.Array(PluginModel).check(Schema.isMaxLength(200)),
+  nextCursor: Schema.NullOr(NonNegativeInt),
+});
+export type PluginModelsList = typeof PluginModelsList.Type;
+
 export const PluginSettingValue = Schema.Union([text(16_384), Schema.Finite, Schema.Boolean]);
 export type PluginSettingValue = typeof PluginSettingValue.Type;
 export const PluginSetting = Schema.Struct({
@@ -123,6 +290,7 @@ export const PluginManifest = Schema.Struct({
     Schema.Array(PluginThreadStatusItem).check(Schema.isMaxLength(4)),
   ),
   sidebarViews: Schema.optionalKey(Schema.Array(PluginSidebarView).check(Schema.isMaxLength(2))),
+  nativeTrees: Schema.optionalKey(Schema.Array(PluginNativeTree).check(Schema.isMaxLength(2))),
 });
 export type PluginManifest = typeof PluginManifest.Type;
 
@@ -139,6 +307,9 @@ const PluginManifestWire = Schema.Struct({
     }),
   ).check(Schema.isMaxLength(100)),
   views: ForwardCompatibleArray(PluginView).check(Schema.isMaxLength(30)),
+  nativeTrees: Schema.optionalKey(
+    ForwardCompatibleArray(PluginNativeTree).check(Schema.isMaxLength(2)),
+  ),
   // A view using a rule value from a newer host is dropped; the rest of the plugin still loads.
   sidebarViews: Schema.optionalKey(
     ForwardCompatibleArray(PluginSidebarView).check(Schema.isMaxLength(2)),
@@ -344,6 +515,7 @@ export const PluginInvokeInput = Schema.Struct({
 });
 export type PluginInvokeInput = typeof PluginInvokeInput.Type;
 const invokeResultFields = {
+  card: Schema.optionalKey(PluginCardReference),
   message: Schema.optionalKey(text(16_000)),
   data: Schema.optionalKey(Schema.Unknown),
   intents: Schema.optionalKey(Schema.Array(PluginClientIntent).check(Schema.isMaxLength(20))),

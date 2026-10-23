@@ -1,4 +1,4 @@
-/** The stable author API. Plugins run as the server's OS user, with ordinary Node access. */
+/** Public author API. Capability-gated additions require host discovery. Plugins run as the server's OS user. */
 export const apiVersion = 1;
 export type JsonValue =
   | null
@@ -15,7 +15,11 @@ export type PluginCapability =
   | "threads.create"
   | "events.run-finalized"
   | "ui"
-  | "ui.sidebar-views";
+  | "ui.sidebar-views"
+  | "ui.native-trees"
+  | "ui.conversation-cards"
+  | "ui.changes"
+  | "worktrees.create";
 export type PluginSettingValue = string | number | boolean;
 export interface PluginManifest {
   readonly id: string;
@@ -38,7 +42,7 @@ export interface PluginManifest {
     readonly id: string;
     readonly title: string;
     readonly entry: string;
-    readonly placement: "page" | "side-panel";
+    readonly placement: "page" | "side-panel" | "conversation";
   }[];
   /** Compact statuses shown with the open thread. Register `status:<id>` for each. */
   readonly threadStatus?: readonly {
@@ -62,6 +66,11 @@ export interface PluginManifest {
     /** Whether projects without threads get a heading. Defaults to `hide`. */
     readonly emptyProjects?: "show" | "hide";
   }[];
+  readonly nativeTrees?: readonly {
+    readonly id: string;
+    readonly title: string;
+    readonly description?: string;
+  }[];
   readonly settings: readonly {
     readonly key: string;
     readonly label: string;
@@ -82,7 +91,7 @@ export interface PluginInvocationContext extends PluginActionContext {
   /**
    * A read failed or ancestry is missing, deleted, cyclic or over the depth bound; `subagentOf`
    * is omitted. Retry before choosing an owner from `threadId`. Optional in v1; older hosts omit
-   * it, so absence alone does not prove a root.
+   * it, so absence alone does not prove a root. Retrying may not resolve deleted ancestry; ask the person before choosing an owner.
    */
   readonly lineage?: "unresolved";
 }
@@ -96,7 +105,130 @@ export interface PluginResultImage {
   readonly path: string;
   readonly mimeType: "image/png" | "image/jpeg";
 }
+export interface PluginConversationCard {
+  readonly viewId: string;
+  /** Historical plain text proposal, at most 1000 characters. */
+  readonly summary: string;
+  /** Small JSON reference (e.g. planId), at most 2048 UTF-8 bytes. Full state lives in storage. */
+  readonly data?: JsonValue;
+}
+export interface PluginCardReference extends PluginConversationCard {
+  readonly installationId: string;
+  readonly generation: string;
+  readonly dataOwner: string;
+}
+export type PluginTreeNode =
+  | {
+      readonly id: string;
+      readonly parentId?: string;
+      readonly collapsedByDefault?: boolean;
+      readonly kind: "group";
+      readonly title: string;
+    }
+  | {
+      readonly id: string;
+      readonly parentId?: string;
+      readonly collapsedByDefault?: boolean;
+      readonly kind: "project";
+      readonly projectId: string;
+    }
+  | {
+      readonly id: string;
+      readonly parentId?: string;
+      readonly collapsedByDefault?: boolean;
+      readonly kind: "thread";
+      readonly threadId: string;
+    };
+export interface PluginTreeSnapshot {
+  readonly nodes: readonly PluginTreeNode[];
+}
+export interface PluginModelSelection {
+  readonly instanceId: string;
+  readonly model: string;
+  readonly options?: readonly { readonly id: string; readonly value: string | boolean }[];
+}
+export type PluginRuntimeMode = "approval-required" | "auto-accept-edits" | "auto" | "full-access";
+export interface PluginThreadCreateInput {
+  readonly projectId: string;
+  readonly title?: string;
+  readonly text: string;
+  readonly idempotencyKey: string;
+  readonly modelSelection?: PluginModelSelection;
+  readonly runtimeMode?: PluginRuntimeMode;
+  readonly interactionMode?: "default" | "plan";
+  readonly workspaceStrategy?:
+    | { readonly type: "root" }
+    | {
+        readonly type: "worktree";
+        readonly baseRef: string;
+        readonly branch?: string;
+        readonly startFromOrigin?: boolean;
+      };
+}
+export interface PluginPageInput {
+  readonly cursor?: number;
+  readonly limit?: number;
+}
+export interface PluginProjectMetadata {
+  readonly id: string;
+  readonly title: string;
+  readonly workspaceRoot: string;
+  readonly defaultModelSelection?: PluginModelSelection;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+export interface PluginThreadMetadata {
+  readonly isRunning?: boolean;
+  readonly needsAttention?: boolean;
+  readonly id: string;
+  readonly projectId: string;
+  readonly title: string;
+  readonly modelSelection: PluginModelSelection;
+  readonly runtimeMode: PluginRuntimeMode;
+  readonly interactionMode: "default" | "plan";
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly archivedAt: string | null;
+  readonly settledAt: string | null;
+  readonly settledOverride: "settled" | "active" | null;
+  readonly snoozedUntil: string | null;
+  readonly snoozedAt: string | null;
+  readonly pinnedAt: string | null;
+  readonly branch: string | null;
+  readonly worktreePath: string | null;
+  readonly lineage: {
+    readonly parentThreadId: string | null;
+    readonly relationshipToParent: "fork" | "subagent" | null;
+    readonly rootThreadId: string;
+  };
+  readonly launchedFrom?: { readonly threadId: string };
+}
+export type PluginModelOption = {
+  readonly id: string;
+  readonly label: string;
+  readonly description?: string;
+} & (
+  | { readonly type: "boolean"; readonly currentValue?: boolean }
+  | {
+      readonly type: "select";
+      readonly currentValue?: string;
+      readonly promptInjectedValues?: readonly string[];
+      readonly options: readonly {
+        readonly id: string;
+        readonly label: string;
+        readonly description?: string;
+        readonly isDefault?: boolean;
+      }[];
+    }
+);
+export interface PluginModel {
+  readonly modelSelection: PluginModelSelection;
+  readonly title: string;
+  readonly providerTitle: string;
+  readonly options: readonly PluginModelOption[];
+}
 export interface PluginInvokeResult {
+  readonly card?: PluginConversationCard;
   readonly message?: string;
   readonly data?: unknown;
   readonly intents?: readonly PluginClientIntent[];
@@ -121,7 +253,7 @@ export interface PluginCaller {
   /**
    * A read failed or ancestry is missing, deleted, cyclic or over the depth bound; `subagentOf`
    * is omitted. Retry before choosing an owner from `threadId`. Optional in v1; older hosts omit
-   * it, so absence alone does not prove a root.
+   * it, so absence alone does not prove a root. Retrying may not resolve deleted ancestry; ask the person before choosing an owner.
    */
   readonly lineage?: "unresolved";
 }
@@ -187,6 +319,7 @@ export interface PluginContext {
     name:
       | `action:${string}`
       | `status:${string}`
+      | `tree:${string}`
       | `view:${string}:${string}`
       | "event:run.finalized",
     handler: PluginHandler,
@@ -209,12 +342,35 @@ export interface PluginContext {
       readonly text: string;
       readonly idempotencyKey: string;
     }) => Promise<{ readonly threadId: string }>;
-    readonly create: (input: {
-      readonly projectId: string;
-      readonly title?: string;
-      readonly text: string;
-      readonly idempotencyKey: string;
-    }) => Promise<{ readonly threadId: string }>;
+    readonly create: (input: PluginThreadCreateInput) => Promise<{ readonly threadId: string }>;
+    readonly list: (input: PluginPageInput & { readonly projectId: string }) => Promise<{
+      readonly threads: readonly PluginThreadMetadata[];
+      readonly nextCursor: number | null;
+    }>;
+    readonly metadata: (input: { readonly threadId: string }) => Promise<PluginThreadMetadata>;
+  };
+  readonly projects: {
+    readonly list: (input?: PluginPageInput) => Promise<{
+      readonly projects: readonly PluginProjectMetadata[];
+      readonly nextCursor: number | null;
+    }>;
+  };
+  readonly models: {
+    readonly list: (
+      input: PluginPageInput & { readonly projectId: string },
+    ) => Promise<{ readonly models: readonly PluginModel[]; readonly nextCursor: number | null }>;
+  };
+  /** Call inside a handler after changing state; topics must name declared contributions. */
+  readonly ui: {
+    readonly invalidate: (
+      topics: readonly (`tree:${string}` | `view:${string}` | `status:${string}`)[],
+    ) => Promise<void>;
+  };
+  readonly trees: {
+    readonly register: (
+      id: string,
+      handler: (invocation: PluginInvocation) => Promise<PluginTreeSnapshot> | PluginTreeSnapshot,
+    ) => void;
   };
   readonly events: {
     readonly onRunFinalized: (
