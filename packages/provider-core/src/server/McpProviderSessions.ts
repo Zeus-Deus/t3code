@@ -1,16 +1,56 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Pure synchronous hashing keeps page matching bounded without a runtime dependency.
 import * as NodeCrypto from "node:crypto";
-import type { ThreadId } from "@t3tools/contracts";
+import {
+  PluginAction,
+  PluginInvokeInput,
+  type PluginCardReference,
+  type ThreadId,
+} from "@t3tools/contracts";
 import type { HtmlRenderReference } from "@t3tools/shared/htmlRender";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
+import * as Schema from "effect/Schema";
 
 import type { McpProviderSessionConfig } from "./mcpSession.ts";
 
 // Other providers may never consume these references.
 const MAX_KEPT_HTML_RENDERS = 64;
+const MAX_KEPT_PLUGIN_CARDS = 64;
+
+const decodeCardInvocation = Schema.decodeUnknownOption(
+  Schema.Struct({
+    installationId: PluginInvokeInput.fields.installationId,
+    generation: PluginInvokeInput.fields.generation,
+    actionId: PluginAction.fields.id,
+    operationId: PluginInvokeInput.fields.operationId,
+  }),
+);
+
+function cardInvocationKey(input: unknown) {
+  const invocation = Option.getOrUndefined(decodeCardInvocation(input));
+  return invocation === undefined
+    ? undefined
+    : JSON.stringify([
+        invocation.installationId,
+        invocation.generation,
+        invocation.actionId,
+        invocation.operationId,
+      ]);
+}
+
+type CardCaller = Pick<
+  McpProviderSessionConfig,
+  "threadId" | "providerSessionId" | "providerInstanceId"
+>;
+
+interface KeptPluginCard {
+  readonly key: string;
+  readonly caller: CardCaller;
+  readonly reference: PluginCardReference;
+}
 
 // Antigravity truncates long HTML arguments to a marked tail of at most 8,000 characters.
 const BOUNDED_TEXT_MARKER = "[Earlier output truncated]\n\n";
@@ -44,6 +84,15 @@ export class McpProviderSessions extends Context.Service<
       input: { readonly html?: unknown; readonly title?: unknown; readonly height?: unknown },
       reported?: HtmlRenderReference,
     ) => Effect.Effect<HtmlRenderReference | undefined>;
+    readonly recordPluginCard: (
+      caller: CardCaller,
+      input: unknown,
+      reference: PluginCardReference,
+    ) => Effect.Effect<void>;
+    readonly takePluginCard: (
+      threadId: ThreadId,
+      input: unknown,
+    ) => Effect.Effect<PluginCardReference | undefined>;
   }
 >()("@t3tools/provider-core/server/McpProviderSessions") {}
 
@@ -80,11 +129,20 @@ const matchingPageIndex = (
 const make = Effect.gen(function* () {
   const sessions = yield* Ref.make(new Map<ThreadId, McpProviderSessionConfig>());
   const htmlRenders = yield* Ref.make(new Map<ThreadId, ReadonlyArray<KeptHtmlRender>>());
+  const pluginCards = yield* Ref.make(new Map<ThreadId, ReadonlyArray<KeptPluginCard>>());
   return McpProviderSessions.of({
     set: Effect.fn("McpProviderSessions.set")(function* (config) {
       const current = yield* Ref.get(sessions);
-      if (current.get(config.threadId)?.providerSessionId !== config.providerSessionId) {
+      if (
+        current.get(config.threadId)?.providerSessionId !== config.providerSessionId ||
+        current.get(config.threadId)?.providerInstanceId !== config.providerInstanceId
+      ) {
         yield* Ref.update(htmlRenders, (kept) => {
+          const next = new Map(kept);
+          next.delete(config.threadId);
+          return next;
+        });
+        yield* Ref.update(pluginCards, (kept) => {
           const next = new Map(kept);
           next.delete(config.threadId);
           return next;
@@ -108,7 +166,49 @@ const make = Effect.gen(function* () {
             return next;
           }),
         ),
+        Effect.andThen(Ref.update(pluginCards, (current) => { const next = new Map(current); next.delete(threadId); return next; })),
       );
+    }),
+    recordPluginCard: Effect.fn("McpProviderSessions.recordPluginCard")(
+      function* (caller, input, reference) {
+        const key = cardInvocationKey(input);
+        const session = (yield* Ref.get(sessions)).get(caller.threadId);
+        if (
+          key === undefined ||
+          session?.providerSessionId !== caller.providerSessionId ||
+          session.providerInstanceId !== caller.providerInstanceId
+        )
+          return;
+        yield* Ref.update(pluginCards, (current) =>
+          new Map(current).set(
+            caller.threadId,
+            [
+              ...(current.get(caller.threadId) ?? []).filter((entry) => entry.key !== key),
+              { key, caller, reference },
+            ].slice(-MAX_KEPT_PLUGIN_CARDS),
+          ),
+        );
+      },
+    ),
+    takePluginCard: Effect.fn("McpProviderSessions.takePluginCard")(function* (threadId, input) {
+      const key = cardInvocationKey(input);
+      if (key === undefined) return;
+      const session = (yield* Ref.get(sessions)).get(threadId);
+      return yield* Ref.modify(pluginCards, (current) => {
+        const kept = current.get(threadId) ?? [];
+        const index = kept.findIndex(
+          (entry) =>
+            entry.key === key &&
+            entry.caller.providerSessionId === session?.providerSessionId &&
+            entry.caller.providerInstanceId === session.providerInstanceId,
+        );
+        if (index === -1) return [undefined, current];
+        const next = new Map(current);
+        const remaining = kept.filter((_, position) => position !== index);
+        if (remaining.length === 0) next.delete(threadId);
+        else next.set(threadId, remaining);
+        return [kept[index]!.reference, next];
+      });
     }),
     recordHtmlRender: Effect.fn("McpProviderSessions.recordHtmlRender")(
       function (threadId, input, reference) {

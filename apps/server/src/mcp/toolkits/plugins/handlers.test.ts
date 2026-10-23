@@ -10,6 +10,7 @@ import {
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
+import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import { McpSchema, McpServer } from "effect/ai";
 
 import * as PluginService from "../../../plugins/PluginService.ts";
@@ -88,6 +89,73 @@ const handlersWith = (
   McpToolAccess.HandlersLayer.layer(Handlers.layer).pipe(
     Layer.provideMerge(Layer.mergeAll(plugins, liveThreadsLayer, sessions)),
   );
+
+it.effect("keeps a card result recoverable only for the verified agent invocation", () =>
+  Effect.gen(function* () {
+    const sessions = yield* McpProviderSessions.McpProviderSessions;
+    const server = yield* McpServer.McpServer;
+    const thread = scope.thread!;
+    yield* sessions.set({
+      ...thread,
+      environmentId: scope.environmentId,
+      endpoint: "http://localhost/mcp",
+      authorizationHeader: "fixture-only",
+      browserToolsAvailable: false,
+    });
+    const input = {
+      installationId: installation.installationId,
+      generation: installation.generation,
+      actionId: "agent-action",
+      operationId: "proposal-1",
+      context: { threadId: "different-target" },
+    };
+    const result = yield* server
+      .callTool({ name: "t3_plugin_invoke", arguments: input })
+      .pipe(
+        Effect.provideService(McpInvocationContext.McpInvocationContext, scope),
+        Effect.provideService(McpSchema.McpServerClient, mcpClient),
+      );
+    expect(result.isError).toBe(false);
+    expect(result.structuredContent).toMatchObject({ card: { dataOwner: "retained-tasks" } });
+    expect(
+      yield* sessions.takePluginCard(ThreadId.make("different-target"), input),
+    ).toBeUndefined();
+    expect(
+      yield* sessions.takePluginCard(thread.threadId, { ...input, operationId: "other" }),
+    ).toBeUndefined();
+    expect(yield* sessions.takePluginCard(thread.threadId, input)).toMatchObject({
+      viewId: "launch",
+      data: { planId: "plan-1" },
+    });
+  }).pipe(
+    Effect.provide(
+      layerPluginToolkit.pipe(
+        Layer.provideMerge(McpServer.McpServer.layer),
+        Layer.provideMerge(McpProviderSessions.layer),
+        Layer.provide(
+          Layer.mergeAll(
+            Layer.mock(PluginService.PluginService)({
+              invoke: () =>
+                Effect.succeed({
+                  message: "Proposed two tasks.",
+                  card: {
+                    installationId: installation.installationId,
+                    generation: installation.generation,
+                    dataOwner: "retained-tasks",
+                    viewId: "launch",
+                    summary: "Proposed two tasks.",
+                    data: { planId: "plan-1" },
+                  },
+                }),
+            }),
+            liveThreadsLayer,
+            activeSessions,
+          ),
+        ),
+      ),
+    ),
+  ),
+);
 
 it.effect("registers both plugin tools through the production MCP adapter", () =>
   Effect.gen(function* () {

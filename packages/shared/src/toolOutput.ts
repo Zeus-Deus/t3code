@@ -1,8 +1,13 @@
 import {
   isProviderSendTurnSupportedImageMimeType,
+  MAX_PLUGIN_CARD_BYTES,
+  MAX_PLUGIN_CARD_DATA_BYTES,
+  PluginCardReference,
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
 } from "@t3tools/contracts";
+import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
+import * as Schema from "effect/Schema";
 
 import {
   HTML_RENDER_TOOL_NAME,
@@ -40,6 +45,7 @@ interface CompactToolOutput {
   scheduledTaskId?: string;
   status?: "rolled_back";
   htmlRender?: HtmlRenderReference;
+  card?: PluginCardReference;
   [MCP_APP_OUTPUT_KEY]?: McpAppReference;
   thread?: { threadId: string };
   threads?: Array<{ threadId?: string; status?: "rolled_back" }>;
@@ -108,6 +114,25 @@ function boundedId(value: unknown): string | undefined {
   return Array.from(value).join("");
 }
 
+const decodePluginCard = Schema.decodeUnknownOption(PluginCardReference);
+
+export function readPluginCardReference(value: unknown): PluginCardReference | undefined {
+  try {
+    const card = Option.getOrUndefined(decodePluginCard(value));
+    if (
+      card === undefined ||
+      (card.data !== undefined &&
+        encoder.encode(JSON.stringify(card.data)).byteLength > MAX_PLUGIN_CARD_DATA_BYTES) ||
+      encoder.encode(JSON.stringify(card)).byteLength > MAX_PLUGIN_CARD_BYTES
+    ) {
+      return undefined;
+    }
+    return card;
+  } catch {
+    return undefined;
+  }
+}
+
 export function compactDynamicToolOutput(value: unknown): CompactToolOutput | undefined {
   const budget: ResultReadBudget = {
     remainingBytes: MAX_PARSED_BYTES,
@@ -125,6 +150,8 @@ export function compactDynamicToolOutput(value: unknown): CompactToolOutput | un
     if (data.status === "rolled_back") output.status = "rolled_back";
     const htmlRender = readHtmlRenderReference(data.htmlRender);
     if (htmlRender !== undefined) output.htmlRender = htmlRender;
+    const card = result.failed ? undefined : readPluginCardReference(data.card);
+    if (card !== undefined) output.card = card;
     const mcpApp = readMcpAppReference(data[MCP_APP_OUTPUT_KEY]);
     if (mcpApp !== undefined) output[MCP_APP_OUTPUT_KEY] = mcpApp;
     const nestedThreadId = Predicate.isObject(data.thread)
@@ -173,6 +200,7 @@ export function compactDynamicToolOutput(value: unknown): CompactToolOutput | un
     output[MCP_APP_OUTPUT_KEY] = rest;
   }
   if (oversized()) delete output[MCP_APP_OUTPUT_KEY];
+  if (oversized()) delete output.card;
   return Object.keys(output).length === 0 ? undefined : output;
 }
 
@@ -183,6 +211,18 @@ export function htmlRenderFromToolItem(item: {
   if (resolveT3McpToolId(item.toolName) !== HTML_RENDER_TOOL_NAME) return undefined;
   const output = compactDynamicToolOutput(item.output);
   return output?.isError ? undefined : output?.htmlRender;
+}
+
+/** A card reference is presentation data; the view host still checks its current owner and grants. */
+export function pluginCardFromToolItem(item: {
+  readonly toolName: string | null | undefined;
+  readonly output?: unknown;
+  readonly status?: string;
+}): PluginCardReference | undefined {
+  if (item.status !== undefined && item.status !== "completed") return undefined;
+  if (resolveT3McpToolId(item.toolName) !== "t3_plugin_invoke") return undefined;
+  const output = compactDynamicToolOutput(item.output);
+  return output?.isError ? undefined : output?.card;
 }
 
 /** Accept app references only when server and tool match the item, so tools cannot impersonate another app source. */

@@ -36,7 +36,11 @@ import { HTML_RENDER_TOOL_NAME } from "@t3tools/shared/htmlRender";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import { type SelfInvocation, selfInvocationArgs } from "@t3tools/shared/nodeRuntime";
 import { resolveT3McpToolId } from "@t3tools/shared/t3McpToolPresentation";
-import { compactDynamicToolOutput, htmlRenderFromToolItem } from "@t3tools/shared/toolOutput";
+import {
+  compactDynamicToolOutput,
+  htmlRenderFromToolItem,
+  pluginCardFromToolItem,
+} from "@t3tools/shared/toolOutput";
 import { FILE_HEADERS_ONLY, formatPatch, structuredPatch } from "diff";
 import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
@@ -3683,6 +3687,27 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             const isError =
               compactDynamicToolOutput(output)?.isError === true ||
               compactDynamicToolOutput(rawOutputRecord?.result)?.isError === true;
+            if (
+              resolveT3McpToolId(toolName) === "t3_plugin_invoke" &&
+              (status === "completed" || status === "failed")
+            ) {
+              const captured = yield* mcpSessions.takePluginCard(context.input.threadId, input);
+              if (status === "completed" && !isError) {
+                const reported = pluginCardFromToolItem({ toolName, output });
+                const previousCard = pluginCardFromToolItem({
+                  toolName,
+                  output: acpMcpToolCallOutput(previous?.data.rawOutput ?? previous?.data.content),
+                });
+                const card = reported ?? previousCard ?? captured;
+                if (reported === undefined && card !== undefined) {
+                  output = { card };
+                  context.tools.set(toolCall.toolCallId, {
+                    ...toolCall,
+                    data: { ...toolCall.data, rawOutput: output },
+                  });
+                }
+              }
+            }
             if (
               isHtmlRender &&
               (status === "failed" || (status === "completed" && isError)) &&

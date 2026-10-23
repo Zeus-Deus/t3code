@@ -3,6 +3,7 @@ import { assert, describe, it } from "@effect/vitest";
 import {
   ChatFileAttachment,
   MessageId,
+  EnvironmentId,
   NodeId,
   ProjectId,
   ProviderInstanceId,
@@ -12,7 +13,7 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import { resolveSelfInvocation } from "@t3tools/shared/nodeRuntime";
-import { htmlRenderFromToolItem } from "@t3tools/shared/toolOutput";
+import { htmlRenderFromToolItem, pluginCardFromToolItem } from "@t3tools/shared/toolOutput";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -471,6 +472,30 @@ describe("AntigravityAdapterV2 html_render pages", () => {
       let sessionUpdate: Parameters<RuntimeService["handleSessionUpdate"]>[0] | undefined;
       const instanceId = ProviderInstanceId.make("antigravity-html-render-test");
       const threadId = ThreadId.make("thread-antigravity-html-render");
+      const pluginRequest = {
+        installationId: "tasks",
+        generation: "generation-1",
+        actionId: "propose",
+        operationId: "proposal-1",
+      };
+      const pluginCard = {
+        installationId: "tasks",
+        generation: "generation-1",
+        dataOwner: "retained-tasks",
+        viewId: "launch",
+        summary: "Proposed two tasks.",
+        data: { planId: "plan-1" },
+      };
+      const cardSession = {
+        environmentId: EnvironmentId.make("antigravity-cards"),
+        threadId,
+        providerSessionId: "provider-session-antigravity-html-render",
+        providerInstanceId: instanceId,
+        endpoint: "http://localhost/mcp",
+        authorizationHeader: "fixture-only",
+        browserToolsAvailable: false,
+      };
+      yield* mcpSessions.set(cardSession);
       const page = (name: string) => ({
         attachmentId: `${threadId}-${name}-html`,
         title: "Revenue",
@@ -596,6 +621,36 @@ describe("AntigravityAdapterV2 html_render pages", () => {
                     toolCallId: "published",
                     status: "completed",
                     rawOutput: "Summary of published",
+                  });
+                  for (const [toolCallId, operationId] of [
+                    ["card-published", "proposal-1"],
+                    ["card-unpublished", "proposal-2"],
+                    ["card-failed", "proposal-3"],
+                  ] as const) {
+                    const input = { ...pluginRequest, operationId };
+                    yield* send({
+                      sessionUpdate: "tool_call",
+                      toolCallId,
+                      title: "Running t3_plugin_invoke",
+                      kind: "other",
+                      status: "in_progress",
+                      rawInput: input,
+                    });
+                    if (toolCallId !== "card-unpublished") {
+                      yield* mcpSessions.recordPluginCard(cardSession, input, pluginCard);
+                    }
+                    yield* send({
+                      sessionUpdate: "tool_call_update",
+                      toolCallId,
+                      status: toolCallId === "card-failed" ? "failed" : "completed",
+                      rawOutput: `Summary of ${toolCallId}`,
+                    });
+                  }
+                  yield* send({
+                    sessionUpdate: "tool_call_update",
+                    toolCallId: "card-published",
+                    status: "completed",
+                    rawOutput: "Summary of card-published",
                   });
                   return { stopReason: "end_turn" as const };
                 }),
@@ -734,6 +789,23 @@ describe("AntigravityAdapterV2 html_render pages", () => {
       assert.strictEqual(yield* mcpSessions.takeHtmlRender(threadId, report), undefined);
       assert.strictEqual(yield* mcpSessions.takeHtmlRender(threadId, failed), undefined);
       assert.strictEqual(yield* mcpSessions.takeHtmlRender(threadId, errored), undefined);
+      assert.deepEqual(
+        events.flatMap((event) =>
+          event.type === "turn_item.updated" &&
+          event.turnItem.type === "dynamic_tool" &&
+          event.turnItem.nativeItemRef?.nativeId === "card-published" &&
+          event.turnItem.status === "completed"
+            ? [pluginCardFromToolItem(event.turnItem)]
+            : [],
+        ),
+        [pluginCard, pluginCard],
+      );
+      for (const operationId of ["proposal-1", "proposal-3"]) {
+        assert.strictEqual(
+          yield* mcpSessions.takePluginCard(threadId, { ...pluginRequest, operationId }),
+          undefined,
+        );
+      }
     }).pipe(Effect.provide(layerSession), Effect.scoped),
   );
 });

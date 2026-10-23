@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   compactDynamicToolOutput,
+  pluginCardFromToolItem,
   MAX_TOOL_OUTPUT_IMAGES,
   toolOutputImages,
   toolOutputIndicatesFailure,
@@ -131,6 +132,113 @@ describe("compactDynamicToolOutput", () => {
     expect(compactDynamicToolOutput({ threadId: "known", body: "x".repeat(1_000_000) })).toEqual({
       threadId: "known",
     });
+  });
+});
+
+describe("plugin card tool output", () => {
+  it("preserves a plugin card across provider result envelopes without arbitrary output", () => {
+    const card = {
+      installationId: "tasks",
+      generation: "generation-1",
+      dataOwner: "retained-tasks",
+      viewId: "launch",
+      summary: "Proposed two tasks.",
+      data: { planId: "plan-1" },
+    };
+    const result = { card, message: card.summary, privateValue: "not compact metadata" };
+    for (const output of [
+      result,
+      { structuredContent: result },
+      { content: [{ type: "text", text: JSON.stringify(result) }] },
+      [{ type: "text", text: { text: JSON.stringify(result) } }],
+      JSON.stringify(result),
+    ]) {
+      expect(compactDynamicToolOutput(output)).toEqual({ card });
+    }
+  });
+
+  it("keeps the existing metadata budget when a card accompanies other tool references", () => {
+    const id = "漢".repeat(256);
+    const card = {
+      installationId: "tasks",
+      generation: "generation-1",
+      dataOwner: "retained-tasks",
+      viewId: "launch",
+      summary: "漢".repeat(600),
+      data: "b".repeat(2000),
+    };
+    expect(compactDynamicToolOutput({ card })).toEqual({ card });
+    const output = compactDynamicToolOutput({
+      card,
+      threadId: id,
+      messageId: id,
+      taskId: id,
+      scheduledTaskId: id,
+      thread: { threadId: id },
+      htmlRender: {
+        attachmentId: id,
+        title: "😄".repeat(100),
+        height: 480,
+        heights: Array.from({ length: 24 }, (_, index) => [index + 100, 480]),
+      },
+    });
+    expect(output).toBeDefined();
+    expect(new TextEncoder().encode(JSON.stringify(output)).byteLength).toBeLessThanOrEqual(8192);
+  });
+
+  it("drops malformed, oversized and unowned plugin card references", () => {
+    const card = {
+      installationId: "tasks",
+      generation: "generation-1",
+      dataOwner: "retained-tasks",
+      viewId: "launch",
+      summary: "Proposed two tasks.",
+    };
+    for (const invalid of [
+      { ...card, dataOwner: "" },
+      { ...card, viewId: "../outside" },
+      { ...card, summary: "x".repeat(1001) },
+      { ...card, data: "😄".repeat(513) },
+      { viewId: "launch", summary: "Unstamped author result" },
+    ]) {
+      expect(compactDynamicToolOutput({ card: invalid })).toBeUndefined();
+    }
+  });
+
+  it("recognizes only the successful plugin-invoke result from the T3 server", () => {
+    const card = {
+      installationId: "tasks",
+      generation: "generation-1",
+      dataOwner: "retained-tasks",
+      viewId: "launch",
+      summary: "Proposed two tasks.",
+      data: { planId: "plan-1" },
+    };
+    for (const toolName of [
+      "t3_plugin_invoke",
+      "t3-code.t3_plugin_invoke",
+      "mcp__t3_code__t3_plugin_invoke",
+      "mcp__t3-code__t3_plugin_invoke",
+      "t3-code-thread_1_t3_plugin_invoke",
+    ]) {
+      expect(pluginCardFromToolItem({ toolName, output: { card } })).toEqual(card);
+      for (const status of ["running", "failed", "cancelled"]) {
+        expect(pluginCardFromToolItem({ toolName, output: { card }, status })).toBeUndefined();
+      }
+      expect(pluginCardFromToolItem({ toolName, output: { card }, status: "completed" })).toEqual(
+        card,
+      );
+      expect(pluginCardFromToolItem({ toolName, output: { card, isError: true } })).toBeUndefined();
+    }
+    for (const toolName of [
+      "mcp__other__t3_plugin_invoke",
+      "other.t3_plugin_invoke",
+      "html_render",
+      "t3_plugin_list",
+      null,
+    ]) {
+      expect(pluginCardFromToolItem({ toolName, output: { card } })).toBeUndefined();
+    }
   });
 });
 

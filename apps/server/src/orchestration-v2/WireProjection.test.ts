@@ -54,6 +54,33 @@ const base = {
 };
 
 describe("orchestration V2 wire projection", () => {
+  it("preserves a plugin card in the existing tool item through wire and JSON decoding", () => {
+    const card = {
+      installationId: "tasks",
+      generation: "generation-1",
+      dataOwner: "retained-tasks",
+      viewId: "launch",
+      summary: "Proposed two tasks.",
+      data: { planId: "plan-1" },
+    };
+    for (const output of [
+      { card, message: card.summary, privateValue: "private detail" },
+      { structuredContent: { card, message: card.summary } },
+      [{ type: "text", text: JSON.stringify({ card, message: card.summary }) }],
+    ]) {
+      const item = { ...base, toolName: "t3-code.t3_plugin_invoke", output };
+      const projected = projectTurnItemForWire(item);
+      expect(projected.type).toBe("dynamic_tool");
+      expect(projected).toMatchObject({ output: { card }, outputOmitted: true });
+      expect(JSON.stringify(projected)).not.toContain("private detail");
+      expect(decodeTurnItemJson(encodeTurnItemJson(projected))).toMatchObject({
+        type: "dynamic_tool",
+        output: { card },
+      });
+      expect(projectTurnItemForDetail(item)).toMatchObject({ output });
+    }
+  });
+
   it("keeps copied handoff transcripts out of activity items and live events", () => {
     const item = {
       ...base,

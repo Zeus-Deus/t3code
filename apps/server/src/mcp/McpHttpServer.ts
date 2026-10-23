@@ -6,6 +6,8 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
+import { readPluginCardReference } from "@t3tools/shared/toolOutput";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Sink from "effect/Sink";
@@ -790,6 +792,7 @@ const isDeviceToolError = Schema.is(DeviceToolError);
  */
 const registerPluginInvoke = Effect.fn("McpHttpServer.registerPluginInvoke")(function* () {
   const plugins = yield* PluginService.PluginService;
+  const providerSessions = yield* Effect.serviceOption(McpProviderSessions.McpProviderSessions);
   const sessions = yield* SessionStore.SessionStore;
   const threads = yield* ThreadManagementService.ThreadManagementService;
   const built = yield* decodeAsAdvertised(PluginInvokeToolkit);
@@ -822,6 +825,20 @@ const registerPluginInvoke = Effect.fn("McpHttpServer.registerPluginInvoke")(fun
           Effect.provideService(SessionStore.SessionStore, sessions),
           Effect.provideService(ThreadManagementService.ThreadManagementService, threads),
           Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+          Effect.tap(({ isFailure, encodedResult }) => {
+            if (isFailure || invocation.thread === undefined || Option.isNone(providerSessions)) {
+              return Effect.void;
+            }
+            const card = readPluginCardReference(
+              typeof encodedResult === "object" && encodedResult !== null
+                ? Reflect.get(encodedResult, "card")
+                : undefined,
+            );
+            // Some providers replace MCP output with a summary; keep only the checked reference.
+            return card === undefined
+              ? Effect.void
+              : providerSessions.value.recordPluginCard(invocation.thread, payload, card);
+          }),
           Effect.map(({ isFailure, encodedResult }) => {
             if (isFailure)
               return new McpSchema.CallToolResult({
