@@ -1,6 +1,7 @@
 import { Pressable, ScrollView } from "react-native";
 import { SymbolView } from "../../components/ui/AppSymbol";
 import { ListFilterMenu } from "../workspace/ListFilterMenu";
+import { usePluginTreeList } from "../plugins/usePluginTreeList";
 import type { HomeHeaderProps } from "./HomeHeader.types";
 
 export function ThreadListFilters(
@@ -17,6 +18,9 @@ export function ThreadListFilters(
     readonly gutter: number;
   },
 ) {
+  const pluginTree = usePluginTreeList(
+    props.environments.map((environment) => environment.environmentId),
+  );
   const selectedEnvironment = props.environments.find(
     (environment) => environment.environmentId === props.selectedEnvironmentId,
   );
@@ -30,6 +34,30 @@ export function ThreadListFilters(
       style={{ marginHorizontal: -props.gutter }}
       contentContainerStyle={{ paddingHorizontal: 20, paddingTop: 2, paddingBottom: 10, gap: 8 }}
     >
+      {pluginTree.options.length === 0 ? null : (
+        <ListFilterMenu
+          label={pluginTree.selected?.tree.title ?? "Activity"}
+          accessibilityLabel="Choose how threads are arranged"
+          active={pluginTree.selected !== null}
+          actions={[
+            {
+              id: "activity",
+              title: "Activity",
+              state: pluginTree.selected === null ? "on" : "off",
+            },
+            ...pluginTree.options.map((option) => ({
+              id: JSON.stringify(option.key),
+              title: option.tree.title,
+              state: pluginTree.selected?.key === option.key ? ("on" as const) : ("off" as const),
+            })),
+          ]}
+          onSelect={(id) =>
+            pluginTree.select(
+              pluginTree.options.find((option) => JSON.stringify(option.key) === id) ?? null,
+            )
+          }
+        />
+      )}
       <ListFilterMenu
         label={selectedEnvironment?.label ?? "All environments"}
         accessibilityLabel="Filter threads by environment"

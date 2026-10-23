@@ -56,9 +56,15 @@ import { usePendingThreadOrder } from "../../state/thread-order";
 import { threadListEnvironmentsAtom } from "../../state/server";
 import type { PendingNewTask } from "../../state/use-pending-new-tasks";
 import { useQueuedThreadKeys } from "../../state/use-thread-outbox";
+import { usePluginTreeList } from "../plugins/usePluginTreeList";
+import {
+  buildPluginTreeThreadListItems,
+  withPluginTreeItems,
+} from "../threads/pluginTreeThreadList";
 import {
   ThreadListV2PendingRow,
   ThreadListV2Row,
+  ThreadListV2TreeHeading,
   ThreadListV2SettledShelfHeader,
   ThreadListV2ShowMoreRow,
   ThreadListV2SnoozedShelfHeader,
@@ -68,6 +74,7 @@ import { useThreadRowProviderInstanceResolver } from "../threads/thread-provider
 import { useOpenThreadPullRequests } from "../threads/use-open-thread-pull-requests";
 import type { ThreadPrPresentation } from "../../state/thread-pr-presentation";
 import {
+  filterThreadListV2Threads,
   threadListV2ListItemsAreEqual,
   THREAD_LIST_V2_SETTLED_INITIAL_COUNT,
   THREAD_LIST_V2_SETTLED_PAGE_COUNT,
@@ -361,6 +368,9 @@ export function HomeScreen(props: HomeScreenProps) {
     onScrollBeginDrag: handleScrollBeginDrag,
   });
 
+  const pluginTree = usePluginTreeList(
+    props.environments.map((environment) => environment.environmentId),
+  );
   const projectScopes = buildHomeProjectScopes({
     projects: props.projects,
     environmentId: props.selectedEnvironmentId,
@@ -441,13 +451,42 @@ export function HomeScreen(props: HomeScreenProps) {
   } = listEnvironments;
   const resolveProviderInstance = useThreadRowProviderInstanceResolver(providersByEnvironmentId);
   const pendingOrder = usePendingThreadOrder();
+  const listThreads = props.threads.filter((thread) => thread.archivedAt === null);
+  // A plugin tree arranges what the filters show; search shows plain results instead.
+  const treeList =
+    pluginTree.sources === null || hasSearchQuery
+      ? null
+      : buildPluginTreeThreadListItems({
+          sources: pluginTree.sources,
+          threads: filterThreadListV2Threads({
+            threads: listThreads,
+            environmentId: props.selectedEnvironmentId,
+            projectRefs: v2ScopedProjectGroup === null ? null : v2ScopedProjectGroup.projectRefs,
+            searchQuery: props.searchQuery,
+            matchedThreadKeys: new Set(threadSearchMatchByKey.keys()),
+          }),
+          projectScopes,
+          selectedProjectKey: v2ScopedProjectGroup?.key ?? null,
+          folds: pluginTree.folds,
+          selectedThreadKey,
+          now,
+          snoozeLabelNow: `${nowMinute}:00.000Z`,
+          settlementEnvironmentIds,
+          snoozeEnvironmentIds,
+          queuedThreadKeys,
+        });
   const {
     layout: threadListV2Layout,
-    items: threadListV2Items,
+    items: activityListItems,
     contentOnlyThreadKeys,
     olderSettledShelf,
   } = useThreadListV2({
-    threads: props.threads,
+    threads:
+      treeList === null
+        ? props.threads
+        : props.threads.filter(
+            (thread) => !treeList.placedKeys.has(scopedThreadKey(thread.environmentId, thread.id)),
+          ),
     pendingTasks: props.pendingTasks,
     environmentId: props.selectedEnvironmentId,
     projectRefs: v2ScopedProjectGroup === null ? null : v2ScopedProjectGroup.projectRefs,
@@ -483,6 +522,7 @@ export function HomeScreen(props: HomeScreenProps) {
     }
     onSelectThread(thread);
   };
+  const threadListV2Items = withPluginTreeItems(treeList?.items ?? null, activityListItems);
   useThreadJumpShortcuts(threadListV2Items, selectThread);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- reads the list's visible range after commit to enable swipe gestures on those rows
   useEffect(() => {
@@ -523,6 +563,21 @@ export function HomeScreen(props: HomeScreenProps) {
           onSwipeableWillOpen={handleSwipeableWillOpen}
           simultaneousSwipeGesture={homeScrollGesture}
           activationKey={item.key}
+        />
+      );
+    }
+    if (item.type === "v2-tree-heading") {
+      return (
+        <ThreadListV2TreeHeading
+          sectionKey={item.sectionKey}
+          title={item.title}
+          depth={item.depth}
+          count={item.count}
+          folded={item.folded}
+          collapsedByDefault={item.collapsedByDefault}
+          foldable={item.foldable}
+          onToggle={pluginTree.toggleFold}
+          pane={primaryColumn ? "sidebar" : "screen"}
         />
       );
     }
@@ -624,6 +679,7 @@ export function HomeScreen(props: HomeScreenProps) {
         onSwipeableWillOpen={handleSwipeableWillOpen}
         simultaneousSwipeGesture={homeScrollGesture}
         activationKey={item.key}
+        depth={item.depth}
       />
     );
   };
@@ -770,6 +826,7 @@ export function HomeScreen(props: HomeScreenProps) {
             : cn("flex-1", contentBackground)
         }
       >
+        {pluginTree.fetchers}
         <SwipeableScrollGateProvider enabled={swipeEnabled} activation={swipeRowActivation}>
           <GestureDetector gesture={homeScrollGesture}>
             <AnimatedLegendList

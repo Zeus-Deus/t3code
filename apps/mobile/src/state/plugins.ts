@@ -6,6 +6,10 @@ import {
   pluginRecoverySupported,
   pluginActionEntries,
   pluginAttentionCount,
+  pluginChangeKey,
+  pluginChangesSupported,
+  pluginSidebarTreeOptions,
+  type PluginSidebarViewSource,
   pluginAttentionNotice,
   pluginRunnableInstallations,
   type PluginActionEntry,
@@ -170,3 +174,73 @@ const pluginAttentionCountFamily = Atom.family((key: string) =>
 
 export const pluginAttentionCountAtom = (environmentIds: ReadonlyArray<EnvironmentId>) =>
   pluginAttentionCountFamily(environmentIds.join("\n"));
+
+const PENDING_SOURCE: PluginSidebarViewSource = { status: "pending" };
+
+/**
+ * The plugin trees each environment offers, for the thread list's view choice. An environment
+ * whose plugins are not known yet is pending, so a remembered tree survives a reconnect.
+ */
+const pluginTreeViewSourcesFamily = Atom.family((key: string) =>
+  Atom.make((get): ReadonlyMap<EnvironmentId, PluginSidebarViewSource> => {
+    const sources = new Map<EnvironmentId, PluginSidebarViewSource>();
+    for (const rawEnvironmentId of key.split("\n")) {
+      if (rawEnvironmentId === "") continue;
+      const environmentId = EnvironmentId.make(rawEnvironmentId);
+      const catalogue = readAvailableCatalogue(get, environmentId);
+      const data =
+        catalogue === null ? null : Option.getOrNull(AsyncResult.value(catalogue.result));
+      sources.set(
+        environmentId,
+        catalogue === null || data === null
+          ? PENDING_SOURCE
+          : {
+              status: "ready",
+              options: pluginSidebarTreeOptions(
+                environmentId,
+                pluginRunnableInstallations({
+                  installations: data.installations,
+                  executionDisabled: pluginExecutionDisabled(catalogue.capabilities, data),
+                }),
+              ),
+            },
+      );
+    }
+    return sources;
+  }).pipe(Atom.withLabel(`mobile-plugin-tree-sources:${key}`)),
+);
+
+export const pluginTreeViewSourcesAtom = (environmentIds: ReadonlyArray<EnvironmentId>) =>
+  pluginTreeViewSourcesFamily(environmentIds.join("\n"));
+
+/**
+ * How often a plugin topic changed since this client subscribed, or null where the environment
+ * sends no change signals. Pass null while nothing is shown, so hidden views hold no subscription.
+ * Any difference from the value last acted on, including a reset after reconnecting, means read
+ * again.
+ */
+export function usePluginChangeRevision(
+  environmentId: EnvironmentId | null,
+  topic: {
+    readonly installationId: string;
+    readonly generation: string;
+    readonly topic: string;
+  } | null,
+): number | null {
+  const presentations = useAtomValue(environmentPresentations.presentationsAtom);
+  const presentation = environmentId === null ? undefined : presentations.get(environmentId);
+  const canRead = useEnvironmentScope(environmentId, AuthOrchestrationReadScope);
+  const capabilities = presentation?.serverConfig?.environment.capabilities;
+  const subscribed =
+    environmentId !== null &&
+    topic !== null &&
+    canRead &&
+    presentation?.connection.phase === "connected" &&
+    environmentSupportsPlugins(capabilities) &&
+    pluginChangesSupported(capabilities);
+  const query = useEnvironmentQuery(
+    subscribed ? pluginEnvironment.changes({ environmentId, input: {} }) : null,
+  );
+  if (!subscribed || query.data === null) return null;
+  return query.data.get(pluginChangeKey(topic)) ?? 0;
+}

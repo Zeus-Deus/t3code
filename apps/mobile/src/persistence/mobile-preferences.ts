@@ -15,6 +15,7 @@ import {
   type SidebarProjectGroupingMode,
 } from "@t3tools/contracts";
 import type { AndroidNavigationStyle } from "../lib/androidNavigationStyle";
+import { PluginSidebarTreeOption } from "@t3tools/client-runtime/plugins";
 import type { ComposerEnterBehavior } from "../lib/composerEnterBehavior";
 import type { FollowUpBehavior } from "../lib/followUpBehavior";
 import { isMicrophoneKind, type MicrophoneEntry } from "../lib/microphonePriority";
@@ -79,6 +80,8 @@ export type WorkspaceSelections = typeof WorkspaceSelections.Type;
 
 const isThreadListFilters = Schema.is(ThreadListFilters);
 const isWorkspaceSelections = Schema.is(WorkspaceSelections);
+const isPluginSidebarTreeOption = Schema.is(PluginSidebarTreeOption);
+const isStringList = Schema.is(Schema.Array(Schema.String));
 const isPullRequestListPreferences = Schema.is(PullRequestListPreferences);
 const ThreadProject = Schema.Struct({
   environmentId: Schema.NonEmptyString,
@@ -126,6 +129,10 @@ export interface Preferences {
   readonly threadListSnoozedShelfExpanded?: boolean;
   readonly threadListWorkingShelfExpanded?: boolean;
   readonly threadListFilters?: ThreadListFilters;
+  /** The plugin tree the thread list shows on this device; null is the activity list. */
+  readonly threadListPluginTree?: PluginSidebarTreeOption | null;
+  /** Plugin tree headings folded, or opened against the plugin's default (`+key`). */
+  readonly threadListTreeFolds?: readonly string[];
   readonly pullRequestListFilters?: PullRequestListPreferences;
   readonly workspaceSelections?: WorkspaceSelections;
 }
@@ -203,6 +210,8 @@ function sanitizePreferences(parsed: Preferences): Preferences {
     threadListSnoozedShelfExpanded?: boolean;
     threadListWorkingShelfExpanded?: boolean;
     threadListFilters?: ThreadListFilters;
+    threadListPluginTree?: PluginSidebarTreeOption | null;
+    threadListTreeFolds?: readonly string[];
     pullRequestListFilters?: PullRequestListPreferences;
     workspaceSelections?: WorkspaceSelections;
   } = {};
@@ -352,6 +361,15 @@ function sanitizePreferences(parsed: Preferences): Preferences {
   }
   if (isThreadListFilters(parsed.threadListFilters)) {
     preferences.threadListFilters = parsed.threadListFilters;
+  }
+  if (
+    parsed.threadListPluginTree === null ||
+    isPluginSidebarTreeOption(parsed.threadListPluginTree)
+  ) {
+    preferences.threadListPluginTree = parsed.threadListPluginTree;
+  }
+  if (isStringList(parsed.threadListTreeFolds)) {
+    preferences.threadListTreeFolds = parsed.threadListTreeFolds;
   }
   if (isPullRequestListPreferences(parsed.pullRequestListFilters)) {
     preferences.pullRequestListFilters = parsed.pullRequestListFilters;

@@ -50,6 +50,8 @@ import { useThreadListSearchMatches } from "./useThreadListSearchMatches";
 import { useHomeListOptions } from "../home/home-list-options";
 import { buildHomeListFilterMenu } from "../home/home-list-filter-menu";
 import { buildHomeProjectScopes } from "../home/homeThreadList";
+import { usePluginTreeList } from "../plugins/usePluginTreeList";
+import { buildPluginTreeThreadListItems, withPluginTreeItems } from "./pluginTreeThreadList";
 import { SwipeableScrollGateProvider, useSwipeableScrollGate } from "../home/thread-swipe-actions";
 import { usePendingTaskListActions } from "../home/usePendingTaskListActions";
 import { useThreadListActions } from "../home/useThreadListActions";
@@ -70,11 +72,13 @@ import {
   ThreadListV2SettledShelfHeader,
   ThreadListV2ShowMoreRow,
   ThreadListV2SnoozedShelfHeader,
+  ThreadListV2TreeHeading,
   ThreadListV2WorkingShelfHeader,
 } from "./thread-list-v2-items";
 import { useThreadRowProviderInstanceResolver } from "./thread-provider-instance";
 import type { ThreadPrPresentation } from "../../state/thread-pr-presentation";
 import {
+  filterThreadListV2Threads,
   isThreadListV2ListItem,
   threadListV2ListItemsAreEqual,
   THREAD_LIST_V2_SETTLED_INITIAL_COUNT,
@@ -184,6 +188,9 @@ function ThreadNavigationSidebarPane(
   const availableEnvironmentIds = new Set(
     environments.map((environment) => environment.environmentId),
   );
+  const pluginTree = usePluginTreeList(
+    environments.map((environment) => environment.environmentId),
+  );
   const { options, setSelectedEnvironmentId, setSelectedProjectKey } =
     useHomeListOptions(availableEnvironmentIds);
   const searchEnvironmentIds =
@@ -290,13 +297,42 @@ function ThreadNavigationSidebarPane(
   } = listEnvironments;
   const resolveProviderInstance = useThreadRowProviderInstanceResolver(providersByEnvironmentId);
   const pendingOrder = usePendingThreadOrder();
+  const listThreads = threads.filter((thread) => thread.archivedAt === null);
+  // A plugin tree arranges what the filters show; search shows plain results instead.
+  const treeList =
+    pluginTree.sources === null || props.searchQuery.trim().length > 0
+      ? null
+      : buildPluginTreeThreadListItems({
+          sources: pluginTree.sources,
+          threads: filterThreadListV2Threads({
+            threads: listThreads,
+            environmentId: options.selectedEnvironmentId,
+            projectRefs: selectedProjectScope === null ? null : selectedProjectScope.projectRefs,
+            searchQuery: props.searchQuery,
+            matchedThreadKeys: new Set(threadSearchMatchByKey.keys()),
+          }),
+          projectScopes,
+          selectedProjectKey,
+          folds: pluginTree.folds,
+          selectedThreadKey: props.selectedThreadKey ?? null,
+          now,
+          snoozeLabelNow: `${nowMinute}:00.000Z`,
+          settlementEnvironmentIds,
+          snoozeEnvironmentIds,
+          queuedThreadKeys,
+        });
   const {
     layout: threadListV2Layout,
-    items: threadListV2Items,
+    items: activityListItems,
     contentOnlyThreadKeys,
     olderSettledShelf,
   } = useThreadListV2({
-    threads,
+    threads:
+      treeList === null
+        ? threads
+        : threads.filter(
+            (thread) => !treeList.placedKeys.has(scopedThreadKey(thread.environmentId, thread.id)),
+          ),
     pendingTasks,
     environmentId: options.selectedEnvironmentId,
     projectRefs: selectedProjectScope === null ? null : selectedProjectScope.projectRefs,
@@ -317,6 +353,7 @@ function ThreadNavigationSidebarPane(
     settledShelfExpanded,
     selectedThreadKey: props.selectedThreadKey ?? null,
   });
+  const threadListV2Items = withPluginTreeItems(treeList?.items ?? null, activityListItems);
   const listItems: readonly SidebarListItem[] =
     settledShelfExpanded && threadListV2Layout.hiddenSettledCount > 0
       ? [
@@ -354,6 +391,27 @@ function ThreadNavigationSidebarPane(
         })),
       ],
     },
+    ...(pluginTree.options.length === 0
+      ? []
+      : ([
+          {
+            id: "view",
+            title: "View",
+            subactions: [
+              {
+                id: "view:activity",
+                title: "Activity",
+                state: pluginTree.selected === null ? "on" : "off",
+              },
+              ...pluginTree.options.map((option) => ({
+                id: `view:${option.key}`,
+                title: option.tree.title,
+                subtitle: option.pluginName,
+                state: pluginTree.selected?.key === option.key ? ("on" as const) : ("off" as const),
+              })),
+            ],
+          },
+        ] satisfies MenuAction[])),
     ...(projectFilterOptions.length === 0
       ? []
       : ([
@@ -382,6 +440,15 @@ function ThreadNavigationSidebarPane(
     readonly nativeEvent: { readonly event: string };
   }) => {
     const event = nativeEvent.event;
+    if (event === "view:activity") {
+      pluginTree.select(null);
+      return;
+    }
+    if (event.startsWith("view:")) {
+      const option = pluginTree.options.find((candidate) => `view:${candidate.key}` === event);
+      if (option) pluginTree.select(option);
+      return;
+    }
     if (event === "environment:all") {
       setSelectedEnvironmentId(null);
       return;
@@ -609,9 +676,24 @@ function ThreadNavigationSidebarPane(
             onSwipeableClose={handleSwipeableClose}
             onSwipeableWillOpen={handleSwipeableWillOpen}
             simultaneousSwipeGesture={sidebarScrollGesture}
+            depth={item.depth}
           />
         );
       }
+      case "v2-tree-heading":
+        return (
+          <ThreadListV2TreeHeading
+            sectionKey={item.sectionKey}
+            title={item.title}
+            depth={item.depth}
+            count={item.count}
+            folded={item.folded}
+            collapsedByDefault={item.collapsedByDefault}
+            foldable={item.foldable}
+            onToggle={pluginTree.toggleFold}
+            pane="sidebar"
+          />
+        );
       case "v2-working-shelf":
         return (
           <ThreadListV2WorkingShelfHeader
@@ -667,6 +749,14 @@ function ThreadNavigationSidebarPane(
     selectedProjectKey,
     onEnvironmentChange: setSelectedEnvironmentId,
     onProjectChange: setSelectedProjectKey,
+    views: pluginTree.options.map((option) => ({
+      key: option.key,
+      label: option.tree.title,
+      pluginName: option.pluginName,
+    })),
+    selectedViewKey: pluginTree.selected?.key ?? null,
+    onViewChange: (key) =>
+      pluginTree.select(pluginTree.options.find((option) => option.key === key) ?? null),
   });
   const nativeHeaderItems = createSidebarHeaderItems({
     filterIcon,
@@ -698,6 +788,7 @@ function ThreadNavigationSidebarPane(
   if (props.nativeChrome) {
     return (
       <>
+        {pluginTree.fetchers}
         <NativeStackScreenOptions
           optionsVersion={[nativeHeaderItems, props.width]}
           options={{
@@ -777,6 +868,7 @@ function ThreadNavigationSidebarPane(
       // Android fills its pane, which animates its width while a hinge resizes the split.
       style={Platform.OS === "android" ? undefined : { width: props.width }}
     >
+      {pluginTree.fetchers}
       <View
         className="flex-1"
         style={

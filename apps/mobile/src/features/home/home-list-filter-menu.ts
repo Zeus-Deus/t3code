@@ -36,8 +36,39 @@ export function buildHomeListFilterMenu(props: {
   readonly selectedProjectKey: string | null;
   readonly onEnvironmentChange: (environmentId: EnvironmentId | null) => void;
   readonly onProjectChange: (projectKey: string | null) => void;
+  /** Plugin trees the list can show instead of activity; the submenu appears only with some. */
+  readonly views?: ReadonlyArray<{
+    readonly key: string;
+    readonly label: string;
+    readonly pluginName: string;
+  }>;
+  readonly selectedViewKey?: string | null;
+  readonly onViewChange?: (key: string | null) => void;
 }): HomeListFilterMenu {
   const items: Array<HomeListFilterMenuAction | HomeListFilterMenuSubmenu> = [];
+  const views = props.views ?? [];
+  const onViewChange = props.onViewChange;
+  if (views.length > 0 && onViewChange !== undefined) {
+    items.push({
+      type: "submenu",
+      title: "View",
+      items: [
+        {
+          type: "action",
+          title: "Activity",
+          state: (props.selectedViewKey ?? null) === null ? "on" : "off",
+          onPress: () => onViewChange(null),
+        },
+        ...views.map((view) => ({
+          type: "action" as const,
+          title: view.label,
+          subtitle: view.pluginName,
+          state: props.selectedViewKey === view.key ? ("on" as const) : ("off" as const),
+          onPress: () => onViewChange(view.key),
+        })),
+      ],
+    });
+  }
 
   items.push({
     type: "submenu",

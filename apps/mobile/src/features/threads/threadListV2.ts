@@ -331,6 +331,23 @@ export interface ThreadListV2ThreadListItem {
   readonly hasQueuedMessages: boolean;
   readonly canMoveUp: boolean;
   readonly canMoveDown: boolean;
+  /** Headings above the row in a plugin's tree; absent in the activity list. */
+  readonly depth?: number;
+}
+
+/** A plugin tree's heading: a group, a project, or the live threads the tree left out. */
+export interface ThreadListV2TreeHeadingListItem {
+  readonly type: "v2-tree-heading";
+  readonly key: string;
+  /** The section key folds are kept against. */
+  readonly sectionKey: string;
+  readonly title: string;
+  readonly depth: number;
+  readonly count: number;
+  readonly folded: boolean;
+  readonly collapsedByDefault: boolean;
+  /** False for the heading over threads the tree left out. */
+  readonly foldable: boolean;
 }
 
 export interface ThreadListV2PendingListItem {
@@ -368,6 +385,7 @@ export interface ThreadListV2SettledShelfListItem {
 
 export type ThreadListV2ListItem =
   | ThreadListV2ThreadListItem
+  | ThreadListV2TreeHeadingListItem
   | ThreadListV2PendingListItem
   | ThreadListV2WorkingShelfListItem
   | ThreadListV2SnoozedShelfListItem
@@ -378,6 +396,7 @@ export function isThreadListV2ListItem(value: {
 }): value is ThreadListV2ListItem {
   return (
     value.type === "v2-thread" ||
+    value.type === "v2-tree-heading" ||
     value.type === "v2-pending" ||
     value.type === "v2-working-shelf" ||
     value.type === "v2-snoozed-shelf" ||
@@ -406,7 +425,17 @@ export function threadListV2ListItemsAreEqual(
         previous.showTrailingDivider === item.showTrailingDivider &&
         previous.hasQueuedMessages === item.hasQueuedMessages &&
         previous.canMoveUp === item.canMoveUp &&
-        previous.canMoveDown === item.canMoveDown
+        previous.canMoveDown === item.canMoveDown &&
+        previous.depth === item.depth
+      );
+    case "v2-tree-heading":
+      return (
+        previous.type === "v2-tree-heading" &&
+        previous.key === item.key &&
+        previous.title === item.title &&
+        previous.depth === item.depth &&
+        previous.count === item.count &&
+        previous.folded === item.folded
       );
     case "v2-pending":
       return (
@@ -589,6 +618,38 @@ function sortSettledThreadsReusingLast(
   lastSettledInput = settled;
   lastSettledOutput = sortSettledThreads(settled);
   return lastSettledOutput;
+}
+
+/** The threads a list shows for its filters and search, before sections and shelves. */
+export function filterThreadListV2Threads(input: {
+  readonly threads: ReadonlyArray<EnvironmentThreadShell>;
+  readonly environmentId: EnvironmentId | null;
+  readonly projectRefs?: ReadonlyArray<{
+    readonly environmentId: EnvironmentId;
+    readonly projectId: ProjectId;
+  }> | null;
+  readonly searchQuery: string;
+  readonly matchedThreadKeys?: ReadonlySet<string>;
+}): EnvironmentThreadShell[] {
+  const query = input.searchQuery.trim().toLocaleLowerCase();
+  const projectKeys = input.projectRefs
+    ? new Set(input.projectRefs.map((ref) => `${ref.environmentId}:${ref.projectId}`))
+    : null;
+  return input.threads.filter(
+    (thread) =>
+      thread.archivedAt === null &&
+      thread.lineage.relationshipToParent !== "subagent" &&
+      (input.environmentId === null || thread.environmentId === input.environmentId) &&
+      (projectKeys === null || projectKeys.has(`${thread.environmentId}:${thread.projectId}`)) &&
+      (query.length === 0 ||
+        thread.title.toLocaleLowerCase().includes(query) ||
+        threadPullRequestSearchTerms(thread).some((term) =>
+          term.toLocaleLowerCase().includes(query),
+        ) ||
+        input.matchedThreadKeys?.has(
+          threadSearchMatchKey({ environmentId: thread.environmentId, threadId: thread.id }),
+        ) === true),
+  );
 }
 
 export function buildThreadListV2Items(input: {

@@ -244,6 +244,46 @@ function ThreadListV2Section(props: {
   );
 }
 
+// Deeper tree levels stop indenting so titles keep their room on a phone.
+const TREE_INDENT_STEP = 14;
+const TREE_INDENT_MAX_DEPTH = 3;
+function threadListTreeIndent(depth: number | undefined) {
+  if (depth === undefined || depth <= 0) return undefined;
+  return { marginLeft: Math.min(depth, TREE_INDENT_MAX_DEPTH) * TREE_INDENT_STEP };
+}
+
+/** A plugin tree's heading. It folds like a shelf; the open thread stays listed under it. */
+export const ThreadListV2TreeHeading = memo(function ThreadListV2TreeHeading(props: {
+  readonly sectionKey: string;
+  readonly title: string;
+  readonly depth: number;
+  readonly count: number;
+  readonly folded: boolean;
+  readonly collapsedByDefault: boolean;
+  readonly foldable: boolean;
+  readonly onToggle: (sectionKey: string, collapsedByDefault: boolean) => void;
+  readonly pane?: "screen" | "sidebar";
+}) {
+  return (
+    <View style={threadListTreeIndent(props.depth)}>
+      <ThreadListV2Section
+        label={props.folded ? `${props.title} (${props.count})` : props.title}
+        pane={props.pane}
+        disclosure={
+          props.foldable && props.count > 0
+            ? {
+                expanded: !props.folded,
+                onToggle: () => props.onToggle(props.sectionKey, props.collapsedByDefault),
+                accessibilityLabel: `${props.title}, ${props.count} ${props.count === 1 ? "thread" : "threads"}`,
+                accessibilityHint: `${props.folded ? "Expands" : "Collapses"} ${props.title}.`,
+              }
+            : undefined
+        }
+      />
+    </View>
+  );
+});
+
 const ThreadListV2SectionDivider = memo(function ThreadListV2SectionDivider(props: {
   readonly label: string;
   readonly pane?: "screen" | "sidebar";
@@ -632,6 +672,8 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   readonly searchMatch?: EnvironmentThreadSearchMatch;
   readonly searchQuery?: string;
   readonly simultaneousSwipeGesture?: ComponentProps<typeof ThreadSwipeable>["simultaneousWith"];
+  /** Headings above the row in a plugin's tree. */
+  readonly depth?: number;
 }) {
   const { width: windowWidth, fontScale } = useWindowDimensions();
   const titleTypography = useScaledTextRole("body");
@@ -1442,11 +1484,12 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       </RowPressable>
     );
 
+  const indent = threadListTreeIndent(props.depth);
   if (!canOperateThread)
-    return <View style={rowAppearance.swipeContainerStyle}>{rowContent(() => {})}</View>;
+    return <View style={[rowAppearance.swipeContainerStyle, indent]}>{rowContent(() => {})}</View>;
 
   return (
-    <View collapsable={false}>
+    <View collapsable={false} style={indent}>
       {customSnoozeOpen && (
         <CustomSnoozeSheet onClose={() => setCustomSnoozeOpen(false)} onSnooze={handleSnooze} />
       )}
