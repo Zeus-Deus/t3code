@@ -4,6 +4,7 @@ import {
 } from "@t3tools/client-runtime/plugins";
 import type { EnvironmentId, PluginCardReference, ScopedThreadRef } from "@t3tools/contracts";
 import { PuzzleIcon, RotateCcwIcon } from "lucide-react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { useEnvironment } from "../../state/environments";
 import { usePluginCatalogue } from "../../state/plugins";
@@ -44,6 +45,57 @@ function PluginCardSummary(props: {
   );
 }
 
+/**
+ * How far outside the viewport a card's frame is kept. The timeline's virtualizer keeps rows
+ * mounted beyond the screen; without this every card in that overscan would hold a document,
+ * its bridge and a change subscription.
+ */
+const CARD_FRAME_MARGIN = "400px";
+/** The frame's height before its document reports one. */
+const CARD_FRAME_INITIAL_HEIGHT = 96;
+
+/**
+ * Mounts the card's frame only while the row is near the viewport. A card scrolled away drops
+ * its document, so it stops answering change signals; its space is kept so the timeline does not
+ * jump, and it reloads when it comes back.
+ */
+function NearViewport(props: { readonly children: ReactNode }) {
+  const boxRef = useRef<HTMLDivElement>(null);
+  const [near, setNear] = useState(false);
+  const [reservedHeight, setReservedHeight] = useState(CARD_FRAME_INITIAL_HEIGHT);
+  useEffect(() => {
+    const box = boxRef.current;
+    if (box === null) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const entry = entries.at(-1);
+        if (entry === undefined) return;
+        if (!entry.isIntersecting) {
+          const height = box.getBoundingClientRect().height;
+          if (height > 0) setReservedHeight(height);
+        }
+        setNear(entry.isIntersecting);
+      },
+      { rootMargin: CARD_FRAME_MARGIN },
+    );
+    observer.observe(box);
+    return () => observer.disconnect();
+  }, []);
+  return (
+    <div ref={boxRef} data-plugin-card-frame={near ? "live" : "parked"}>
+      {near ? (
+        props.children
+      ) : (
+        <div
+          aria-hidden
+          className="rounded-lg border border-border"
+          style={{ height: reservedHeight }}
+        />
+      )}
+    </div>
+  );
+}
+
 /** A card an agent's plugin call left in the conversation. */
 export function PluginConversationCard(props: {
   readonly environmentId: EnvironmentId;
@@ -71,24 +123,26 @@ export function PluginConversationCard(props: {
     );
   }
   return (
-    <PluginViewFrame
-      // A new generation is new code: it must not inherit the old document.
-      key={presentation.installation.generation}
-      environmentId={props.environmentId}
-      installation={presentation.installation}
-      view={presentation.view}
-      placement="conversation"
-      threadRef={props.threadRef}
-      composerTarget={null}
-      card={props.card}
-      renderFailure={(message, retry) => (
-        <PluginCardSummary
-          card={props.card}
-          pluginName={presentation.installation.manifest.name}
-          reason={message}
-          onRetry={retry}
-        />
-      )}
-    />
+    <NearViewport>
+      <PluginViewFrame
+        // A new generation is new code: it must not inherit the old document.
+        key={presentation.installation.generation}
+        environmentId={props.environmentId}
+        installation={presentation.installation}
+        view={presentation.view}
+        placement="conversation"
+        threadRef={props.threadRef}
+        composerTarget={null}
+        card={props.card}
+        renderFailure={(message, retry) => (
+          <PluginCardSummary
+            card={props.card}
+            pluginName={presentation.installation.manifest.name}
+            reason={message}
+            onRetry={retry}
+          />
+        )}
+      />
+    </NearViewport>
   );
 }
