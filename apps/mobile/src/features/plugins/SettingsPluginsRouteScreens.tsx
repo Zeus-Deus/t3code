@@ -405,13 +405,11 @@ function PluginDetail(props: {
   const review = () => navigation.navigate("SettingsPluginReview", routeParams);
   const pluginTarget = { environmentId, installation, threadId: null };
 
-  const withBusy = async (key: string, run: () => Promise<void>) => {
+  // Promise#finally because React Compiler cannot compile a try/finally without a catch. The
+  // executor turns a synchronous throw into a rejection; failures still reach the caller.
+  const withBusy = (key: string, run: () => Promise<void>) => {
     setBusy(key);
-    try {
-      await run();
-    } finally {
-      setBusy(null);
-    }
+    return new Promise<void>((resolve) => resolve(run())).finally(() => setBusy(null));
   };
   const toggle = (enabled: boolean) => {
     if (enabled && status.primary === "review") {

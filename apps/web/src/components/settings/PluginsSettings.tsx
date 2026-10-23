@@ -408,13 +408,11 @@ function PluginRow(props: {
     props.onDialog({ kind: "review", environmentId, installationId: installation.installationId });
   const details = () =>
     props.onDialog({ kind: "details", environmentId, installationId: installation.installationId });
-  const withBusy = async (run: () => Promise<void>) => {
+  // Promise#finally because React Compiler cannot compile a try/finally without a catch. The
+  // executor turns a synchronous throw into a rejection; failures still reach the caller.
+  const withBusy = (run: () => Promise<void>) => {
     setBusy(true);
-    try {
-      await run();
-    } finally {
-      setBusy(false);
-    }
+    return new Promise<void>((resolve) => resolve(run())).finally(() => setBusy(false));
   };
 
   const toggle = (enabled: boolean) => {
