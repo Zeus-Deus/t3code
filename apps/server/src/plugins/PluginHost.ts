@@ -1,19 +1,30 @@
 import {
   CommandId,
   MessageId,
-  ModelSelection,
   PluginError,
   ProjectId,
-  RuntimeMode,
   ThreadId,
   type PluginActionContext,
-  ProviderInteractionMode,
+  type OrchestrationV2ThreadShell,
+  type PluginThreadMetadata,
+  PluginThreadCreateInput,
+  PluginThreadsListInput,
+  PluginThreadsList,
+  PluginThreadMetadataInput,
+  PluginThreadMetadata as PluginThreadMetadataSchema,
+  PluginProjectsListInput,
+  PluginProjectsList,
+  PluginModelsListInput,
+  PluginModelsList,
+  isProviderAvailable,
 } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import * as Hex from "effect/encoding/Hex";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as DateTime from "effect/DateTime";
+import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
@@ -27,6 +38,7 @@ import * as PluginReceipts from "./PluginReceipts.ts";
 import * as ServerConfig from "../config.ts";
 import { PluginExecutionPolicy } from "./PluginExecutionPolicy.ts";
 import * as PluginStore from "./PluginStore.ts";
+import { pluginThreadGroupingState } from "./pluginThreadMetadata.ts";
 import {
   assertPluginActive,
   pluginCapabilityAllowed,
@@ -51,14 +63,36 @@ const ThreadSend = Schema.Struct({
   projectId: Schema.optionalKey(ProjectId),
   text: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(64_000)),
 });
-const ThreadCreate = Schema.Struct({
-  idempotencyKey: key,
-  projectId: ProjectId,
-  title: Schema.optionalKey(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(200))),
-  text: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(64_000)),
-  modelSelection: Schema.optionalKey(ModelSelection),
-  runtimeMode: Schema.optionalKey(RuntimeMode),
-  interactionMode: Schema.optionalKey(ProviderInteractionMode),
+const iso = (value: DateTime.DateTime | null | undefined) =>
+  value == null ? null : DateTime.formatIso(value);
+
+const threadMetadata = (thread: OrchestrationV2ThreadShell) =>
+  ({
+    id: thread.id,
+    ...pluginThreadGroupingState(thread),
+    projectId: thread.projectId,
+    creationSource: thread.creationSource,
+    title: thread.title.slice(0, 200),
+    modelSelection: thread.modelSelection,
+    runtimeMode: thread.runtimeMode,
+    interactionMode: thread.interactionMode,
+    createdAt: DateTime.formatIso(thread.createdAt),
+    updatedAt: DateTime.formatIso(thread.updatedAt),
+    archivedAt: iso(thread.archivedAt),
+    settledAt: iso(thread.settledAt),
+    settledOverride: thread.settledOverride,
+    snoozedUntil: iso(thread.snoozedUntil),
+    snoozedAt: iso(thread.snoozedAt),
+    pinnedAt: iso(thread.pinnedAt),
+    branch: thread.branch?.slice(0, 256) ?? null,
+    worktreePath: thread.worktreePath?.slice(0, 4_096) ?? null,
+    lineage: thread.lineage,
+    ...(thread.launchedFrom === undefined ? {} : { launchedFrom: thread.launchedFrom }),
+  }) satisfies PluginThreadMetadata;
+
+const page = <A>(rows: ReadonlyArray<A>, cursor = 0, limit = 50) => ({
+  rows: rows.slice(cursor, cursor + limit),
+  nextCursor: cursor + limit < rows.length ? cursor + limit : null,
 });
 
 export interface PluginHostInvocation {
@@ -99,6 +133,7 @@ const make = Effect.gen(function* () {
   const launch = yield* ThreadLaunch.ThreadLaunchService;
   const projects = yield* ProjectService.ProjectService;
   const settings = yield* ServerSettings.ServerSettingsService;
+  const providers = yield* ProviderRegistry.ProviderRegistry;
   const readAuthorizedState = Effect.fn("PluginHost.readAuthorizedState")(function* (
     actor: PluginActor,
   ) {
@@ -172,7 +207,10 @@ const make = Effect.gen(function* () {
         method: string,
         idempotencyKey: string,
         request: unknown,
-        execute: (commandKey: string) => Effect.Effect<unknown, PluginError>,
+        execute: (
+          commandKey: string,
+          revalidate: () => Effect.Effect<typeof installation, PluginError>,
+        ) => Effect.Effect<unknown, PluginError>,
         authorizeTarget: (current: typeof installation) => Effect.Effect<void, PluginError>,
       ) {
         const commandKey = `plugin:${installation.installationId}:${yield* digest(yield* encodeJson([actor.principalId, invocation.operationId, method, idempotencyKey]).pipe(Effect.mapError(() => pluginPermissionDenied())))}`;
@@ -194,10 +232,10 @@ const make = Effect.gen(function* () {
             const canDisclose = Effect.fn("PluginHost.canDisclose")(
               function* (threadId: ThreadId) {
                 const shell = yield* target(threadId);
-                const current = yield* readCurrent();
+                const current = yield* revalidate();
                 return (
                   (method === "threads.create" || method === "threads.send") &&
-                  pluginCapabilityAllowed(current.installation, actor, method, shell.projectId) &&
+                  pluginCapabilityAllowed(current, actor, method, shell.projectId) &&
                   pluginTargetWithinCeiling(actor, shell)
                 );
               },
@@ -240,7 +278,15 @@ const make = Effect.gen(function* () {
               return previous.result;
             }
             const result = yield* revalidate().pipe(
-              Effect.andThen(execute(commandKey)),
+              Effect.andThen(
+                execute(commandKey, () =>
+                  revalidate().pipe(
+                    Effect.mapError((error) =>
+                      isPluginError(error) ? error : pluginPermissionDenied(),
+                    ),
+                  ),
+                ),
+              ),
               Effect.provideService(DispatchModeLimit, {
                 runtimeMode: actor.runtimeMode,
                 interactionMode: actor.interactionMode ?? "default",
@@ -354,6 +400,142 @@ const make = Effect.gen(function* () {
           ] as const);
         });
       }
+      const boundResult = <A, I>(schema: Schema.Codec<A, I>, value: A) =>
+        Schema.encodeEffect(schema)(value).pipe(
+          Effect.flatMap((encoded) =>
+            Buffer.byteLength(JSON.stringify(encoded)) <= 1_000_000
+              ? Effect.succeed(encoded)
+              : Effect.fail(
+                  new PluginError({
+                    reason: "invalid_result",
+                    message: "The plugin metadata page is too large. Request a smaller page.",
+                  }),
+                ),
+          ),
+          Effect.mapError((error) =>
+            isPluginError(error)
+              ? error
+              : new PluginError({
+                  reason: "invalid_result",
+                  message: "The plugin metadata result exceeds its bounds.",
+                }),
+          ),
+        );
+      const authorizeRead = Effect.fn("PluginHost.authorizeRead")(function* (
+        projectIds: ReadonlyArray<ProjectId>,
+      ) {
+        const current = yield* readCurrent();
+        if (
+          !pluginCapabilityAllowed(current.installation, actor, "threads.read") ||
+          !pluginCapabilityAllowed(current.installation, actor, "workflow.query") ||
+          projectIds.some(
+            (id) =>
+              !pluginCapabilityAllowed(current.installation, actor, "threads.read", id) ||
+              !pluginCapabilityAllowed(current.installation, actor, "workflow.query", id),
+          )
+        )
+          return yield* pluginPermissionDenied();
+      });
+      if (method === "threads.metadata") {
+        const request = yield* decode(PluginThreadMetadataInput, input);
+        const shell = yield* target(request.threadId);
+        yield* requireCapability("threads.read", shell.projectId);
+        yield* requireCapability("workflow.query", shell.projectId);
+        const result = yield* boundResult(PluginThreadMetadataSchema, threadMetadata(shell));
+        yield* authorizeRead([shell.projectId]);
+        return result;
+      }
+      if (method === "threads.list") {
+        const request = yield* decode(PluginThreadsListInput, input);
+        yield* requireCapability("threads.read", request.projectId);
+        yield* requireCapability("workflow.query", request.projectId);
+        const shells = yield* threads.listProjectThreads({
+          projectId: request.projectId,
+          includeSubagents: true,
+        });
+        const selected = page(
+          shells
+            .filter((thread) => thread.projectId === request.projectId && thread.deletedAt === null)
+            .toSorted((a, b) => a.id.localeCompare(b.id)),
+          request.cursor,
+          request.limit,
+        );
+        const result = yield* boundResult(PluginThreadsList, {
+          threads: selected.rows.map(threadMetadata),
+          nextCursor: selected.nextCursor,
+        });
+        yield* authorizeRead([request.projectId]);
+        return result;
+      }
+      if (method === "projects.list") {
+        const request = yield* decode(PluginProjectsListInput, input);
+        yield* requireCapability("threads.read");
+        yield* requireCapability("workflow.query");
+        const grantedIds = installation.grants.projectIds.filter(
+          (id) =>
+            pluginCapabilityAllowed(installation, actor, "threads.read", id) &&
+            pluginCapabilityAllowed(installation, actor, "workflow.query", id),
+        );
+        const shells = yield* projects.listShells({ projectIds: grantedIds });
+        const selected = page(
+          shells
+            .filter((project) => grantedIds.includes(project.id))
+            .toSorted((a, b) => a.id.localeCompare(b.id)),
+          request.cursor,
+          request.limit,
+        );
+        const result = yield* boundResult(PluginProjectsList, {
+          projects: selected.rows.map((project) => ({
+            id: project.id,
+            title: project.title.slice(0, 200),
+            workspaceRoot: project.workspaceRoot.slice(0, 4_096),
+            ...(project.defaultModelSelection == null
+              ? {}
+              : { defaultModelSelection: project.defaultModelSelection }),
+            createdAt: project.createdAt,
+            updatedAt: project.updatedAt,
+          })),
+          nextCursor: selected.nextCursor,
+        });
+        yield* authorizeRead(selected.rows.map((project) => project.id));
+        return result;
+      }
+      if (method === "models.list") {
+        const request = yield* decode(PluginModelsListInput, input);
+        yield* requireCapability("threads.read", request.projectId);
+        yield* requireCapability("workflow.query", request.projectId);
+        if (Option.isNone(yield* projects.getShell(request.projectId)))
+          return yield* pluginPermissionDenied();
+        const catalog = yield* providers.getProviders;
+        const enabled = yield* Effect.filter(catalog, (provider) =>
+          threads.isProviderInstanceEnabledForProject({
+            projectId: request.projectId,
+            instanceId: provider.instanceId,
+          }),
+        );
+        const models = enabled
+          .filter((provider) => provider.enabled && isProviderAvailable(provider))
+          .flatMap((provider) =>
+            provider.models.map((model) => ({
+              modelSelection: { instanceId: provider.instanceId, model: model.slug },
+              title: model.name.slice(0, 200),
+              providerTitle: (provider.displayName ?? provider.driver).slice(0, 200),
+              options: model.capabilities?.optionDescriptors ?? [],
+            })),
+          )
+          .toSorted(
+            (a, b) =>
+              a.modelSelection.instanceId.localeCompare(b.modelSelection.instanceId) ||
+              a.modelSelection.model.localeCompare(b.modelSelection.model),
+          );
+        const selected = page(models, request.cursor, request.limit);
+        const result = yield* boundResult(PluginModelsList, {
+          models: selected.rows,
+          nextCursor: selected.nextCursor,
+        });
+        yield* authorizeRead([request.projectId]);
+        return result;
+      }
       if (method === "threads.read") {
         const request = yield* decode(ThreadRead, input);
         const threadId = request.threadId;
@@ -421,9 +603,15 @@ const make = Effect.gen(function* () {
         );
       }
       if (method === "threads.create") {
-        const request = yield* decode(ThreadCreate, input);
+        const request = yield* decode(PluginThreadCreateInput, input);
         yield* requireCapability("threads.create", request.projectId);
-        const caller = actor.threadId === undefined ? null : yield* target(actor.threadId);
+        const sourceThreadId =
+          actor.source === "agent" ? actor.threadId : invocation.context?.threadId;
+        const caller = sourceThreadId === undefined ? null : yield* target(sourceThreadId);
+        if (caller !== null) yield* requireCapability("threads.read", caller.projectId);
+        const workspaceStrategy = request.workspaceStrategy ?? { type: "root" as const };
+        if (workspaceStrategy.type === "worktree")
+          yield* requireCapability("worktrees.create", request.projectId);
         const project = yield* projects.getShell(request.projectId);
         if (Option.isNone(project)) return yield* pluginPermissionDenied();
         const defaults = resolveProjectSettings(
@@ -458,8 +646,22 @@ const make = Effect.gen(function* () {
         return yield* dispatch(
           method,
           request.idempotencyKey,
-          request,
-          Effect.fn("PluginHost.create")(function* (commandKey) {
+          { ...request, ...(caller === null ? {} : { launchedFrom: { threadId: caller.id } }) },
+          Effect.fn("PluginHost.create")(function* (commandKey, revalidate) {
+            if (workspaceStrategy.type === "worktree") {
+              yield* launch
+                .checkWorktreeBase({ projectId: request.projectId, workspaceStrategy })
+                .pipe(
+                  Effect.mapError(
+                    () =>
+                      new PluginError({
+                        reason: "invalid_input",
+                        message: "The worktree base does not resolve in this project.",
+                      }),
+                  ),
+                );
+              yield* revalidate();
+            }
             const result = yield* launch
               .launch({
                 commandId: CommandId.make(commandKey),
@@ -469,7 +671,8 @@ const make = Effect.gen(function* () {
                 modelSelection,
                 runtimeMode,
                 interactionMode,
-                workspaceStrategy: { type: "root" },
+                workspaceStrategy,
+                ...(caller === null ? {} : { launchedFrom: { threadId: caller.id } }),
                 initialMessage: {
                   messageId: MessageId.make(`${commandKey}:message`),
                   text: `[Plugin: ${installation.manifest.name}]\n${request.text}`,
@@ -489,10 +692,19 @@ const make = Effect.gen(function* () {
               );
             return { threadId: result.threadId };
           }),
-          (current) =>
-            pluginCapabilityAllowed(current, actor, "threads.create", request.projectId)
-              ? Effect.void
-              : Effect.fail(pluginPermissionDenied()),
+          Effect.fn("PluginHost.authorizeCreate")(function* (current) {
+            if (
+              !pluginCapabilityAllowed(current, actor, "threads.create", request.projectId) ||
+              (workspaceStrategy.type === "worktree" &&
+                !pluginCapabilityAllowed(current, actor, "worktrees.create", request.projectId))
+            )
+              return yield* pluginPermissionDenied();
+            if (caller !== null) {
+              const source = yield* target(caller.id, caller.projectId);
+              if (!pluginCapabilityAllowed(current, actor, "threads.read", source.projectId))
+                return yield* pluginPermissionDenied();
+            }
+          }),
         );
       }
       return yield* pluginPermissionDenied();

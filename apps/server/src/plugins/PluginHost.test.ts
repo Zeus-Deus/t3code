@@ -7,10 +7,15 @@ import {
   MessageId,
   ProjectId,
   ProviderInstanceId,
+  ProviderDriverKind,
+  type OrchestrationV2ThreadShell,
+  type ServerProvider,
   RunId,
+  RuntimeRequestId,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -30,6 +35,7 @@ import {
 import * as Launch from "../orchestration-v2/ThreadLaunchService.ts";
 import * as Projects from "../project/ProjectService.ts";
 import * as Settings from "../serverSettings.ts";
+import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import { v2PullRequestThread } from "../orchestration-v2/testkit/pullRequestFixtures.ts";
 import { pluginPermissionDenied, type PluginActor } from "./PluginAuthority.ts";
 import * as Database from "./PluginDatabase.ts";
@@ -77,6 +83,25 @@ const fixture = Effect.gen(function* () {
   let effectProject = projectId;
   let effectModes = { runtimeMode: shell.runtimeMode, interactionMode: shell.interactionMode };
   let launches = 0;
+  const launchInputs: Array<Launch.ThreadLaunchInput> = [];
+  let listedThreads: ReadonlyArray<OrchestrationV2ThreadShell> = [shell];
+  let modelEnabled = true;
+  let catalog: ReadonlyArray<ServerProvider> = [
+    {
+      instanceId: shell.modelSelection.instanceId,
+      driver: ProviderDriverKind.make("codex"),
+      displayName: "Codex",
+      checkedAt: "2026-10-23T12:00:00.000Z",
+      enabled: true,
+      installed: true,
+      version: null,
+      status: "ready",
+      auth: { status: "authenticated" },
+      models: [{ slug: "test", name: "Test model", isCustom: false, capabilities: null }],
+      slashCommands: [],
+      skills: [],
+    },
+  ];
   const sends: Array<Threads.ThreadManagementSendInput> = [];
   const limits: Array<DispatchModeLimitValue | undefined> = [];
   let beforeRead: (() => Effect.Effect<void>) | undefined;
@@ -118,6 +143,8 @@ const fixture = Effect.gen(function* () {
   const domain = Layer.mock(Threads.ThreadManagementService)({
     getThreadShell: (id) =>
       Effect.sync(() => ({ ...shell, ...effectModes, id, projectId: effectProject })),
+    listProjectThreads: () => Effect.sync(() => listedThreads),
+    isProviderInstanceEnabledForProject: () => Effect.sync(() => modelEnabled),
     ensureLegacyTranscript: () => Effect.void,
     getThreadSnapshotWindow: (id) =>
       Effect.sync(() => ({ schemaVersion: 1, snapshotSequence: 1, projection: projection(id) })),
@@ -161,6 +188,15 @@ const fixture = Effect.gen(function* () {
   });
   let beforeLaunch: (commandId: CommandId) => Effect.Effect<void, Launch.ThreadLaunchError> = () =>
     Effect.void;
+  const projectShell = {
+    id: projectId,
+    title: "Test",
+    workspaceRoot: "/fixture",
+    defaultModelSelection: shell.modelSelection,
+    scripts: [],
+    createdAt: "2026-10-23T12:00:00.000Z",
+    updatedAt: "2026-10-23T12:00:00.000Z",
+  };
   const layer = Host.layer.pipe(
     Layer.provideMerge(
       Layer.effect(
@@ -179,12 +215,14 @@ const fixture = Effect.gen(function* () {
     ),
     Layer.provideMerge(Receipts.layer),
     Layer.provideMerge(domain),
-    Layer.provide(
+    Layer.provideMerge(
       Layer.mock(Launch.ThreadLaunchService)({
+        checkWorktreeBase: () => Effect.void,
         launch: (input) =>
           Effect.gen(function* () {
             yield* beforeLaunch(input.commandId);
             launches++;
+            launchInputs.push(input);
             const launchedThreadId = input.threadId ?? ThreadId.make("fixture-thread");
             return {
               threadId: launchedThreadId,
@@ -194,8 +232,9 @@ const fixture = Effect.gen(function* () {
           }),
       }),
     ),
-    Layer.provide(
+    Layer.provideMerge(
       Layer.mock(Projects.ProjectService)({
+        listShells: () => Effect.succeed([projectShell]),
         getShell: () =>
           Effect.succeed(
             Option.some({
@@ -210,7 +249,10 @@ const fixture = Effect.gen(function* () {
           ),
       }),
     ),
-    Layer.provide(Settings.layerTest({ defaultModelSelection: shell.modelSelection })),
+    Layer.provideMerge(
+      Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.sync(() => catalog) }),
+    ),
+    Layer.provideMerge(Settings.layerTest({ defaultModelSelection: shell.modelSelection })),
   );
   const context = yield* Layer.build(layer);
   const host = Context.get(context, Host.PluginHost);
@@ -236,7 +278,7 @@ const fixture = Effect.gen(function* () {
                 version: "1.0.0",
                 apiVersion: 1,
                 entry: "plugin.mjs",
-                capabilities: ["threads.create", "threads.read", "threads.send"],
+                capabilities: ["threads.create", "threads.read", "threads.send", "workflow.query"],
                 actions: [],
                 views: [],
                 settings: [],
@@ -249,7 +291,7 @@ const fixture = Effect.gen(function* () {
               error: null,
               settings: {},
               grants: {
-                capabilities: ["threads.create", "threads.read", "threads.send"],
+                capabilities: ["threads.create", "threads.read", "threads.send", "workflow.query"],
                 projectIds: [projectId],
               },
               updatedAt: "2026-10-23T12:00:00.000Z",
@@ -279,6 +321,21 @@ const fixture = Effect.gen(function* () {
     invocation,
     request,
     launches: () => launches,
+    launchInputs,
+    shell,
+    registry: Context.get(context, ProviderRegistry.ProviderRegistry),
+    projects: Context.get(context, Projects.ProjectService),
+    launch: Context.get(context, Launch.ThreadLaunchService),
+    settings: Context.get(context, Settings.ServerSettingsService),
+    setListedThreads: (value: typeof listedThreads) => {
+      listedThreads = value;
+    },
+    setCatalog: (value: typeof catalog) => {
+      catalog = value;
+    },
+    setModelEnabled: (value: boolean) => {
+      modelEnabled = value;
+    },
     sends,
     limits,
     setEffectModes: (value: typeof effectModes) => {
@@ -1251,5 +1308,759 @@ it.effect(
           .call(f.invocation, "threads.create", { ...f.request, text: "Changed after crash" })
           .pipe(Effect.flip, Effect.orDie)).code,
       ).toBe("idempotency_conflict");
+    }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+const grantWorktrees = Effect.fn("test.grantWorktrees")(function* (
+  store: Store.PluginStore["Service"],
+) {
+  yield* store.update((state) =>
+    Effect.succeed([
+      undefined,
+      {
+        ...state,
+        installations: state.installations.map((record) => ({
+          ...record,
+          installation: {
+            ...record.installation,
+            manifest: {
+              ...record.installation.manifest,
+              capabilities: [...record.installation.manifest.capabilities, "worktrees.create"],
+            },
+            grants: {
+              ...record.installation.grants,
+              capabilities: [...record.installation.grants.capabilities, "worktrees.create"],
+            },
+          },
+        })),
+      },
+    ] as const),
+  );
+});
+
+it.effect("requires an explicit worktree grant before a plugin can create a checkout", () =>
+  Effect.gen(function* () {
+    const f = yield* fixture;
+    const result = yield* f.host
+      .call(f.invocation, "threads.create", {
+        ...f.request,
+        workspaceStrategy: { type: "worktree", baseRef: "main" },
+      })
+      .pipe(Effect.result);
+    expect(result).toMatchObject({ _tag: "Failure", failure: { reason: "permission_denied" } });
+    expect(f.launchInputs).toEqual([]);
+  }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect(
+  "forwards public model, modes and worktree settings while deriving independent provenance from host context",
+  () =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      yield* grantWorktrees(f.store);
+      const modelSelection = {
+        ...f.shell.modelSelection,
+        options: [{ id: "reasoningEffort", value: "high" }],
+      };
+      const workspaceStrategy = {
+        type: "worktree",
+        baseRef: "feature/base",
+        branch: "feature/child",
+        startFromOrigin: false,
+      };
+      const input = {
+        ...f.request,
+        modelSelection,
+        runtimeMode: "approval-required",
+        interactionMode: "plan",
+        workspaceStrategy,
+        launchedFrom: { threadId: "forged" },
+      };
+      yield* f.host.call(
+        { ...f.invocation, context: { threadId: f.shell.id, projectId } },
+        "threads.create",
+        input,
+      );
+      expect(f.launchInputs).toHaveLength(1);
+      expect(f.launchInputs[0]).toMatchObject({
+        modelSelection,
+        runtimeMode: "approval-required",
+        interactionMode: "plan",
+        workspaceStrategy,
+        launchedFrom: { threadId: f.shell.id },
+      });
+      expect(f.shell.activeRunId).toBeNull();
+      expect(f.launchInputs[0]).not.toHaveProperty("parentThreadId");
+    }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect(
+  "derives plugin launch provenance from the agent caller rather than a selected target or supplied parent",
+  () =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      yield* f.host.call(
+        {
+          ...f.invocation,
+          actor: { ...actor, source: "agent", threadId: f.shell.id },
+          context: { threadId: ThreadId.make("selected-other") },
+        },
+        "threads.create",
+        { ...f.request, launchedFrom: { threadId: "forged" } },
+      );
+      expect(f.launchInputs[0]).toHaveProperty("launchedFrom", { threadId: f.shell.id });
+      yield* f.host.call({ ...f.invocation, operationId: "fresh-action" }, "threads.create", {
+        ...f.request,
+        launchedFrom: { threadId: "forged" },
+      });
+      expect(f.launchInputs[1]).not.toHaveProperty("launchedFrom");
+    }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect("refuses arbitrary existing-checkout paths in the public plugin workflow", () =>
+  Effect.gen(function* () {
+    const f = yield* fixture;
+    const result = yield* f.host
+      .call(f.invocation, "threads.create", {
+        ...f.request,
+        workspaceStrategy: { type: "existing_worktree", worktreePath: "/private" },
+      })
+      .pipe(Effect.result);
+    expect(result).toMatchObject({ _tag: "Failure", failure: { reason: "invalid_input" } });
+    expect(f.launchInputs).toEqual([]);
+  }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect("creates nothing when the plugin's worktree base does not resolve", () =>
+  Effect.gen(function* () {
+    const f = yield* fixture;
+    yield* grantWorktrees(f.store);
+    using _check = vi.spyOn(f.launch, "checkWorktreeBase").mockImplementation(() =>
+      Effect.fail(
+        new Launch.ThreadLaunchBaseRefError({
+          projectId,
+          projectTitle: "Test",
+          workspaceRoot: "/fixture",
+          baseRef: "missing",
+        }),
+      ),
+    );
+    const result = yield* f.host
+      .call(f.invocation, "threads.create", {
+        ...f.request,
+        workspaceStrategy: { type: "worktree", baseRef: "missing" },
+      })
+      .pipe(Effect.result);
+    expect(result).toMatchObject({ _tag: "Failure", failure: { reason: "invalid_input" } });
+    expect(f.launchInputs).toEqual([]);
+    expect(
+      yield* (yield* SqlClient.SqlClient)`SELECT operation_key FROM plugin_operation_receipts`,
+    ).toEqual([]);
+  }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect(
+  "rechecks worktree authority after preflight IO and releases an uncommitted receipt",
+  () =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      yield* grantWorktrees(f.store);
+      const entered = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      using _check = vi
+        .spyOn(f.launch, "checkWorktreeBase")
+        .mockImplementation(() =>
+          Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(release))),
+        );
+      const pending = yield* f.host
+        .call(f.invocation, "threads.create", {
+          ...f.request,
+          workspaceStrategy: { type: "worktree", baseRef: "main" },
+        })
+        .pipe(Effect.result, Effect.forkChild);
+      yield* Deferred.await(entered);
+      yield* f.store.update((state) =>
+        Effect.succeed([
+          undefined,
+          {
+            ...state,
+            installations: state.installations.map((record) => ({
+              ...record,
+              installation: {
+                ...record.installation,
+                grants: {
+                  ...record.installation.grants,
+                  capabilities: record.installation.grants.capabilities.filter(
+                    (c) => c !== "worktrees.create",
+                  ),
+                },
+              },
+            })),
+          },
+        ] as const),
+      );
+      yield* Deferred.succeed(release, undefined);
+      expect(yield* Fiber.join(pending)).toMatchObject({
+        _tag: "Failure",
+        failure: { reason: "permission_denied" },
+      });
+      expect(f.launchInputs).toEqual([]);
+      expect(
+        yield* (yield* SqlClient.SqlClient)`SELECT operation_key FROM plugin_operation_receipts`,
+      ).toEqual([]);
+    }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect(
+  "worktree receipts replay once, fresh clicks create independently, and changed workspaces conflict",
+  () =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      yield* grantWorktrees(f.store);
+      const request = { ...f.request, workspaceStrategy: { type: "worktree", baseRef: "main" } };
+      const first = yield* f.host.call(f.invocation, "threads.create", request);
+      expect(yield* f.host.call(f.invocation, "threads.create", request)).toEqual(first);
+      expect(f.launchInputs).toHaveLength(1);
+      const conflict = yield* f.host
+        .call(f.invocation, "threads.create", {
+          ...request,
+          workspaceStrategy: { ...request.workspaceStrategy, baseRef: "other" },
+        })
+        .pipe(Effect.result);
+      expect(conflict).toMatchObject({
+        _tag: "Failure",
+        failure: { code: "idempotency_conflict", priorEffect: first },
+      });
+      yield* f.host.call(
+        { ...f.invocation, operationId: "fresh-click" },
+        "threads.create",
+        request,
+      );
+      expect(f.launchInputs).toHaveLength(2);
+      expect(f.launchInputs[0]?.threadId).not.toEqual(f.launchInputs[1]?.threadId);
+    }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect("pages granted metadata without transcripts and exposes semantic grouping state", () =>
+  Effect.gen(function* () {
+    const f = yield* fixture;
+    const stamp = DateTime.makeUnsafe("2026-10-23T12:00:00.000Z");
+    const rows = ["a", "b", "c"].map((id) => ({
+      ...f.shell,
+      id: ThreadId.make(id),
+      pinnedAt: stamp,
+      snoozedUntil: stamp,
+      snoozedAt: stamp,
+      settledAt: stamp,
+      settledOverride: "settled" as const,
+    }));
+    f.setListedThreads(rows);
+    const first = yield* f.host.call(f.invocation, "threads.list", { projectId, limit: 2 });
+    expect(first).toMatchObject({
+      threads: [
+        {
+          id: "a",
+          pinnedAt: "2026-10-23T12:00:00.000Z",
+          snoozedUntil: "2026-10-23T12:00:00.000Z",
+          settledOverride: "settled",
+        },
+        { id: "b" },
+      ],
+      nextCursor: 2,
+    });
+    expect(JSON.stringify(first)).not.toContain("private transcript");
+    expect(
+      yield* f.host.call(f.invocation, "threads.list", { projectId, limit: 2, cursor: 2 }),
+    ).toMatchObject({ threads: [{ id: "c" }], nextCursor: null });
+    expect(
+      yield* f.host.call(f.invocation, "threads.metadata", { threadId: f.shell.id }),
+    ).toMatchObject({ id: f.shell.id, lineage: f.shell.lineage });
+    expect(yield* f.host.call(f.invocation, "projects.list", {})).toMatchObject({
+      projects: [{ id: projectId, workspaceRoot: "/fixture" }],
+      nextCursor: null,
+    });
+  }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect("lists project-enabled models from the live registry with bounded pagination", () =>
+  Effect.gen(function* () {
+    const f = yield* fixture;
+    expect(yield* f.host.call(f.invocation, "models.list", { projectId, limit: 1 })).toEqual({
+      models: [
+        {
+          modelSelection: f.shell.modelSelection,
+          title: "Test model",
+          providerTitle: "Codex",
+          options: [],
+        },
+      ],
+      nextCursor: null,
+    });
+    f.setModelEnabled(false);
+    expect(yield* f.host.call(f.invocation, "models.list", { projectId })).toEqual({
+      models: [],
+      nextCursor: null,
+    });
+  }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect.each(["threads.list", "threads.metadata", "models.list", "projects.list"])(
+  "denies %s to an actor without read scope",
+  (method) =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      const denied = yield* f.host
+        .call(
+          { ...f.invocation, actor: { ...actor, scopes: [AuthOrchestrationOperateScope] } },
+          method,
+          { projectId, threadId: f.shell.id },
+        )
+        .pipe(Effect.result);
+      expect(denied).toMatchObject({ _tag: "Failure", failure: { reason: "permission_denied" } });
+    }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect.each(
+  (["threads.list", "threads.metadata", "models.list", "projects.list"] as const).flatMap(
+    (method) =>
+      (["session", "generation", "project-grant", "query-grant"] as const).map((change) => ({
+        method,
+        change,
+      })),
+  ),
+)("does not disclose $method after $change revocation during domain IO", ({ method, change }) =>
+  Effect.gen(function* () {
+    const f = yield* fixture;
+    const entered = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    const pause = Deferred.succeed(entered, undefined).pipe(
+      Effect.andThen(Deferred.await(release)),
+    );
+    using spies = new DisposableStack();
+    if (method === "threads.list") {
+      const original = f.threads.listProjectThreads;
+      spies.use(
+        vi
+          .spyOn(f.threads, "listProjectThreads")
+          .mockImplementationOnce((input) => original(input).pipe(Effect.tap(() => pause))),
+      );
+    } else if (method === "threads.metadata") {
+      const original = f.threads.getThreadShell;
+      spies.use(
+        vi
+          .spyOn(f.threads, "getThreadShell")
+          .mockImplementationOnce((input) => original(input).pipe(Effect.tap(() => pause))),
+      );
+    } else if (method === "models.list") {
+      const original = f.projects.getShell;
+      spies.use(
+        vi
+          .spyOn(f.projects, "getShell")
+          .mockImplementationOnce((input) => original(input).pipe(Effect.tap(() => pause))),
+      );
+    } else {
+      const original = f.projects.listShells;
+      spies.use(
+        vi
+          .spyOn(f.projects, "listShells")
+          .mockImplementationOnce((input) => original(input).pipe(Effect.tap(() => pause))),
+      );
+    }
+    let revoked = false;
+    const pending = yield* f.host
+      .call(
+        {
+          ...f.invocation,
+          actor: {
+            ...actor,
+            authorize: () =>
+              Effect.suspend(() => (revoked ? pluginPermissionDenied() : Effect.void)),
+          },
+        },
+        method,
+        { projectId, threadId: f.shell.id },
+      )
+      .pipe(Effect.result, Effect.forkChild);
+    yield* Deferred.await(entered);
+    if (change === "session") revoked = true;
+    else
+      yield* f.store.update((state) =>
+        Effect.succeed([
+          undefined,
+          {
+            ...state,
+            installations: state.installations.map((record) => ({
+              ...record,
+              installation: {
+                ...record.installation,
+                ...(change === "generation"
+                  ? { generation: "two" }
+                  : {
+                      grants: {
+                        ...record.installation.grants,
+                        ...(change === "query-grant"
+                          ? {
+                              capabilities: record.installation.grants.capabilities.filter(
+                                (capability) => capability !== "workflow.query",
+                              ),
+                            }
+                          : { projectIds: [] }),
+                      },
+                    }),
+              },
+            })),
+          },
+        ] as const),
+      );
+    yield* Deferred.succeed(release, undefined);
+    expect(yield* Fiber.join(pending)).toMatchObject({
+      _tag: "Failure",
+      failure: { reason: change === "generation" ? "stale_generation" : "permission_denied" },
+    });
+  }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect(
+  "does not replay a worktree effect or disclose its conflict handle after worktree revocation",
+  () =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      yield* grantWorktrees(f.store);
+      const request = { ...f.request, workspaceStrategy: { type: "worktree", baseRef: "main" } };
+      yield* f.host.call(f.invocation, "threads.create", request);
+      yield* f.store.update((state) =>
+        Effect.succeed([
+          undefined,
+          {
+            ...state,
+            installations: state.installations.map((record) => ({
+              ...record,
+              installation: {
+                ...record.installation,
+                grants: {
+                  ...record.installation.grants,
+                  capabilities: record.installation.grants.capabilities.filter(
+                    (c) => c !== "worktrees.create",
+                  ),
+                },
+              },
+            })),
+          },
+        ] as const),
+      );
+      for (const input of [request, { ...request, text: "changed request" }]) {
+        const denied = yield* f.host
+          .call(f.invocation, "threads.create", input)
+          .pipe(Effect.result);
+        expect(denied).toMatchObject({ _tag: "Failure", failure: { reason: "permission_denied" } });
+        expect(denied).not.toHaveProperty("failure.priorEffect");
+      }
+      expect(f.launchInputs).toHaveLength(1);
+    }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect("rechecks the host-derived source's read grant after receipt reservation", () =>
+  Effect.gen(function* () {
+    const f = yield* fixture;
+    const sourceId = ThreadId.make("source-thread");
+    const sourceProject = ProjectId.make("source-project");
+    const original = f.threads.getThreadShell;
+    using _shell = vi
+      .spyOn(f.threads, "getThreadShell")
+      .mockImplementation((id) =>
+        id === sourceId
+          ? Effect.succeed({ ...f.shell, id, projectId: sourceProject })
+          : original(id),
+      );
+    yield* f.store.update((state) =>
+      Effect.succeed([
+        undefined,
+        {
+          ...state,
+          installations: state.installations.map((record) => ({
+            ...record,
+            installation: {
+              ...record.installation,
+              grants: { ...record.installation.grants, projectIds: [projectId, sourceProject] },
+            },
+          })),
+        },
+      ] as const),
+    );
+    const entered = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    const reserve = f.receipts.reserve;
+    using _reserve = vi
+      .spyOn(f.receipts, "reserve")
+      .mockImplementationOnce((input) =>
+        reserve(input).pipe(
+          Effect.tap(() =>
+            Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(release))),
+          ),
+        ),
+      );
+    const invocation = { ...f.invocation, context: { threadId: sourceId } };
+    const pending = yield* f.host
+      .call(invocation, "threads.create", f.request)
+      .pipe(Effect.result, Effect.forkChild);
+    yield* Deferred.await(entered);
+    yield* f.store.update((state) =>
+      Effect.succeed([
+        undefined,
+        {
+          ...state,
+          installations: state.installations.map((record) => ({
+            ...record,
+            installation: {
+              ...record.installation,
+              grants: { ...record.installation.grants, projectIds: [projectId] },
+            },
+          })),
+        },
+      ] as const),
+    );
+    yield* Deferred.succeed(release, undefined);
+    expect(yield* Fiber.join(pending)).toMatchObject({
+      _tag: "Failure",
+      failure: { reason: "permission_denied" },
+    });
+    expect(f.launchInputs).toEqual([]);
+  }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect("bounds metadata pages by item count and measured JSON bytes", () =>
+  Effect.gen(function* () {
+    const f = yield* fixture;
+    const invalid = yield* f.host
+      .call(f.invocation, "threads.list", { projectId, limit: 201 })
+      .pipe(Effect.result);
+    expect(invalid).toMatchObject({ _tag: "Failure", failure: { reason: "invalid_input" } });
+    f.setListedThreads([
+      { ...f.shell, modelSelection: { ...f.shell.modelSelection, model: "😀".repeat(260_000) } },
+    ]);
+    const oversized = yield* f.host
+      .call(f.invocation, "threads.list", { projectId })
+      .pipe(Effect.result);
+    expect(oversized).toMatchObject({ _tag: "Failure", failure: { reason: "invalid_result" } });
+  }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect.each(
+  (["new-result", "cached-result", "prior-effect"] as const).flatMap((response) =>
+    (["source-read", "worktree-grant"] as const).map((change) => ({ response, change })),
+  ),
+)(
+  "does not disclose $response after $change revocation during result target IO",
+  ({ response, change }) =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      yield* grantWorktrees(f.store);
+      const sourceId = ThreadId.make("source-thread");
+      const sourceProject = ProjectId.make("source-project");
+      const original = f.threads.getThreadShell;
+      let revokeOnResult = false;
+      let revoked = false;
+      using _target = vi.spyOn(f.threads, "getThreadShell").mockImplementation((id) =>
+        (id === sourceId
+          ? Effect.succeed({ ...f.shell, id, projectId: sourceProject })
+          : original(id)
+        ).pipe(
+          Effect.tap(() => {
+            if (!revokeOnResult || revoked || !id.startsWith("plugin:")) return Effect.void;
+            revoked = true;
+            return f.store
+              .update((state) =>
+                Effect.succeed([
+                  undefined,
+                  {
+                    ...state,
+                    installations: state.installations.map((record) => ({
+                      ...record,
+                      installation: {
+                        ...record.installation,
+                        grants: {
+                          ...record.installation.grants,
+                          ...(change === "source-read"
+                            ? { projectIds: [projectId] }
+                            : {
+                                capabilities: record.installation.grants.capabilities.filter(
+                                  (c) => c !== "worktrees.create",
+                                ),
+                              }),
+                        },
+                      },
+                    })),
+                  },
+                ] as const),
+              )
+              .pipe(Effect.orDie);
+          }),
+        ),
+      );
+      yield* f.store.update((state) =>
+        Effect.succeed([
+          undefined,
+          {
+            ...state,
+            installations: state.installations.map((record) => ({
+              ...record,
+              installation: {
+                ...record.installation,
+                grants: { ...record.installation.grants, projectIds: [projectId, sourceProject] },
+              },
+            })),
+          },
+        ] as const),
+      );
+      const invocation = { ...f.invocation, context: { threadId: sourceId } };
+      const request = { ...f.request, workspaceStrategy: { type: "worktree", baseRef: "main" } };
+      if (response !== "new-result") yield* f.host.call(invocation, "threads.create", request);
+      revokeOnResult = true;
+      const result = yield* f.host
+        .call(
+          invocation,
+          "threads.create",
+          response === "prior-effect" ? { ...request, text: "changed request" } : request,
+        )
+        .pipe(Effect.result);
+      expect(revoked).toBe(true);
+      expect(result).toMatchObject({
+        _tag: "Failure",
+        failure:
+          response === "prior-effect"
+            ? { code: "idempotency_conflict" }
+            : { reason: "permission_denied" },
+      });
+      expect(result).not.toHaveProperty("failure.priorEffect");
+    }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect("publishes cheap running and attention semantics without reading transcripts", () =>
+  Effect.gen(function* () {
+    const f = yield* fixture;
+    const before = DateTime.makeUnsafe("2026-10-23T11:00:00.000Z");
+    const snoozed = DateTime.makeUnsafe("2026-10-23T12:00:00.000Z");
+    const after = DateTime.makeUnsafe("2026-10-23T13:00:00.000Z");
+    f.setListedThreads([
+      { ...f.shell, id: ThreadId.make("a-running"), status: "running" },
+      {
+        ...f.shell,
+        id: ThreadId.make("b-question"),
+        status: "running",
+        snoozedAt: snoozed,
+        snoozedUntil: after,
+        pendingRuntimeRequest: {
+          id: RuntimeRequestId.make("question"),
+          kind: "user_input",
+          createdAt: after,
+          blocking: false,
+        },
+      },
+      {
+        ...f.shell,
+        id: ThreadId.make("c-old-failure"),
+        status: "failed",
+        snoozedAt: snoozed,
+        latestRunCompletedAt: before,
+        updatedAt: after,
+      },
+      {
+        ...f.shell,
+        id: ThreadId.make("d-new-failure"),
+        status: "failed",
+        snoozedAt: snoozed,
+        latestRunCompletedAt: after,
+      },
+      { ...f.shell, id: ThreadId.make("e-draining"), status: "waiting" },
+    ]);
+    using _transcript = vi.spyOn(f.threads, "getThreadSnapshotWindow");
+    const result = yield* f.host.call(f.invocation, "threads.list", { projectId });
+    expect(result).toMatchObject({
+      threads: [
+        { id: "a-running", isRunning: true, needsAttention: false },
+        { id: "b-question", isRunning: true, needsAttention: true },
+        { id: "c-old-failure", isRunning: false, needsAttention: false },
+        { id: "d-new-failure", isRunning: false, needsAttention: true },
+        { id: "e-draining", isRunning: false, needsAttention: false },
+      ],
+    });
+    expect(_transcript).not.toHaveBeenCalled();
+  }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect.each(["threads.list", "threads.metadata", "models.list", "projects.list"])(
+  "requires workflow.query for new %s while preserving old transcript reads",
+  (method) =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      yield* f.store.update((state) =>
+        Effect.succeed([
+          undefined,
+          {
+            ...state,
+            installations: state.installations.map((record) => ({
+              ...record,
+              installation: {
+                ...record.installation,
+                grants: {
+                  ...record.installation.grants,
+                  capabilities: record.installation.grants.capabilities.filter(
+                    (capability) => capability !== "workflow.query",
+                  ),
+                },
+              },
+            })),
+          },
+        ] as const),
+      );
+      const denied = yield* f.host
+        .call(f.invocation, method, { projectId, threadId: f.shell.id })
+        .pipe(Effect.result);
+      expect(denied).toMatchObject({ _tag: "Failure", failure: { reason: "permission_denied" } });
+      expect(
+        yield* f.host.call(f.invocation, "threads.read", { threadId: f.shell.id }),
+      ).toMatchObject({ messages: [{ text: "private transcript" }] });
+    }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect(
+  "publishes host-derived creation sources so Projects can distinguish owned tasks from provider helpers",
+  () =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      const source = (
+        id: string,
+        creationSource: OrchestrationV2ThreadShell["creationSource"],
+        relationshipToParent: "subagent" | "fork" | null,
+      ) => ({
+        ...f.shell,
+        id: ThreadId.make(id),
+        creationSource,
+        lineage: {
+          parentThreadId: relationshipToParent === null ? null : f.shell.id,
+          relationshipToParent,
+          rootThreadId: f.shell.id,
+        },
+      });
+      f.setListedThreads([
+        source("a-owned", "mcp", "subagent"),
+        source("b-helper", "provider", "subagent"),
+        source("c-fork", "web", "fork"),
+        { ...source("d-independent", "server", null), launchedFrom: { threadId: f.shell.id } },
+      ]);
+      expect(yield* f.host.call(f.invocation, "threads.list", { projectId })).toMatchObject({
+        threads: [
+          { id: "a-owned", creationSource: "mcp", lineage: { relationshipToParent: "subagent" } },
+          {
+            id: "b-helper",
+            creationSource: "provider",
+            lineage: { relationshipToParent: "subagent" },
+          },
+          { id: "c-fork", creationSource: "web", lineage: { relationshipToParent: "fork" } },
+          { id: "d-independent", creationSource: "server", launchedFrom: { threadId: f.shell.id } },
+        ],
+      });
+      yield* f.host.call(f.invocation, "threads.create", { ...f.request, creationSource: "mcp" });
+      expect(f.launchInputs[0]?.creationSource).toBe("server");
     }).pipe(Effect.provide(base()), Effect.scoped),
 );
