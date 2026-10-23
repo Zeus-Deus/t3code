@@ -243,6 +243,32 @@ describe("plugin package snapshots", () => {
     ),
   );
 
+  it.effect("accepts sidebar views only with their capability and unique names", () =>
+    provide(
+      Effect.gen(function* () {
+        const input = yield* fixture;
+        const projects = { id: "projects", title: "Projects", groupBy: "project" };
+        const write = (capabilities: unknown, sidebarViews: unknown) =>
+          input.fs.writeFileString(
+            NodePath.join(input.directory, "t3-plugin.json"),
+            JSON.stringify({ ...manifest, capabilities, sidebarViews }),
+          );
+        yield* write(["ui.sidebar-views"], [projects]);
+        expect((yield* inspectPluginSource(input.directory)).manifest.sidebarViews).toEqual([
+          projects,
+        ]);
+        for (const [capabilities, sidebarViews] of [
+          [["ui"], [projects]],
+          [["ui.sidebar-views"], [projects, { ...projects, title: "Again" }]],
+        ] as const) {
+          yield* write(capabilities, sidebarViews);
+          const error = yield* inspectPluginSource(input.directory).pipe(Effect.flip);
+          expect(error.reason).toBe("invalid_manifest");
+        }
+      }),
+    ),
+  );
+
   it.effect("never overwrites an existing snapshot", () =>
     provide(
       Effect.gen(function* () {

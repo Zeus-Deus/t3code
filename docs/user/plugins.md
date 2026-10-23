@@ -35,6 +35,17 @@ A plugin can also show a short status for the open thread, such as **Realm live*
 in the thread header (above the composer on mobile); select it to open that
 plugin's panel for the thread.
 
+A plugin can offer another sidebar layout, such as threads grouped by project.
+Once one is available, a switch appears under the sidebar search (and in the
+command palette) to move between it and **Activity**. Installing or enabling
+such a plugin never switches the sidebar for you, and the choice is kept per
+device. If the plugin is disabled, removed, or unavailable, the sidebar shows
+Activity again without changing your open thread. It returns to your choice
+when the plugin comes back. In a project layout, pinned and active threads
+sit under their project, and settled and snoozed threads stay on the shelves
+below. Search and the project filter work as they do in Activity. The mobile
+thread list keeps the Activity layout.
+
 Use **Check source for changes** to stage an update. The current version stays active until
 you review and approve the update. You can discard the staged update instead.
 Disable a plugin to stop its process and withdraw its contributions. Removal

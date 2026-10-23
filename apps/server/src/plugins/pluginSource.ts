@@ -3,7 +3,12 @@ import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
-import { PluginError, PluginManifest } from "@t3tools/contracts";
+import {
+  PLUGIN_SIDEBAR_VIEW_CAPABILITY,
+  PluginError,
+  PluginManifest,
+  pluginRequestedCapabilities,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
@@ -144,6 +149,7 @@ const collectSnapshot = async (directory: string) => {
     manifest.actions.map((item) => item.id),
     manifest.views.map((item) => item.id),
     (manifest.threadStatus ?? []).map((item) => item.id),
+    (manifest.sidebarViews ?? []).map((item) => item.id),
     manifest.settings.map((item) => item.key),
     manifest.capabilities,
   ]) {
@@ -163,6 +169,16 @@ const collectSnapshot = async (directory: string) => {
         message: "A thread status opens one of the plugin's declared side-panel views.",
       });
   }
+  // Older hosts ignore the field, so the capability is what makes them refuse the plugin (required)
+  // or knowingly run it without the view (optional).
+  if (
+    (manifest.sidebarViews ?? []).length > 0 &&
+    !pluginRequestedCapabilities(manifest).includes(PLUGIN_SIDEBAR_VIEW_CAPABILITY)
+  )
+    throw new PluginError({
+      reason: "invalid_manifest",
+      message: `Sidebar views require the "${PLUGIN_SIDEBAR_VIEW_CAPABILITY}" capability.`,
+    });
   for (const setting of manifest.settings) {
     if (
       setting.default !== undefined &&

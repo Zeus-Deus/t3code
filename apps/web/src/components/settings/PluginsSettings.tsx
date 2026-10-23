@@ -1313,7 +1313,9 @@ function ReviewPluginForm(props: {
               )}
             </section>
           ) : null}
-          {manifest.actions.length > 0 || manifest.views.length > 0 ? (
+          {manifest.actions.length > 0 ||
+          manifest.views.length > 0 ||
+          (manifest.sidebarViews ?? []).length > 0 ? (
             <section className="space-y-1">
               <h3 className="text-sm font-medium">Adds</h3>
               <ul className="space-y-0.5 text-sm text-muted-foreground">
@@ -1325,6 +1327,11 @@ function ReviewPluginForm(props: {
                 ))}
                 {manifest.views.map((view) => (
                   <li key={`v:${view.id}`}>{view.title} view</li>
+                ))}
+                {(manifest.sidebarViews ?? []).map((view) => (
+                  <li key={`s:${view.id}`}>
+                    {view.title} sidebar layout (off until you choose it)
+                  </li>
                 ))}
               </ul>
             </section>

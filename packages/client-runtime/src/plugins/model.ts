@@ -206,6 +206,12 @@ const CAPABILITY_TEXT: Record<
     detail: "Render its own pages in a sandboxed frame.",
     projectScoped: false,
   },
+  "ui.sidebar-views": {
+    title: "Arrange the sidebar",
+    detail:
+      "Offer another layout for your thread list. T3 draws it; the plugin never reads threads.",
+    projectScoped: false,
+  },
 };
 
 const isKnownCapability = (capability: string): capability is PluginCapability =>

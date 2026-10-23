@@ -123,6 +123,37 @@ or `danger`, and an optional detail shown as its description. Return
 effects; failures are hidden rather than shown to the user. `viewId` must name
 one of your side-panel views, which opens when the user selects the status.
 
+## Sidebar views
+
+A plugin can declare up to two `sidebarViews`, alternative layouts of the
+thread sidebar that the person switches to beside **Activity**. A view is
+declarative: T3 builds it from threads the client already has and draws its
+own rows, menus, and keyboard behavior. No handler is called, and no thread
+data reaches the plugin, so a package may contain only its manifest and an
+empty `activate`.
+
+```json
+"capabilities": ["ui.sidebar-views"],
+"sidebarViews": [
+  { "id": "projects", "title": "Projects", "groupBy": "project",
+    "quietAfterDays": 3, "emptyProjects": "show" }
+]
+```
+
+`groupBy: "project"` lists each project's pinned and active threads under its
+heading, using the person's project grouping and sort settings. Settled and
+snoozed threads stay on the shared shelves. `quietAfterDays` folds projects with
+nothing active and no activity for that long behind "N more projects".
+`emptyProjects` decides whether projects without threads get a heading. The
+host owns everything else: the open thread is never hidden, and search, the
+project filter, folds, and the switch work the same for every plugin. A view is
+never selected automatically.
+
+List `ui.sidebar-views` in `capabilities` when the view is the plugin's purpose,
+so older hosts refuse to install it. List it in `optionalCapabilities` if the
+plugin is useful without it. Clients without support ignore the declaration,
+and the mobile thread list keeps Activity.
+
 ## Develop and verify
 
 Install from a local directory in an isolated development environment. After

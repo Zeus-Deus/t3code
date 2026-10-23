@@ -14,7 +14,8 @@ export type PluginCapability =
   | "threads.send"
   | "threads.create"
   | "events.run-finalized"
-  | "ui";
+  | "ui"
+  | "ui.sidebar-views";
 export type PluginSettingValue = string | number | boolean;
 export interface PluginManifest {
   readonly id: string;
@@ -45,6 +46,21 @@ export interface PluginManifest {
     readonly title: string;
     /** A declared side-panel view opened when the person activates the status. */
     readonly viewId?: string;
+  }[];
+  /**
+   * Alternative arrangements of the client's thread sidebar, declared as rules. The client renders
+   * them from threads it already has; no handler is called and no thread data reaches the plugin.
+   * Requires the `ui.sidebar-views` capability.
+   */
+  readonly sidebarViews?: readonly {
+    readonly id: string;
+    readonly title: string;
+    readonly description?: string;
+    readonly groupBy: "project";
+    /** Projects with nothing active and no activity for this many days (1-365) fold away. */
+    readonly quietAfterDays?: number;
+    /** Whether projects without threads get a heading. Defaults to `hide`. */
+    readonly emptyProjects?: "show" | "hide";
   }[];
   readonly settings: readonly {
     readonly key: string;

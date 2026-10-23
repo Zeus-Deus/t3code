@@ -1,7 +1,14 @@
+import {
+  pluginRunnableInstallations,
+  pluginSidebarViewOptions,
+  type PluginSidebarViewSource,
+} from "@t3tools/client-runtime/plugins";
 import type { EnvironmentId } from "@t3tools/contracts";
+import { useEffect } from "react";
 
 import { useConnectedEnvironmentIds } from "../../state/environments";
 import { usePluginCatalogue } from "../../state/plugins";
+import { useSidebarViewSourceStore } from "../sidebar/sidebarView";
 
 function PluginCatalogueSubscription(props: { readonly environmentId: EnvironmentId }) {
   usePluginCatalogue(props.environmentId);
@@ -17,5 +24,36 @@ export function PluginCatalogueSubscriptions() {
   const environmentIds = useConnectedEnvironmentIds();
   return environmentIds.map((environmentId) => (
     <PluginCatalogueSubscription key={environmentId} environmentId={environmentId} />
+  ));
+}
+
+function PluginSidebarViewSource(props: { readonly environmentId: EnvironmentId }) {
+  const { environmentId } = props;
+  const catalogue = usePluginCatalogue(environmentId);
+  const report = useSidebarViewSourceStore((state) => state.report);
+  const source: PluginSidebarViewSource =
+    catalogue.availability === "unknown" ||
+    catalogue.availability === "disconnected" ||
+    (catalogue.availability === "available" && !catalogue.loaded && catalogue.error === null)
+      ? { status: "pending" }
+      : {
+          status: "ready",
+          options: pluginSidebarViewOptions(environmentId, pluginRunnableInstallations(catalogue)),
+        };
+  useEffect(() => {
+    report(environmentId, source);
+  }, [environmentId, report, source]);
+  useEffect(() => () => report(environmentId, null), [environmentId, report]);
+  return null;
+}
+
+/**
+ * Reports which sidebar views each connected environment's plugins offer. Mounted with the sidebar
+ * on every route, so disabling a plugin in settings falls back at once.
+ */
+export function PluginSidebarViewSources() {
+  const environmentIds = useConnectedEnvironmentIds();
+  return environmentIds.map((environmentId) => (
+    <PluginSidebarViewSource key={environmentId} environmentId={environmentId} />
   ));
 }

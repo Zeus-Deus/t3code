@@ -82,6 +82,56 @@ describe("plugin wire compatibility", () => {
     expect(() => decodeManifest(manifest)).toThrow();
   });
 
+  it("drops only sidebar views that use rules from a newer host", () => {
+    const projects = { id: "projects", title: "Projects", groupBy: "project", quietAfterDays: 3 };
+    const decoded = decodeCatalogue({
+      installations: [
+        {
+          ...installation,
+          manifest: {
+            ...manifest,
+            sidebarViews: [projects, { id: "tags", title: "Tags", groupBy: "future-grouping" }],
+          },
+        },
+      ],
+    }).installations[0];
+    expect(decoded?.manifest.sidebarViews).toEqual([projects]);
+    expect(decoded?.manifest.views.map((view) => view.id)).toEqual(["known"]);
+  });
+
+  it("lets a client ignore contribution kinds it does not know", () => {
+    // How a client from before sidebar views reads a newer installation.
+    const decoded = decodeCatalogue({
+      installations: [
+        { ...installation, manifest: { ...manifest, futureContribution: [{ id: "x" }] } },
+      ],
+    }).installations[0];
+    expect(decoded?.installationId).toBe("test.plugin");
+    expect(decoded?.manifest).not.toHaveProperty("futureContribution");
+  });
+
+  it("validates sidebar view rules strictly in author manifests", () => {
+    const author = {
+      ...manifest,
+      capabilities: ["ui.sidebar-views"],
+      actions: [],
+      views: [],
+    };
+    expect(
+      decodeManifest({
+        ...author,
+        sidebarViews: [{ id: "projects", title: "Projects", groupBy: "project" }],
+      }).sidebarViews,
+    ).toEqual([{ id: "projects", title: "Projects", groupBy: "project" }]);
+    for (const view of [
+      { id: "projects", title: "Projects", groupBy: "future-grouping" },
+      { id: "projects", title: "Projects", groupBy: "project", quietAfterDays: 0 },
+      { id: "projects", title: "", groupBy: "project" },
+    ]) {
+      expect(() => decodeManifest({ ...author, sidebarViews: [view] })).toThrow();
+    }
+  });
+
   it("preserves independent observer health and tolerant pending update manifests", () => {
     const decoded = decodeCatalogue({
       installations: [

@@ -11,11 +11,13 @@ import type {
   ScopedThreadRef,
 } from "@t3tools/contracts";
 import { useRouter } from "@tanstack/react-router";
-import { PanelsTopLeftIcon, PuzzleIcon } from "lucide-react";
+import { FolderTreeIcon, ListIcon, PanelsTopLeftIcon, PuzzleIcon } from "lucide-react";
 
 import type { ComposerThreadTarget } from "../../composerDraftStore";
 import { pluginEnvironment, usePluginCatalogue } from "../../state/plugins";
 import { ITEM_ICON_CLASS, type CommandPaletteActionItem } from "../CommandPalette.logic";
+import { useClientSettings } from "../../hooks/useSettings";
+import { useSidebarView } from "../sidebar/sidebarView";
 import { usePluginActionRunner, usePluginIntentApplier } from "./usePluginActions";
 
 /**
@@ -74,4 +76,35 @@ export function usePluginPaletteItems(input: {
       run: async () => applyIntents(target(installation), [{ type: "view.open", viewId: view.id }]),
     }));
   return [...actions, ...views];
+}
+
+/** Switches the sidebar between activity and the plugin views offered by any environment. */
+export function useSidebarViewPaletteItems(): ReadonlyArray<CommandPaletteActionItem> {
+  const sidebarView = useSidebarView();
+  // The legacy project-tree sidebar does not render plugin views.
+  const legacySidebarEnabled = useClientSettings((settings) => settings.legacySidebarEnabled);
+  if (legacySidebarEnabled || sidebarView.options.length === 0) return [];
+  const selectedKey = sidebarView.selected?.key ?? null;
+  const items: CommandPaletteActionItem[] = sidebarView.options
+    .filter((option) => option.key !== selectedKey)
+    .map((option) => ({
+      kind: "action",
+      value: `sidebar-view:${option.key}`,
+      searchTerms: ["sidebar", "view", "switch", "group", option.view.title, option.pluginName],
+      title: `Show ${option.view.title} in sidebar`,
+      description: option.pluginName,
+      icon: <FolderTreeIcon className={ITEM_ICON_CLASS} />,
+      run: async () => sidebarView.select(option),
+    }));
+  if (selectedKey !== null) {
+    items.push({
+      kind: "action",
+      value: "sidebar-view:activity",
+      searchTerms: ["sidebar", "view", "switch", "activity", "settled", "inbox"],
+      title: "Show Activity in sidebar",
+      icon: <ListIcon className={ITEM_ICON_CLASS} />,
+      run: async () => sidebarView.select(null),
+    });
+  }
+  return items;
 }

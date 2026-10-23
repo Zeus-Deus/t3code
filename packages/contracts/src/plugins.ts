@@ -28,6 +28,7 @@ export const PLUGIN_CAPABILITIES = [
   "threads.create",
   "events.run-finalized",
   "ui",
+  "ui.sidebar-views",
 ] as const;
 export const PluginCapability = Schema.Literals(PLUGIN_CAPABILITIES);
 export type PluginCapability = typeof PluginCapability.Type;
@@ -69,6 +70,27 @@ export const PluginThreadStatus = Schema.Struct({
 });
 export type PluginThreadStatus = typeof PluginThreadStatus.Type;
 
+/**
+ * An alternative arrangement of the client's thread sidebar. The plugin only declares the rules;
+ * the client derives the view from the threads it already has and renders its own rows, so no
+ * thread data reaches the plugin. Requires the `ui.sidebar-views` capability, which older hosts
+ * refuse, so the declaration cannot be silently ignored at install.
+ */
+export const PluginSidebarView = Schema.Struct({
+  id: identifier,
+  title: text(40).check(Schema.isMinLength(1)),
+  description: Schema.optionalKey(text(300)),
+  groupBy: Schema.Literal("project"),
+  /** Projects with nothing active and no activity for this many days fold away. Absent: never. */
+  quietAfterDays: Schema.optionalKey(
+    Schema.Int.check(Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(365)),
+  ),
+  /** Whether projects without any threads get a heading. Defaults to `hide`. */
+  emptyProjects: Schema.optionalKey(Schema.Literals(["show", "hide"])),
+});
+export type PluginSidebarView = typeof PluginSidebarView.Type;
+export const PLUGIN_SIDEBAR_VIEW_CAPABILITY: PluginCapability = "ui.sidebar-views";
+
 export const PluginSettingValue = Schema.Union([text(16_384), Schema.Finite, Schema.Boolean]);
 export type PluginSettingValue = typeof PluginSettingValue.Type;
 export const PluginSetting = Schema.Struct({
@@ -100,6 +122,7 @@ export const PluginManifest = Schema.Struct({
   threadStatus: Schema.optionalKey(
     Schema.Array(PluginThreadStatusItem).check(Schema.isMaxLength(4)),
   ),
+  sidebarViews: Schema.optionalKey(Schema.Array(PluginSidebarView).check(Schema.isMaxLength(2))),
 });
 export type PluginManifest = typeof PluginManifest.Type;
 
@@ -116,6 +139,10 @@ const PluginManifestWire = Schema.Struct({
     }),
   ).check(Schema.isMaxLength(100)),
   views: ForwardCompatibleArray(PluginView).check(Schema.isMaxLength(30)),
+  // A view using a rule value from a newer host is dropped; the rest of the plugin still loads.
+  sidebarViews: Schema.optionalKey(
+    ForwardCompatibleArray(PluginSidebarView).check(Schema.isMaxLength(2)),
+  ),
 });
 
 export const PluginSource = Schema.Union([

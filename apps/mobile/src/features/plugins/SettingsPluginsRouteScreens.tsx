@@ -62,6 +62,7 @@ import {
   AndroidSettingsEnvironmentFilter,
   SettingsEnvironmentFilterHeader,
 } from "../settings/components/SettingsEnvironmentFilterHeader";
+import { SettingsRow } from "../settings/components/SettingsRow";
 import { SettingsSection } from "../settings/components/SettingsSection";
 import { SettingsSwitchRow } from "../settings/components/SettingsSwitchRow";
 import {
@@ -673,6 +674,18 @@ function PluginDetail(props: {
                 applyIntents(pluginTarget, [{ type: "view.open", viewId: view.id }], true)
               }
             />
+          ))}
+        </SettingsSection>
+      ) : null}
+
+      {(manifest.sidebarViews ?? []).length > 0 ? (
+        // Sidebar views rearrange the web and desktop sidebar only; say so rather than hide them.
+        <SettingsSection
+          title="Sidebar views"
+          footer="Shown in the web and desktop sidebar. The thread list on mobile keeps its activity layout."
+        >
+          {(manifest.sidebarViews ?? []).map((view) => (
+            <SettingsRow key={view.id} icon="sidebar.left" label={view.title} disabled />
           ))}
         </SettingsSection>
       ) : null}
