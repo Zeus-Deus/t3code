@@ -79,7 +79,8 @@ export function togglePluginTreeFold(
 const threadKey = (thread: PluginTreeThread) =>
   scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
 
-// Read by shape so snapshots from a contract without it still lay out.
+// Read by shape so snapshots from a contract without it still lay out. Only headings fold:
+// native thread rows always show their children, so the hint on a thread node is ignored.
 const collapsedByDefault = (node: PluginTreeNode) =>
   "collapsedByDefault" in node && node.collapsedByDefault === true;
 
@@ -112,7 +113,7 @@ type TreeEntry<TProject, TThread> = HeadingNode<TProject, TThread> | ThreadNode<
  * - Nesting under a thread is display only; it says nothing about who owns or runs the thread.
  * - A thread the tree leaves out follows its parent thread when that is placed; otherwise a live one
  *   goes to the "other" section, and a parked one (snoozed, settled) stays on the host's shelves.
- * - Folding keeps only the open thread, under the folded heading.
+ * - Group and project headings fold, keeping only the open thread; thread rows do not fold.
  */
 export function buildPluginTreeLayout<TProject, TThread extends PluginTreeThread>(input: {
   readonly sources: ReadonlyArray<PluginTreeSource>;
@@ -143,59 +144,81 @@ export function buildPluginTreeLayout<TProject, TThread extends PluginTreeThread
 
   for (const source of input.sources) {
     const { environmentId } = source;
-    // Where each node's children go: a heading, a row, or a lifted ancestor. A parent is listed
-    // before its children, so one pass resolves every parent; anything else lands at the root.
-    const containers = new Map<string, Heading | Thread | null>();
-    for (const node of source.nodes) {
-      const parent = node.parentId === undefined ? null : (containers.get(node.parentId) ?? null);
+    const nodesById = new Map(source.nodes.map((node) => [node.id, node]));
+    interface Resolved {
+      /** The node's own heading or row; null when it is skipped or merged into another. */
+      readonly entry: TreeEntry<TProject, TThread> | null;
+      readonly attachTo: Heading | Thread | null;
+      /** Where its children go: itself, or the ancestor that stands in for a skipped node. */
+      readonly container: Heading | Thread | null;
+    }
+    // Snapshots may list a child before its parent, so parents resolve on demand. Entries attach
+    // afterwards in snapshot order, so siblings keep the plugin's order.
+    const resolved = new Map<string, Resolved>();
+    const resolving = new Set<string>();
+    const resolve = (node: PluginTreeNode): Resolved => {
+      const known = resolved.get(node.id);
+      if (known !== undefined) return known;
+      resolving.add(node.id);
+      // A parent chain that loops back leaves the node it reached unparented.
+      const parentNode =
+        node.parentId === undefined || resolving.has(node.parentId)
+          ? undefined
+          : nodesById.get(node.parentId);
+      const parent = parentNode === undefined ? null : resolve(parentNode).container;
       const headingParent = parent?.kind === "thread" ? parent.heading : parent;
-      const append = (entry: TreeEntry<TProject, TThread>, into: Heading | Thread | null) => {
-        if (into === null) roots.push(entry);
-        else if (into.kind === "heading") into.children.push(entry);
-        else if (entry.kind === "thread") into.children.push(entry);
-      };
-      if (node.kind === "thread") {
-        const key = scopedThreadKey(scopeThreadRef(environmentId, node.threadId));
-        const thread = threadsByKey.get(key);
-        if (thread === undefined || placedKeys.has(key)) {
-          containers.set(node.id, parent);
-          continue;
+      const result = ((): Resolved => {
+        if (node.kind === "thread") {
+          const key = scopedThreadKey(scopeThreadRef(environmentId, node.threadId));
+          const thread = threadsByKey.get(key);
+          if (thread === undefined || placedKeys.has(key)) {
+            return { entry: null, attachTo: null, container: parent };
+          }
+          placedKeys.add(key);
+          const entry: Thread = {
+            kind: "thread",
+            thread,
+            key,
+            heading: headingParent,
+            children: [],
+          };
+          return { entry, attachTo: parent, container: entry };
         }
-        placedKeys.add(key);
-        const entry: Thread = { kind: "thread", thread, key, heading: headingParent, children: [] };
-        append(entry, parent);
-        containers.set(node.id, entry);
-        continue;
-      }
-      let entry: Heading;
-      if (node.kind === "group") {
-        entry = {
-          kind: "heading",
-          key: `tree:${environmentId}:${node.id}`,
-          heading: { kind: "group", title: node.title },
-          collapsedByDefault: collapsedByDefault(node),
-          children: [],
-        };
-      } else {
-        const resolved = input.project(environmentId, node.projectId);
-        const merged =
-          resolved !== null && headingParent === null ? rootProjects.get(resolved.key) : undefined;
-        if (resolved === null || merged !== undefined) {
-          containers.set(node.id, merged ?? headingParent);
-          continue;
+        if (node.kind === "group") {
+          const entry: Heading = {
+            kind: "heading",
+            key: `tree:${environmentId}:${node.id}`,
+            heading: { kind: "group", title: node.title },
+            collapsedByDefault: collapsedByDefault(node),
+            children: [],
+          };
+          return { entry, attachTo: headingParent, container: entry };
         }
-        entry = {
+        const project = input.project(environmentId, node.projectId);
+        if (project === null) return { entry: null, attachTo: null, container: headingParent };
+        const merged = headingParent === null ? rootProjects.get(project.key) : undefined;
+        if (merged !== undefined) return { entry: null, attachTo: null, container: merged };
+        const entry: Heading = {
           kind: "heading",
           key:
-            headingParent === null ? `project:${resolved.key}` : `tree:${environmentId}:${node.id}`,
-          heading: { kind: "project", project: resolved.project },
+            headingParent === null ? `project:${project.key}` : `tree:${environmentId}:${node.id}`,
+          heading: { kind: "project", project: project.project },
           collapsedByDefault: collapsedByDefault(node),
           children: [],
         };
-        if (headingParent === null) rootProjects.set(resolved.key, entry);
-      }
-      append(entry, headingParent);
-      containers.set(node.id, entry);
+        if (headingParent === null) rootProjects.set(project.key, entry);
+        return { entry, attachTo: headingParent, container: entry };
+      })();
+      resolving.delete(node.id);
+      resolved.set(node.id, result);
+      return result;
+    };
+    for (const node of source.nodes) {
+      const { entry, attachTo } = resolve(node);
+      if (entry === null) continue;
+      if (attachTo === null) roots.push(entry);
+      else if (attachTo.kind === "heading") attachTo.children.push(entry);
+      else if (entry.kind === "thread") attachTo.children.push(entry);
     }
   }
 

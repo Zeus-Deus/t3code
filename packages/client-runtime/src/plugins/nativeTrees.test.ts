@@ -255,4 +255,38 @@ describe("buildPluginTreeLayout", () => {
     expect(outline(result)).toEqual(['Other 4: [{"root":["child"]},{"x":["y"]}]']);
     expect(result.sections[0]?.key).toBe(PLUGIN_TREE_OTHER_SECTION_KEY);
   });
+
+  it("places children listed before their parents, keeping each parent's own position", () => {
+    const result = layout({
+      sources: [
+        {
+          environmentId: local,
+          nodes: [
+            placed("n-c", "c", "n-b"),
+            placed("n-a", "a", "g"),
+            group("first", "First"),
+            placed("n-d", "d", "first"),
+            group("g", "Work"),
+            placed("n-b", "b", "g"),
+          ],
+        },
+      ],
+      threads: [thread("a"), thread("b"), thread("c"), thread("d")],
+    });
+    expect(outline(result)).toEqual(['First 1: ["d"]', 'Work 3: ["a",{"b":["c"]}]']);
+  });
+
+  it("treats a parent cycle as unparented instead of losing its nodes", () => {
+    const result = layout({
+      sources: [
+        {
+          environmentId: local,
+          nodes: [group("x", "X", "y"), group("y", "Y", "x"), placed("n-a", "a", "x")],
+        },
+      ],
+      threads: [thread("a")],
+    });
+    expect(result.placedKeys.has(key(thread("a")))).toBe(true);
+    expect(pluginTreeThreadKeys(result.sections)).toEqual([key(thread("a"))]);
+  });
 });
