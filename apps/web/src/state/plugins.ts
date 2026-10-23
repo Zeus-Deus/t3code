@@ -3,6 +3,7 @@ import {
   pluginApiSupport,
   pluginChangeKey,
   pluginChangesSupported,
+  type PluginChangeRevisions,
   pluginExecutionDisabled,
   pluginRecoverySupported,
   pluginRunnableInstallations,
@@ -105,11 +106,30 @@ export function readRunnablePluginInstallations(
 const changesTarget = (environmentId: EnvironmentId) => ({ environmentId, input: {} });
 
 /**
- * How often a plugin topic changed since this client subscribed, or null where the environment
- * sends no change signals. Pass null while nothing is shown, so hidden views keep no subscription.
- * Compare with the value last acted on: any difference, including a reset after reconnecting,
- * means read again.
+ * Change counts for an environment's plugin topics since this client subscribed, or null where
+ * the environment sends no change signals. Pass null while nothing is shown, so hidden views keep
+ * no subscription. Compare a topic's count with the value last acted on: any difference,
+ * including a reset after reconnecting, means read again.
  */
+export function usePluginChangeRevisions(
+  environmentId: EnvironmentId | null,
+): PluginChangeRevisions | null {
+  const environment = useEnvironment(environmentId);
+  const canRead = useEnvironmentScope(environmentId, AuthOrchestrationReadScope);
+  const capabilities = environment?.serverConfig?.environment.capabilities;
+  const subscribed =
+    environmentId !== null &&
+    canRead &&
+    environment?.connection.phase === "connected" &&
+    environmentSupportsPlugins(capabilities) &&
+    pluginChangesSupported(capabilities);
+  const query = useEnvironmentQuery(
+    subscribed ? pluginEnvironment.changes(changesTarget(environmentId)) : null,
+  );
+  return subscribed ? query.data : null;
+}
+
+/** One topic's count from `usePluginChangeRevisions`. */
 export function usePluginChangeRevision(
   environmentId: EnvironmentId | null,
   topic: {
@@ -118,19 +138,7 @@ export function usePluginChangeRevision(
     readonly topic: string;
   } | null,
 ): number | null {
-  const environment = useEnvironment(environmentId);
-  const canRead = useEnvironmentScope(environmentId, AuthOrchestrationReadScope);
-  const capabilities = environment?.serverConfig?.environment.capabilities;
-  const subscribed =
-    environmentId !== null &&
-    topic !== null &&
-    canRead &&
-    environment?.connection.phase === "connected" &&
-    environmentSupportsPlugins(capabilities) &&
-    pluginChangesSupported(capabilities);
-  const query = useEnvironmentQuery(
-    subscribed ? pluginEnvironment.changes(changesTarget(environmentId)) : null,
-  );
-  if (!subscribed || query.data === null) return null;
-  return query.data.get(pluginChangeKey(topic)) ?? 0;
+  const revisions = usePluginChangeRevisions(topic === null ? null : environmentId);
+  if (revisions === null || topic === null) return null;
+  return revisions.get(pluginChangeKey(topic)) ?? 0;
 }

@@ -15,18 +15,30 @@ import { selectActiveRightPanelSurface, useRightPanelStore } from "../../rightPa
 
 const state = vi.hoisted(() => ({
   installation: null as PluginInstallation | null,
+  // Change counts the environment reported, by plugin topic key.
+  revisions: null as Map<string, number> | null,
+  revisionListeners: new Set<() => void>(),
   answer: (_input: PluginInvokeInput): Promise<PluginInvokeResult> => Promise.resolve({}),
 }));
 
-vi.mock(import("../../state/plugins"), async (original) => ({
-  ...(await original()),
-  usePluginCatalogue: () => ({
-    availability: "available" as const,
-    installations: state.installation ? [state.installation] : [],
-    loaded: true,
-    error: null,
-  }),
-}));
+vi.mock(import("../../state/plugins"), async (original) => {
+  const actual = await original();
+  const { useSyncExternalStore } = await import("react");
+  const subscribe = (listener: () => void) => {
+    state.revisionListeners.add(listener);
+    return () => state.revisionListeners.delete(listener);
+  };
+  return {
+    ...actual,
+    usePluginChangeRevisions: () => useSyncExternalStore(subscribe, () => state.revisions),
+    usePluginCatalogue: () => ({
+      availability: "available" as const,
+      installations: state.installation ? [state.installation] : [],
+      loaded: true,
+      error: null,
+    }),
+  };
+});
 vi.mock(import("../../state/session"), async (original) => ({
   ...(await original()),
   useEnvironmentScope: () => true,
@@ -47,6 +59,7 @@ const threadB = scopeThreadRef(environmentId, ThreadId.make("thread-b"));
 function setup(answer: (input: PluginInvokeInput) => Promise<PluginInvokeResult>) {
   const digest = "a".repeat(64);
   state.answer = answer;
+  state.revisions = null;
   state.installation = {
     installationId: "inst-realms",
     generation: "gen-1",
@@ -214,4 +227,30 @@ it("keeps a card status without a panel readable instead of disabled", async () 
   await expect
     .element(page.getByText("Realms: 1920x1080 desktop. Agent can use it.", { exact: false }))
     .toBeInTheDocument();
+});
+
+it("asks again at once when the plugin says a shown status changed", async () => {
+  const asked: PluginInvokeInput[] = [];
+  setup(async (input) => {
+    asked.push(input);
+    return asked.length === 1 ? live : { data: { label: "Realm idle", tone: "neutral" } };
+  });
+  state.revisions = new Map();
+  await using _screen = await render(
+    <PluginThreadStatusesProvider threadRef={threadA}>
+      <PluginThreadStatuses />
+    </PluginThreadStatusesProvider>,
+  );
+  await expect.element(page.getByRole("button", { name: "Realm live" })).toBeVisible();
+
+  // Another topic changing does not ask the plugin again.
+  state.revisions = new Map([["inst-realms\0gen-1\0view:realm", 1]]);
+  for (const listener of state.revisionListeners) listener();
+  state.revisions = new Map([
+    ["inst-realms\0gen-1\0view:realm", 1],
+    ["inst-realms\0gen-1\0status:realm", 1],
+  ]);
+  for (const listener of state.revisionListeners) listener();
+  await expect.element(page.getByRole("button", { name: "Realm idle" })).toBeVisible();
+  expect(asked).toHaveLength(2);
 });

@@ -1,5 +1,7 @@
 import {
   createPluginThreadStatusPoller,
+  pluginChangeKey,
+  pluginStatusTopic,
   pluginRunnableInstallations,
   pluginThreadStatusEntries,
   pluginThreadStatusesFor,
@@ -23,7 +25,11 @@ import {
 } from "react";
 
 import { useThreadShell } from "../../state/entities";
-import { pluginEnvironment, usePluginCatalogue } from "../../state/plugins";
+import {
+  pluginEnvironment,
+  usePluginCatalogue,
+  usePluginChangeRevisions,
+} from "../../state/plugins";
 import { useEnvironmentScope } from "../../state/session";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { Badge } from "../ui/badge";
@@ -94,6 +100,29 @@ function usePluginThreadStatuses(
   useEffect(() => {
     poller?.update({ target, entries, visible });
   });
+  // A plugin that says a shown status changed is asked again now, not at the next poll.
+  const revisions = usePluginChangeRevisions(entries.length > 0 ? environmentId : null);
+  const statusRevision =
+    revisions === null
+      ? null
+      : entries
+          .map(
+            ({ installation, item }) =>
+              revisions.get(
+                pluginChangeKey({
+                  installationId: installation.installationId,
+                  generation: installation.generation,
+                  topic: pluginStatusTopic(item.id),
+                }),
+              ) ?? 0,
+          )
+          .join(",");
+  const seenStatusRevision = useRef(statusRevision);
+  useEffect(() => {
+    const seen = seenStatusRevision.current;
+    seenStatusRevision.current = statusRevision;
+    if (seen !== null && statusRevision !== null && seen !== statusRevision) poller?.refresh();
+  }, [poller, statusRevision]);
   const values = useSyncExternalStore(
     poller?.subscribe ?? noSubscription,
     poller?.getSnapshot ?? noValues,
