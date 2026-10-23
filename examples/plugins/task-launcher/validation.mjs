@@ -138,7 +138,7 @@ export function state(value) {
       if (
         tasks.has(safeId(task.id)) ||
         !record(task.launch) ||
-        !["proposed", "pending", "uncertain", "started"].includes(task.launch.state)
+        !["proposed", "pending", "uncertain", "started", "abandoned"].includes(task.launch.state)
       )
         fail("Damaged task journal.");
       tasks.add(task.id);
@@ -147,7 +147,26 @@ export function state(value) {
         Object.keys(task.launch).some((key) => key !== "state")
       )
         fail("A proposed task cannot carry a dispatch journal.");
-      fields(task.launch, ["state", "operationId", "request", "threadId"]);
+      fields(task.launch, [
+        "state",
+        "operationId",
+        "request",
+        "threadId",
+        "diagnostic",
+        "acknowledgedAt",
+        "acknowledgementOperationId",
+      ]);
+      if (task.launch.diagnostic !== undefined)
+        text(task.launch.diagnostic, 300, "launch diagnostic");
+      if (task.launch.state === "abandoned") {
+        text(task.launch.acknowledgedAt, 40, "acknowledgement time");
+        text(task.launch.acknowledgementOperationId, 128, "acknowledgement operation id");
+      } else if (
+        task.launch.acknowledgedAt !== undefined ||
+        task.launch.acknowledgementOperationId !== undefined
+      ) {
+        fail("Damaged task acknowledgement journal.");
+      }
       if (task.launch.state !== "proposed") {
         text(task.launch.operationId, 128, "operation id");
         const request = task.launch.request;

@@ -4,6 +4,9 @@ import { LIMITS, choices, fields, proposal, safeId, state, text } from "./valida
 const KEY = "plans.v1";
 const UNCERTAIN =
   "Launch outcome is uncertain. Inspect threads before starting this work elsewhere.";
+const ABANDONED =
+  "Launch acknowledged and retired. A thread may already exist; this does not cancel or delete it. Proposing a new plan may duplicate that work.";
+const NOT_DISPATCHED = "Launch was not dispatched. Review the task before starting it.";
 const choiceFields = [
   "taskId",
   "modelSelection",
@@ -14,6 +17,7 @@ const choiceFields = [
 
 export function activate(ctx) {
   const locks = new Map();
+  const starting = new Set();
   const serial = async (key, operation) => {
     const previous = locks.get(key) ?? Promise.resolve();
     let release;
@@ -44,8 +48,9 @@ export function activate(ctx) {
     if (invocation.caller.kind !== "client")
       throw new Error("Only a person can use task launch controls.");
   };
-  const sourceFor = async (invocation) => {
-    invocation.signal.throwIfAborted();
+  const sourceFor = async (invocation, { allowCancelled = false } = {}) => {
+    if (allowCancelled) ctx.signal?.throwIfAborted();
+    else invocation.signal.throwIfAborted();
     const threadId =
       invocation.caller.kind === "agent"
         ? invocation.caller.threadId
@@ -63,8 +68,8 @@ export function activate(ctx) {
       throw new Error("The project context does not match the verified thread.");
     return source;
   };
-  const authorize = async (invocation, plan) => {
-    const source = await sourceFor(invocation);
+  const authorize = async (invocation, plan, options) => {
+    const source = await sourceFor(invocation, options);
     if (plan && (plan.sourceThreadId !== source.id || plan.projectId !== source.projectId))
       throw new Error("This plan does not belong to the current thread.");
     return source;
@@ -98,8 +103,14 @@ export function activate(ctx) {
       const tasks = [];
       for (const task of plan.tasks) {
         const journal = task.launch;
-        let launch = { state: journal.state === "pending" ? "uncertain" : journal.state };
-        if (["pending", "uncertain"].includes(journal.state)) launch.diagnostic = UNCERTAIN;
+        const state = starting.has(task.id)
+          ? "starting"
+          : journal.state === "pending"
+            ? "uncertain"
+            : journal.state;
+        let launch = { state };
+        if (state === "uncertain") launch.diagnostic = UNCERTAIN;
+        if (state === "abandoned") launch.diagnostic = ABANDONED;
         if (journal.request) launch.choices = choices(journal.request, plan.defaults, true);
         if (journal.state === "started") {
           try {
@@ -251,6 +262,8 @@ export function activate(ctx) {
         // in a later invocation cannot prove that principal, so never redispatch a journal.
         if (task.launch.state !== "proposed") continue;
         const operationId = text(invocation.operationId, 128, "operation id");
+        starting.add(taskId);
+        let dispatched = false;
         try {
           await update(async (current) => {
             await authorize(invocation, plan);
@@ -260,16 +273,14 @@ export function activate(ctx) {
               state: "pending",
               operationId,
               request,
+              diagnostic: UNCERTAIN,
             };
           });
-        } catch {
-          failures.set(taskId, "Launch was not dispatched because its journal could not be saved.");
-          continue;
-        }
-        await invalidate();
-        try {
+          await invalidate();
           invocation.signal.throwIfAborted();
           await authorize(invocation, plan);
+          invocation.signal.throwIfAborted();
+          dispatched = true;
           const result = await ctx.threads.create(structuredClone(request));
           await update((current) => {
             current.plans.find((p) => p.id === planId).tasks.find((t) => t.id === taskId).launch = {
@@ -280,21 +291,38 @@ export function activate(ctx) {
             };
           });
         } catch {
-          // The call may have committed even when the response, disclosure, or journal write failed.
+          failures.set(taskId, UNCERTAIN);
           try {
-            await update((current) => {
-              current.plans.find((p) => p.id === planId).tasks.find((t) => t.id === taskId).launch =
-                { state: "uncertain", operationId, request };
+            await update(async (current) => {
+              const stored = current.plans
+                .find((p) => p.id === planId)
+                .tasks.find((t) => t.id === taskId);
+              if (!dispatched) {
+                // Only our own call boundary proves no dispatch. A cancelled local signal may
+                // permit recovery, but the public host must still authorize metadata and storage.
+                await authorize(invocation, plan, { allowCancelled: true });
+                if (
+                  stored.launch.state !== "proposed" &&
+                  !(stored.launch.state === "pending" && stored.launch.operationId === operationId)
+                )
+                  throw new Error("The task journal changed before recovery.");
+                stored.launch = { state: "proposed" };
+              } else {
+                // A thrown create may follow a committed effect, regardless of error.reason.
+                stored.launch = { state: "uncertain", operationId, request, diagnostic: UNCERTAIN };
+              }
             });
+            if (!dispatched) failures.set(taskId, NOT_DISPATCHED);
           } catch {
             ctx.log(
               "warn",
-              "Launch journal remains pending; inspect threads before starting this work elsewhere.",
+              "Launch recovery could not be saved; inspect the recorded state before continuing.",
             );
           }
-          failures.set(taskId, UNCERTAIN);
+        } finally {
+          starting.delete(taskId);
+          await invalidate();
         }
-        await invalidate();
         plan = await select({ planId }, invocation);
       }
       plan = await select({ planId }, invocation);
@@ -310,8 +338,46 @@ export function activate(ctx) {
       return { data };
     });
   };
+  const acknowledge = async (input, invocation) => {
+    human(invocation);
+    fields(input, ["planId", "taskId", "confirmUncertain"]);
+    const planId = safeId(input.planId);
+    const taskId = safeId(input.taskId);
+    if (input.confirmUncertain !== true)
+      throw new Error("Explicitly acknowledge that the task's thread may already exist.");
+    await select({ planId }, invocation);
+    if (starting.has(taskId)) throw new Error("This task is still starting. Wait for its outcome.");
+    return serial(`plan-${planId}`, async () => {
+      const plan = await select({ planId }, invocation);
+      const task = plan.tasks.find((t) => t.id === taskId);
+      if (!task) throw new Error("This task does not belong to the selected plan.");
+      if (starting.has(taskId))
+        throw new Error("This task is still starting. Wait for its outcome.");
+      if (!["pending", "uncertain", "abandoned"].includes(task.launch.state))
+        throw new Error("Only an uncertain launch can be acknowledged.");
+      if (task.launch.state !== "abandoned") {
+        const acknowledgementOperationId = text(invocation.operationId, 128, "operation id");
+        await update(async (current) => {
+          await authorize(invocation, plan);
+          const stored = current.plans
+            .find((p) => p.id === planId)
+            .tasks.find((t) => t.id === taskId);
+          stored.launch = {
+            ...stored.launch,
+            state: "abandoned",
+            diagnostic: stored.launch.diagnostic ?? UNCERTAIN,
+            acknowledgedAt: new Date().toISOString(),
+            acknowledgementOperationId,
+          };
+        });
+        await invalidate();
+      }
+      return { data: await present(await select({ planId }, invocation), invocation) };
+    });
+  };
   for (const view of ["launcher", "tasks"]) {
     ctx.handle(`view:${view}:read`, read);
+    ctx.handle(`view:${view}:acknowledge`, acknowledge);
     ctx.handle(`view:${view}:models`, models);
     ctx.handle(`view:${view}:start`, (input, invocation) => start(input, invocation, false));
     ctx.handle(`view:${view}:startAll`, (input, invocation) => start(input, invocation, true));

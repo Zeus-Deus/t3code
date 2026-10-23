@@ -37,12 +37,23 @@ sequentially and preserves each outcome, including partial success.
 
 **Pending or uncertain launches are never automatically retried**, including an
 equal-operation-ID request after restart. A thrown create, lost response,
-cancellation, or failed success-journal write may follow a committed launch. The
-host receipt also includes a private principal/session identity that this public
+cancellation during create, or failed success-journal write may follow a committed
+launch. The host receipt also includes a private principal/session identity that this public
 consumer cannot prove on a later call. This example favors avoiding duplicate
 work over automatic recovery: inspect threads before starting that work elsewhere.
 It does not promise cross-click exactly-once execution or infer receipts from
-matching titles. Pending journals appear as uncertain after reload.
+matching titles. While this worker is actively launching a task, other views show
+Starting. Pending journals appear as uncertain after worker restart. If cancellation
+or authorization fails before the create call, the task returns to proposed only
+when current host authorization and storage still permit saving that recovery;
+otherwise the pending fence stays intact. Error reasons never prove no effect.
+
+After inspecting threads, a person can **Acknowledge** an uncertain launch with a
+separate confirmation naming the exact `[Task Launcher] <task title>` to check.
+This retires the task as **abandoned** while retaining its frozen request, original
+operation ID, and diagnostic. Acknowledgement does not cancel or delete a thread,
+and that task identity can never start again. Asking an agent to propose a new
+plan is deliberate new work and may duplicate a thread whose outcome was lost.
 
 Every source, stored-plan read, model query, and known result is checked through
 current public metadata authority. Foreign plans cannot be read from another
@@ -52,9 +63,10 @@ and model/mode ceilings. UI permission hints do not grant authority.
 
 Storage is version 1, bounded below 850000 bytes, with at most 12 retained plans.
 New proposals can evict the oldest resolved/proposed plan, making its old card
-unavailable. Pending and uncertain journals are retained; if all slots are
-unresolved, new proposals are refused. Unsupported/damaged storage is rejected
-without resetting journals. Downgrading code does not restore older data.
+unavailable. Abandoned plans are also eligible for eviction. Pending and uncertain
+journals are retained until acknowledged; if all slots are unresolved, new
+proposals are refused. An evicted historical card cannot rebuild or restart its
+plan. Unsupported/damaged storage is rejected without resetting journals. Downgrading code does not restore older data.
 
 State changes invalidate both views and the native Tasks status. No idle polling
 runs in the backend. Status is a cheap metadata-only entry point; open the view

@@ -498,3 +498,253 @@ NodeTest.test(
     NodeAssert.deepEqual(f.storage.get("plans.v1"), before);
   },
 );
+
+NodeTest.test(
+  "pre-create cancellation restores proposed only after safe reauthorization and persistence",
+  async () => {
+    const f = await fixture();
+    const input = await firstTask(f, await f.propose());
+    const controller = new AbortController();
+    f.ctx.ui.invalidate = async () => controller.abort();
+    await NodeAssert.rejects(() =>
+      f.invoke("view:tasks:start", input, { signal: controller.signal }),
+    );
+    NodeAssert.equal(f.calls.filter(([m]) => m === "create").length, 0);
+    NodeAssert.deepEqual(f.storage.get("plans.v1").plans[0].tasks[0].launch, { state: "proposed" });
+    NodeAssert.equal((await f.read(input.planId)).data.plan.tasks[0].launch.state, "proposed");
+  },
+);
+
+NodeTest.test(
+  "pre-create authorization failure restores proposed when reauthorization succeeds",
+  async () => {
+    const f = await fixture();
+    const input = await firstTask(f, await f.propose());
+    const metadata = f.ctx.threads.metadata;
+    let failNext = false;
+    let invalidated = false;
+    f.ctx.ui.invalidate = async () => {
+      if (!invalidated) {
+        invalidated = true;
+        failNext = true;
+      }
+    };
+    f.ctx.threads.metadata = async (request) => {
+      if (failNext) {
+        failNext = false;
+        throw new Error("permission_denied");
+      }
+      return metadata(request);
+    };
+    const result = await f.invoke("view:tasks:start", input);
+    NodeAssert.equal(result.data.results[0].state, "proposed");
+    NodeAssert.equal(f.calls.filter(([m]) => m === "create").length, 0);
+  },
+);
+
+NodeTest.test(
+  "pre-create cancellation retains the fence if recovery cannot authorize or persist",
+  async () => {
+    for (const unavailable of ["authorization", "storage"]) {
+      let recover = false;
+      const f = await fixture({
+        failWrite: (value) =>
+          recover &&
+          unavailable === "storage" &&
+          value.plans[0].tasks[0].launch.state === "proposed",
+      });
+      const input = await firstTask(f, await f.propose());
+      const controller = new AbortController();
+      f.ctx.ui.invalidate = async () => {
+        recover = true;
+        controller.abort();
+        if (unavailable === "authorization") f.revoke();
+      };
+      await NodeAssert.rejects(() =>
+        f.invoke("view:tasks:start", input, { signal: controller.signal }),
+      );
+      NodeAssert.equal(f.calls.filter(([m]) => m === "create").length, 0);
+      const restarted = await fixture({ storage: f.storage });
+      NodeAssert.equal(
+        (await restarted.read(input.planId)).data.plan.tasks[0].launch.state,
+        "uncertain",
+      );
+      await restarted.invoke("view:tasks:start", input);
+      NodeAssert.equal(restarted.calls.filter(([m]) => m === "create").length, 0);
+    }
+  },
+);
+
+NodeTest.test(
+  "active pending presents starting; restarted pending stays uncertain and cannot redispatch",
+  async () => {
+    const f = await fixture();
+    const input = await firstTask(f, await f.propose());
+    const entered = deferred(),
+      release = deferred();
+    f.setDispatch(async (_request, _invocation, { metadata }) => {
+      entered.resolve();
+      await release.promise;
+      metadata.set("child", { ...source, id: "child" });
+      return { threadId: "child" };
+    });
+    const running = f.invoke("view:tasks:start", input);
+    await entered.promise;
+    try {
+      const live = (await f.read(input.planId)).data.plan.tasks[0].launch;
+      NodeAssert.equal(live.state, "starting");
+      NodeAssert.equal(live.diagnostic, undefined);
+      await NodeAssert.rejects(
+        () => f.invoke("view:launcher:acknowledge", { ...input, confirmUncertain: true }),
+        /starting|progress/i,
+      );
+      const restarted = await fixture({ storage: f.storage });
+      NodeAssert.equal(
+        (await restarted.read(input.planId)).data.plan.tasks[0].launch.state,
+        "uncertain",
+      );
+      await restarted.invoke("view:tasks:start", input);
+      NodeAssert.equal(restarted.calls.filter(([m]) => m === "create").length, 0);
+    } finally {
+      release.resolve();
+      await running;
+    }
+  },
+);
+
+NodeTest.test(
+  "human acknowledgement retires uncertain identity, retains diagnostics, and permits bounded eviction",
+  async () => {
+    const f = await fixture({
+      dispatch: async () => {
+        throw Object.assign(new Error("secret response"), { reason: "invalid_input" });
+      },
+    });
+    let oldest;
+    for (let i = 0; i < 12; i++) {
+      const input = await firstTask(f, await f.propose());
+      oldest ??= input;
+      await f.invoke("view:tasks:start", input, { operationId: `launch-${i}` });
+    }
+    await NodeAssert.rejects(() => f.propose(), /unresolved/);
+    const before = copy(
+      f.storage.get("plans.v1").plans.find((p) => p.id === oldest.planId).tasks[0].launch,
+    );
+    const acknowledged = await f.invoke(
+      "view:launcher:acknowledge",
+      { ...oldest, confirmUncertain: true },
+      { operationId: "acknowledge-1" },
+    );
+    NodeAssert.equal(acknowledged.data.plan.tasks[0].launch.state, "abandoned");
+    NodeAssert.match(acknowledged.data.plan.tasks[0].launch.diagnostic, /may.*exist/i);
+    const stored = f.storage.get("plans.v1").plans.find((p) => p.id === oldest.planId)
+      .tasks[0].launch;
+    NodeAssert.deepEqual(stored.request, before.request);
+    NodeAssert.equal(stored.operationId, before.operationId);
+    NodeAssert.equal(stored.diagnostic, before.diagnostic);
+    await f.invoke("view:tasks:acknowledge", { ...oldest, confirmUncertain: true });
+    const restarted = await fixture({ storage: f.storage, effects: f.effects });
+    NodeAssert.equal(
+      (await restarted.invoke("view:tasks:start", oldest)).data.results[0].state,
+      "abandoned",
+    );
+    NodeAssert.equal(restarted.calls.filter(([m]) => m === "create").length, 0);
+    await f.propose();
+    NodeAssert.equal(f.storage.get("plans.v1").plans.length, 12);
+    await NodeAssert.rejects(() => f.read(oldest.planId), /unavailable|removed/);
+    await NodeAssert.rejects(() => f.invoke("view:tasks:start", oldest), /unavailable|removed/);
+    await NodeAssert.rejects(
+      () => f.invoke("view:tasks:acknowledge", { ...oldest, confirmUncertain: true }),
+      /unavailable|removed/,
+    );
+    NodeAssert.equal(f.calls.filter(([m]) => m === "create").length, 12);
+  },
+);
+
+NodeTest.test(
+  "acknowledgement rejects agents, missing confirmation, stale identities, foreign plans, and resolved tasks",
+  async () => {
+    const f = await fixture({
+      dispatch: async () => {
+        throw new Error("lost");
+      },
+    });
+    const input = await firstTask(f, await f.propose());
+    const ack = { ...input, confirmUncertain: true };
+    await NodeAssert.rejects(() => f.invoke("view:tasks:acknowledge", ack), /uncertain|unresolved/);
+    await f.invoke("view:tasks:start", input);
+    const unchanged = copy(f.storage.get("plans.v1"));
+    for (const [payload, extra, pattern] of [
+      [ack, { caller: { kind: "agent", threadId: source.id } }, /person|human/],
+      [input, {}, /confirm|acknowledge/i],
+      [{ ...ack, confirmUncertain: "true" }, {}, /confirm|acknowledge/i],
+      [{ ...ack, taskId: "stale-task" }, {}, /task|belong/],
+      [{ ...ack, planId: "stale-plan" }, {}, /unavailable|removed/],
+      [ack, { context: { threadId: "foreign" } }, /belong/],
+      [{ ...ack, retry: true }, {}, /field/],
+    ])
+      await NodeAssert.rejects(() => f.invoke("view:tasks:acknowledge", payload, extra), pattern);
+    NodeAssert.deepEqual(f.storage.get("plans.v1"), unchanged);
+    const started = await fixture();
+    const startedInput = await firstTask(started, await started.propose());
+    await started.invoke("view:tasks:start", startedInput);
+    await NodeAssert.rejects(
+      () => started.invoke("view:tasks:acknowledge", { ...startedInput, confirmUncertain: true }),
+      /uncertain|unresolved/,
+    );
+  },
+);
+
+NodeTest.test(
+  "acknowledgement of interrupted pending never dispatches, and a failed write keeps evidence",
+  async () => {
+    const f = await fixture({
+      failWrite: (value) =>
+        value.plans.some((p) =>
+          p.tasks.some((t) => ["started", "uncertain"].includes(t.launch.state)),
+        ),
+    });
+    const input = await firstTask(f, await f.propose());
+    await f.invoke("view:tasks:start", input);
+    NodeAssert.equal(f.storage.get("plans.v1").plans[0].tasks[0].launch.state, "pending");
+    const failing = await fixture({
+      storage: f.storage,
+      failWrite: (value) =>
+        value.plans.some((p) => p.tasks.some((t) => t.launch.state === "abandoned")),
+    });
+    await NodeAssert.rejects(
+      () => failing.invoke("view:tasks:acknowledge", { ...input, confirmUncertain: true }),
+      /storage/,
+    );
+    NodeAssert.equal(f.storage.get("plans.v1").plans[0].tasks[0].launch.state, "pending");
+    const restarted = await fixture({ storage: f.storage });
+    NodeAssert.equal(
+      (await restarted.invoke("view:tasks:acknowledge", { ...input, confirmUncertain: true })).data
+        .plan.tasks[0].launch.state,
+      "abandoned",
+    );
+    await restarted.invoke("view:tasks:start", input);
+    NodeAssert.equal(restarted.calls.filter(([m]) => m === "create").length, 0);
+  },
+);
+
+NodeTest.test(
+  "a pending write that commits before losing its response can safely recover without a create",
+  async () => {
+    const f = await fixture();
+    const input = await firstTask(f, await f.propose());
+    const persist = f.ctx.storage.set;
+    let losePendingResponse = true;
+    f.ctx.storage.set = async (key, value) => {
+      await persist(key, value);
+      if (losePendingResponse && value.plans[0].tasks[0].launch.state === "pending") {
+        losePendingResponse = false;
+        throw new Error("storage response lost secret");
+      }
+    };
+    const result = await f.invoke("view:tasks:start", input);
+    NodeAssert.equal(result.data.results[0].state, "proposed");
+    NodeAssert.equal(f.calls.filter(([m]) => m === "create").length, 0);
+    NodeAssert.deepEqual(f.storage.get("plans.v1").plans[0].tasks[0].launch, { state: "proposed" });
+  },
+);

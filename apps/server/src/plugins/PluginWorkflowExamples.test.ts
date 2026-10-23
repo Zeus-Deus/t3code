@@ -326,9 +326,37 @@ it.live(
         );
         expect(decodeView(oldSuccess.data).plan.tasks[0]!.launch.threadId).toBe("child-1");
         expect(creates).toHaveLength(2);
+        const acknowledgement = { ...second, confirmUncertain: true };
+        const agentDenied = yield* supervisor
+          .invoke(
+            {
+              ...base,
+              generation: "two",
+              handler: "view:tasks:acknowledge",
+              input: acknowledgement,
+            },
+            host,
+          )
+          .pipe(Effect.flip);
+        expect(agentDenied.message).toContain("Only a person");
+        const abandoned = yield* supervisor.invoke(
+          { ...restarted, handler: "view:tasks:acknowledge", input: acknowledgement },
+          host,
+        );
+        expect(decodeView(abandoned.data).plan.tasks[1]!.launch.state).toBe("abandoned");
+        yield* supervisor.stop(base.installationId);
+        const retired = yield* supervisor.invoke(
+          { ...restarted, generation: "three", handler: "view:launcher:start", input: second },
+          host,
+        );
+        expect(decodeView(retired.data).plan.tasks[1]!.launch.state).toBe("abandoned");
+        expect(creates).toHaveLength(2);
         revoked = true;
         const denied = yield* supervisor
-          .invoke({ ...restarted, handler: "view:tasks:read", input: selection }, host)
+          .invoke(
+            { ...restarted, generation: "three", handler: "view:tasks:read", input: selection },
+            host,
+          )
           .pipe(Effect.flip);
         expect(denied.message).toBe("Fixture authority revoked.");
       }),
@@ -411,6 +439,16 @@ it.live(
           )
           .pipe(Effect.forkChild);
         yield* Deferred.await(accepted);
+        const inFlight = yield* supervisor.invoke(
+          {
+            ...client,
+            operationId: "read-in-flight",
+            handler: "view:launcher:read",
+            input: selection,
+          },
+          host,
+        );
+        expect(decodeView(inFlight.data).plan.tasks[0]!.launch.state).toBe("starting");
         yield* Fiber.interrupt(running);
         yield* Deferred.await(cancelled);
         yield* supervisor.stop(base.installationId);
