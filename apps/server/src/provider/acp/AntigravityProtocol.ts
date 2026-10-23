@@ -3,7 +3,9 @@ import type {
   ProviderUserInputAnswers,
   UserInputQuestion,
 } from "@t3tools/contracts";
+import { MAX_PLUGIN_RESULT_BYTES } from "@t3tools/contracts";
 import { isWorkspaceImagePreviewPath } from "@t3tools/shared/filePreview";
+import { compactDynamicToolOutput } from "@t3tools/shared/toolOutput";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
@@ -37,6 +39,9 @@ const decodeSingleAnswer = Schema.decodeUnknownOption(
   Schema.Union([Schema.String, Schema.Tuple([Schema.String])]),
 );
 const decodeToolCallContent = Schema.decodeUnknownOption(AcpWireSchema.ToolCallContent);
+const decodeSerializedToolOutput = Schema.decodeUnknownOption(
+  Schema.fromJsonString(Schema.Unknown),
+);
 
 /** Native questions share the permission method, but their choices are not approvals. */
 export function isAntigravityUserInputRequest(
@@ -216,6 +221,22 @@ export function sanitizeAntigravityToolPayload(payload: unknown): unknown {
 }
 const isJsonRecord = Schema.is(Schema.Record(Schema.String, Schema.Json));
 
+function sanitizeAntigravityToolOutput(output: unknown): unknown {
+  if (
+    typeof output === "string" &&
+    output.length > TOOL_TEXT_LIMIT &&
+    output.length <= MAX_PLUGIN_RESULT_BYTES &&
+    Buffer.byteLength(output) <= MAX_PLUGIN_RESULT_BYTES
+  ) {
+    const parsed = Option.getOrUndefined(decodeSerializedToolOutput(output));
+    if (compactDynamicToolOutput(parsed)?.isError === true) {
+      // A plain truncated tail loses the failure flag and permits cached success recovery.
+      return { isError: true, content: [{ type: "text", text: boundText(output) }] };
+    }
+  }
+  return sanitizeAntigravityToolPayload(output);
+}
+
 export function normalizeAntigravitySessionUpdate(
   notification: EffectAcpSchema.SessionNotification,
 ): EffectAcpSchema.SessionNotification {
@@ -240,7 +261,7 @@ export function normalizeAntigravitySessionUpdate(
         ? { rawInput: sanitizeAntigravityToolPayload(update.rawInput) }
         : {}),
       ...(update.rawOutput !== undefined
-        ? { rawOutput: sanitizeAntigravityToolPayload(update.rawOutput) }
+        ? { rawOutput: sanitizeAntigravityToolOutput(update.rawOutput) }
         : {}),
       ...(update.content !== undefined ? { content: content ?? [] } : {}),
       ...(update._meta !== undefined ? { _meta: isJsonRecord(meta) ? meta : null } : {}),

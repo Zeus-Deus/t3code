@@ -13,7 +13,11 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import { resolveSelfInvocation } from "@t3tools/shared/nodeRuntime";
-import { htmlRenderFromToolItem, pluginCardFromToolItem } from "@t3tools/shared/toolOutput";
+import {
+  compactDynamicToolOutput,
+  htmlRenderFromToolItem,
+  pluginCardFromToolItem,
+} from "@t3tools/shared/toolOutput";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -622,10 +626,18 @@ describe("AntigravityAdapterV2 html_render pages", () => {
                     status: "completed",
                     rawOutput: "Summary of published",
                   });
+                  yield* mcpSessions.recordPluginCard(
+                    cardSession,
+                    { ...pluginRequest, operationId: "proposal-unrelated" },
+                    pluginCard,
+                  );
                   for (const [toolCallId, operationId] of [
                     ["card-published", "proposal-1"],
                     ["card-unpublished", "proposal-2"],
                     ["card-failed", "proposal-3"],
+                    ["card-error-small", "proposal-4"],
+                    ["card-error-large", "proposal-5"],
+                    ["card-error-previous", "proposal-6"],
                   ] as const) {
                     const input = { ...pluginRequest, operationId };
                     yield* send({
@@ -639,11 +651,25 @@ describe("AntigravityAdapterV2 html_render pages", () => {
                     if (toolCallId !== "card-unpublished") {
                       yield* mcpSessions.recordPluginCard(cardSession, input, pluginCard);
                     }
+                    if (toolCallId === "card-error-previous") {
+                      yield* send({
+                        sessionUpdate: "tool_call_update",
+                        toolCallId,
+                        status: "completed",
+                        rawOutput: "Summary before failure",
+                      });
+                      yield* mcpSessions.recordPluginCard(cardSession, input, pluginCard);
+                    }
                     yield* send({
                       sessionUpdate: "tool_call_update",
                       toolCallId,
                       status: toolCallId === "card-failed" ? "failed" : "completed",
-                      rawOutput: `Summary of ${toolCallId}`,
+                      rawOutput: toolCallId.startsWith("card-error-")
+                        ? JSON.stringify({
+                            isError: true,
+                            data: "x".repeat(toolCallId === "card-error-small" ? 100 : 20_000),
+                          })
+                        : `Summary of ${toolCallId}`,
                     });
                   }
                   yield* send({
@@ -800,12 +826,45 @@ describe("AntigravityAdapterV2 html_render pages", () => {
         ),
         [pluginCard, pluginCard],
       );
-      for (const operationId of ["proposal-1", "proposal-3"]) {
+      for (const nativeId of ["card-error-small", "card-error-large", "card-error-previous"]) {
+        const matching = events.flatMap((event) =>
+          event.type === "turn_item.updated" &&
+          event.turnItem.type === "dynamic_tool" &&
+          event.turnItem.nativeItemRef?.nativeId === nativeId &&
+          event.turnItem.status === "completed"
+            ? [pluginCardFromToolItem(event.turnItem)]
+            : [],
+        );
+        assert.deepEqual(
+          matching,
+          nativeId === "card-error-previous" ? [pluginCard, undefined] : [undefined],
+          nativeId,
+        );
+        assert.strictEqual(
+          compactDynamicToolOutput(tool(nativeId)?.output)?.isError,
+          true,
+          nativeId,
+        );
+      }
+      for (const operationId of [
+        "proposal-1",
+        "proposal-3",
+        "proposal-4",
+        "proposal-5",
+        "proposal-6",
+      ]) {
         assert.strictEqual(
           yield* mcpSessions.takePluginCard(threadId, { ...pluginRequest, operationId }),
           undefined,
         );
       }
+      assert.deepEqual(
+        yield* mcpSessions.takePluginCard(threadId, {
+          ...pluginRequest,
+          operationId: "proposal-unrelated",
+        }),
+        pluginCard,
+      );
     }).pipe(Effect.provide(layerSession), Effect.scoped),
   );
 });
