@@ -48,9 +48,11 @@ comes from its credential, independently of the target in `invocation.context`.
 The host derives optional `subagentOf` from the caller's own thread or the
 context's target by following only subagent edges to the first non-subagent
 ancestor, stopping at forks; if ancestry cannot be resolved, it omits `subagentOf`
-and sets `lineage: "unresolved"` on that caller or context so ownership-sensitive
-plugins can return a retryable message before allocating to `threadId` (older v1
-hosts omit this signal).
+and sets `lineage: "unresolved"` on that caller or context. A deleted ancestor
+may make this permanent; ask the person before allocating an ownership-sensitive
+resource. Older v1 hosts omit this signal. An outside MCP agent may have
+`caller.kind === "agent"` without a `caller.threadId`; do not substitute an
+agent-supplied context for verified identity.
 Use `ctx.dataDirectory` for private files that must survive worker restarts and
 package updates. Keep runtime-generated files out of the installed snapshot.
 
@@ -72,6 +74,9 @@ Reusing the invocation's operation identity and effect key prevents duplicate
 T3 commands after a lost response or process restart. Distinct intended effects
 need distinct keys. This protection does not make your own HTTP requests or
 filesystem writes idempotent.
+Each new client action has a new operation identity. If a workflow spans
+separate clicks, keep its progress in storage and make uncertain outcomes
+visible rather than blindly repeating a command.
 
 The logical effect identity survives plugin revision changes. Reusing it with
 different input rejects with `code: "idempotency_conflict"`; the error may
