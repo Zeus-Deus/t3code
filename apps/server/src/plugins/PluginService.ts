@@ -1,5 +1,14 @@
 import {
   AuthOrchestrationOperateScope,
+  AuthOrchestrationReadScope,
+  ProjectId,
+  PluginTreeInput,
+  PluginTreeSnapshot,
+  PluginCardViewInput,
+  PluginCardReference,
+  PluginChanged,
+  PluginInvalidateInput,
+  MAX_PLUGIN_CARD_BYTES,
   MAX_PLUGIN_RESULT_IMAGE_BYTES,
   pluginCompatibility,
   pluginRequestedCapabilities,
@@ -22,6 +31,14 @@ import {
   type PluginRunFinalizedEvent,
   type ThreadId,
 } from "@t3tools/contracts";
+import { pluginThreadGroupingState } from "./pluginThreadMetadata.ts";
+import * as PubSub from "effect/PubSub";
+import * as Projects from "../project/ProjectService.ts";
+import {
+  validatePluginTree,
+  validatePluginCard,
+  isPluginTreeMembershipEvent,
+} from "./pluginContributions.ts";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
@@ -58,6 +75,10 @@ const isFailureReason = Schema.is(PluginFailureReason);
 const isInvokeHandler = Schema.is(PluginInvokeInput.fields.handler);
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const encodeResult = Schema.encodeEffect(Schema.fromJsonString(PluginInvokeResult));
+const decodeEventProject = Schema.decodeUnknownOption(Schema.Struct({ projectId: ProjectId }));
+const decodeInvalidate = Schema.decodeUnknownEffect(PluginInvalidateInput);
+const decodeTreeInput = Schema.decodeUnknownEffect(PluginTreeInput);
+const decodeCardViewInput = Schema.decodeUnknownEffect(PluginCardViewInput);
 const decodeInvoke = Schema.decodeUnknownEffect(PluginInvokeInput);
 const decodeResult = Schema.decodeUnknownEffect(PluginInvokeResult);
 const decodeThreadStatus = Schema.decodeUnknownEffect(Schema.NullOr(PluginThreadStatus));
@@ -154,6 +175,15 @@ export class PluginService extends Context.Service<
       input: PluginInvokeInput,
       actor: PluginActor,
     ) => Effect.Effect<PluginInvokeResult, PluginError>;
+    readonly readTree: (
+      input: PluginTreeInput,
+      actor: PluginActor,
+    ) => Effect.Effect<PluginTreeSnapshot, PluginError>;
+    readonly readCardView: (
+      input: PluginCardViewInput,
+      actor: PluginActor,
+    ) => Effect.Effect<PluginViewResult, PluginError>;
+    readonly subscribeChanges: (actor: PluginActor) => Stream.Stream<PluginChanged, PluginError>;
     readonly readView: (input: PluginViewInput) => Effect.Effect<PluginViewResult, PluginError>;
     readonly deliver: (input: {
       readonly installationId: string;
@@ -169,6 +199,7 @@ const make = Effect.gen(function* () {
   const policy = yield* PluginExecutionPolicy;
   const runner = yield* ProcessRunner.ProcessRunner;
   const threads = yield* Threads.ThreadManagementService;
+  const projects = yield* Projects.ProjectService;
   const applicationEvents = yield* ApplicationEvents.OrchestrationEventStore;
   const receipts = yield* PluginReceipts.PluginReceipts;
   const host = yield* PluginHost.PluginHost;
@@ -192,7 +223,11 @@ const make = Effect.gen(function* () {
       // Incomplete or corrupt lineage must not assign ownership to an arbitrary ancestor.
       return { lineage: "unresolved" };
     },
-    Effect.catch(() => Effect.succeed({ lineage: "unresolved" as const })),
+    Effect.catch(() =>
+      Effect.logWarning("Plugin lineage metadata could not be read.").pipe(
+        Effect.as({ lineage: "unresolved" as const }),
+      ),
+    ),
   );
   const callerFor = Effect.fn("PluginService.callerFor")(function* (
     actor: PluginActor,
@@ -250,6 +285,228 @@ const make = Effect.gen(function* () {
     if (!record) return yield* notFound();
     return record;
   });
+  // One wakeup can represent many edits. Each subscriber tracks revisions, so coalescing never
+  // drops a different topic when a slow/hidden client cannot consume every signal.
+  const changed = yield* PubSub.sliding<void>(1);
+  const changedTopics = new Map<string, { change: PluginChanged; revision: number }>();
+  let changeRevision = 0;
+  const topicsFor = (installation: PluginInstallation) => [
+    ...(installation.manifest.nativeTrees ?? []).map((tree) => `tree:${tree.id}`),
+    ...installation.manifest.views.map((view) => `view:${view.id}`),
+    ...(installation.manifest.threadStatus ?? []).map((status) => `status:${status.id}`),
+  ];
+  const emitChanges = Effect.fn("PluginService.emitChanges")(function* (
+    installation: PluginInstallation,
+    topics: readonly string[] = topicsFor(installation),
+  ) {
+    for (const [key, value] of changedTopics)
+      if (
+        value.change.installationId === installation.installationId &&
+        value.change.generation !== installation.generation
+      )
+        changedTopics.delete(key);
+    for (const topic of new Set(topics)) {
+      const change = {
+        installationId: installation.installationId,
+        generation: installation.generation,
+        topic,
+      };
+      changedTopics.set(`${installation.installationId}:${topic}`, {
+        change,
+        revision: ++changeRevision,
+      });
+    }
+    yield* PubSub.publish(changed, undefined);
+  });
+  const authorizeContribution = Effect.fn("PluginService.authorizeContribution")(function* (
+    installationId: string,
+    generation: string,
+    actor: PluginActor,
+    capability: "ui" | "ui.native-trees" | "ui.conversation-cards",
+  ) {
+    yield* actor.authorize?.() ?? Effect.void;
+    if (!actor.scopes.includes(AuthOrchestrationReadScope)) return yield* pluginPermissionDenied();
+    const disabled = assertPluginExecutionAllowed(policy);
+    if (disabled) return yield* disabled;
+    const state = yield* read;
+    const record = recordFor(state, installationId);
+    if (!record) return yield* notFound();
+    const inactive =
+      PluginStore.assertMutablePluginRecord(record) ??
+      assertPluginActive(present(record), generation) ??
+      assertNotTransitioning(installationId);
+    if (inactive) return yield* inactive;
+    if (!pluginCapabilityAllowed(record.installation, actor, capability))
+      return yield* pluginPermissionDenied();
+    return { state, record };
+  });
+  const subscribeChanges = (actor: PluginActor): Stream.Stream<PluginChanged, PluginError> =>
+    Stream.unwrap(
+      Effect.gen(function* () {
+        yield* actor.authorize?.() ?? Effect.void;
+        if (!actor.scopes.includes(AuthOrchestrationReadScope))
+          return yield* pluginPermissionDenied();
+        const seen = new Map<string, number>();
+        const subscription = yield* PubSub.subscribe(changed);
+        const signals = Stream.fromSubscription(subscription).pipe(
+          Stream.mapEffect(
+            Effect.fn("PluginService.changedTopics")(() =>
+              Effect.sync(() => {
+                const pending = [...changedTopics.entries()].filter(
+                  ([key, item]) => (seen.get(key) ?? 0) < item.revision,
+                );
+                for (const [key, item] of pending) seen.set(key, item.revision);
+                return pending.map(([, item]) => item.change);
+              }),
+            ),
+          ),
+          Stream.flatMap(Stream.fromIterable),
+        );
+        const afterSequence = yield* applicationEvents.latestApplicationSequence.pipe(
+          Effect.mapError(failure),
+        );
+        const runtimeEdges = new Map<string, string>();
+        const groupingStates = new Map<ThreadId, ReturnType<typeof pluginThreadGroupingState>>();
+        const membership = applicationEvents.streamApplicationEvents({ afterSequence }).pipe(
+          Stream.filter((stored) => {
+            if (!("event" in stored)) return isPluginTreeMembershipEvent(stored.type);
+            const event = stored.event;
+            if (isPluginTreeMembershipEvent(event.type)) return true;
+            if (
+              event.type !== "run.created" &&
+              event.type !== "run.updated" &&
+              event.type !== "runtime-request.updated"
+            )
+              return false;
+            const key =
+              event.type === "runtime-request.updated"
+                ? `request:${event.threadId}:${event.payload.id}`
+                : `run:${event.threadId}`;
+            const edge = `${event.payload.id}:${event.payload.status}`;
+            if (runtimeEdges.get(key) === edge) return false;
+            runtimeEdges.set(key, edge);
+            if (runtimeEdges.size > 2_000) {
+              const oldest = runtimeEdges.keys().next().value;
+              if (oldest !== undefined) runtimeEdges.delete(oldest);
+            }
+            return true;
+          }),
+          Stream.mapEffect(
+            Effect.fn("PluginService.membershipChanged")(function* (event) {
+              let projectId: ProjectId | undefined;
+              if (
+                "event" in event &&
+                ["run.created", "run.updated", "runtime-request.updated"].includes(event.event.type)
+              ) {
+                const shell = yield* threads
+                  .getThreadShell(event.event.threadId)
+                  .pipe(Effect.mapError(() => pluginPermissionDenied()));
+                if (shell === null || shell.deletedAt !== null) return [];
+                const grouping = pluginThreadGroupingState(shell);
+                const previous = groupingStates.get(shell.id);
+                if (
+                  previous?.isRunning === grouping.isRunning &&
+                  previous.needsAttention === grouping.needsAttention
+                )
+                  return [];
+                groupingStates.set(shell.id, grouping);
+                if (groupingStates.size > 2_000) {
+                  const oldest = groupingStates.keys().next().value;
+                  if (oldest !== undefined) groupingStates.delete(oldest);
+                }
+                projectId = shell.projectId;
+              } else {
+                projectId =
+                  "event" in event
+                    ? Option.getOrUndefined(
+                        Option.map(
+                          decodeEventProject(event.event.payload),
+                          (payload) => payload.projectId,
+                        ),
+                      )
+                    : event.aggregateId;
+                if (
+                  "event" in event &&
+                  ["thread.snoozed", "thread.unsnoozed", "thread.deleted"].includes(
+                    event.event.type,
+                  )
+                )
+                  groupingStates.delete(event.event.threadId);
+              }
+              if (projectId === undefined) return [];
+              return (yield* read).installations
+                .filter(
+                  (record) =>
+                    !record.removed &&
+                    pluginCapabilityAllowed(record.installation, actor, "threads.read", projectId),
+                )
+                .flatMap(({ installation }) =>
+                  (installation.manifest.nativeTrees ?? []).map((tree) => ({
+                    installationId: installation.installationId,
+                    generation: installation.generation,
+                    topic: `tree:${tree.id}`,
+                  })),
+                );
+            }),
+          ),
+          Stream.flatMap(Stream.fromIterable),
+          Stream.mapError(failure),
+        );
+        const initial = (yield* read).installations
+          .filter((record) => !record.removed)
+          .flatMap(({ installation }) =>
+            topicsFor(installation).map((topic) => ({
+              installationId: installation.installationId,
+              generation: installation.generation,
+              topic,
+            })),
+          );
+        const pending = new Map<string, PluginChanged>();
+        const updates = Stream.merge(signals, membership).pipe(
+          Stream.tap((change) =>
+            Effect.sync(() => {
+              pending.set(`${change.installationId}:${change.generation}:${change.topic}`, change);
+            }),
+          ),
+          // Debounce only after a semantic signal, with no idle timer or payload stream.
+          Stream.debounce("25 millis"),
+          Stream.flatMap(() => {
+            const batch = [...pending.values()];
+            pending.clear();
+            return Stream.fromIterable(batch);
+          }),
+        );
+        return Stream.concat(Stream.fromIterable(initial), updates).pipe(
+          Stream.mapEffect(
+            Effect.fn("PluginService.authorizeChanged")(function* (change) {
+              yield* actor.authorize?.() ?? Effect.void;
+              const state = yield* read;
+              const record = recordFor(state, change.installationId);
+              if (
+                !record ||
+                assertPluginExecutionAllowed(policy) ||
+                assertPluginActive(present(record), change.generation) ||
+                assertNotTransitioning(change.installationId)
+              )
+                return [];
+              const capability = change.topic.startsWith("tree:") ? "ui.native-trees" : "ui";
+              if (!pluginCapabilityAllowed(record.installation, actor, capability)) return [];
+              if (
+                capability === "ui.native-trees" &&
+                (!pluginCapabilityAllowed(record.installation, actor, "threads.read") ||
+                  !record.installation.grants.projectIds.some(
+                    (id) => actor.projectIds === undefined || actor.projectIds.includes(id),
+                  ))
+              )
+                return [];
+              yield* actor.authorize?.() ?? Effect.void;
+              return store.isCurrent(state) ? [change] : [];
+            }),
+          ),
+          Stream.flatMap(Stream.fromIterable),
+        );
+      }),
+    );
   const mutable = Effect.fn("PluginService.mutable")(function* (installationId: string) {
     const record = yield* get(installationId);
     const denied = PluginStore.assertMutablePluginRecord(record);
@@ -285,6 +542,8 @@ const make = Effect.gen(function* () {
       .pipe(Effect.mapError((error) => (isPluginError(error) ? error : failure())));
     if (previousGeneration !== nextGeneration) {
       verifiedSnapshots.delete(`${installationId}:${previousGeneration}`);
+      for (const [key, item] of changedTopics)
+        if (item.change.installationId === installationId) changedTopics.delete(key);
     }
     return result;
   });
@@ -1603,6 +1862,35 @@ const make = Effect.gen(function* () {
                 message: "The plugin invocation exceeded its host-call limit.",
               }),
             );
+          if (method === "ui.invalidate")
+            return Effect.gen(function* () {
+              const current = yield* authorizeContribution(
+                input.installationId,
+                input.generation,
+                actor,
+                "ui",
+              );
+              if (!pluginCapabilityAllowed(current.record.installation, actor, "ui.changes"))
+                return yield* pluginPermissionDenied();
+              const request = yield* decodeInvalidate(value).pipe(
+                Effect.mapError(
+                  () =>
+                    new PluginError({
+                      reason: "invalid_input",
+                      message: "The plugin invalidation topics are invalid.",
+                    }),
+                ),
+              );
+              const declared = topicsFor(current.record.installation);
+              if (request.topics.some((topic) => !declared.includes(topic)))
+                return yield* new PluginError({
+                  reason: "invalid_handler",
+                  message: "The plugin invalidation topic is not declared.",
+                });
+              yield* actor.authorize?.() ?? Effect.void;
+              if (!store.isCurrent(current.state)) return yield* pluginPermissionDenied();
+              yield* emitChanges(current.record.installation, request.topics);
+            });
           return host.call(
             {
               installationId: input.installationId,
@@ -1622,7 +1910,64 @@ const make = Effect.gen(function* () {
       const revoked = assertPluginActive(present(latest), input.generation);
       if (revoked) return yield* revoked;
       // Only files the host verified become images; a worker cannot inline unchecked bytes.
-      const { images: _unverified, workerImages, ...result } = output;
+      const { images: _unverified, workerImages, card: requestedCard, ...plainResult } = output;
+      let card: PluginCardReference | undefined;
+      if (requestedCard !== undefined) {
+        if (
+          !pluginCapabilityAllowed(latest.installation, actor, "ui.conversation-cards") ||
+          !pluginCapabilityAllowed(latest.installation, actor, "ui")
+        )
+          return yield* pluginPermissionDenied();
+        const request = yield* Effect.try({
+          try: () => validatePluginCard(requestedCard),
+          catch: () =>
+            new PluginError({
+              reason: "invalid_result",
+              message: "The plugin card is invalid or exceeds its bounds.",
+            }),
+        });
+        if (
+          !latest.installation.manifest.views.some(
+            (view) => view.id === request.viewId && view.placement === "conversation",
+          )
+        )
+          return yield* new PluginError({
+            reason: "invalid_result",
+            message: "The plugin card view is not declared.",
+          });
+        card = {
+          ...request,
+          installationId: latest.installation.installationId,
+          generation: latest.installation.generation,
+          dataOwner: dataKeyFor(latest),
+        };
+        if (
+          Buffer.byteLength(
+            yield* encodeJson(card).pipe(
+              Effect.mapError(
+                () =>
+                  new PluginError({
+                    reason: "invalid_result",
+                    message: "The plugin card must be JSON.",
+                  }),
+              ),
+            ),
+            "utf8",
+          ) > MAX_PLUGIN_CARD_BYTES
+        )
+          return yield* new PluginError({
+            reason: "invalid_result",
+            message: "The plugin card exceeds its bounds.",
+          });
+      }
+      const result =
+        card === undefined
+          ? plainResult
+          : {
+              ...plainResult,
+              message: `${plainResult.message === undefined ? "" : `${plainResult.message.slice(0, 14_000)}\n\n`}Historical proposal: ${card.summary}`,
+              card,
+            };
       if (
         Buffer.byteLength(
           yield* encodeResult(result).pipe(
@@ -1698,6 +2043,18 @@ const make = Effect.gen(function* () {
             : current,
         );
       }
+      yield* actor.authorize?.() ?? Effect.void;
+      const finalRecord = yield* get(input.installationId);
+      const finalDenied = assertPluginActive(present(finalRecord), input.generation);
+      if (finalDenied) return yield* finalDenied;
+      if (
+        card !== undefined &&
+        (!pluginCapabilityAllowed(finalRecord.installation, actor, "ui.conversation-cards") ||
+          !pluginCapabilityAllowed(finalRecord.installation, actor, "ui"))
+      )
+        return yield* pluginPermissionDenied();
+      if (input.handler.startsWith("action:") || event)
+        yield* emitChanges(finalRecord.installation);
       return images === undefined ? decoded : { ...decoded, images };
     },
     (effect, input, _actor, event = false) =>
@@ -1840,6 +2197,135 @@ const make = Effect.gen(function* () {
       });
     return { html };
   });
+  const readTree = Effect.fn("PluginService.readTree")(function* (
+    input: PluginTreeInput,
+    actor: PluginActor,
+  ) {
+    const request = yield* decodeTreeInput(input).pipe(
+      Effect.mapError(
+        () =>
+          new PluginError({
+            reason: "invalid_input",
+            message: "The plugin tree request is invalid.",
+          }),
+      ),
+    );
+    const before = yield* authorizeContribution(
+      request.installationId,
+      request.generation,
+      actor,
+      "ui.native-trees",
+    );
+    if (
+      actor.source !== "client" ||
+      !(before.record.installation.manifest.nativeTrees ?? []).some(
+        (tree) => tree.id === request.treeId,
+      ) ||
+      !pluginCapabilityAllowed(before.record.installation, actor, "threads.read")
+    )
+      return yield* pluginPermissionDenied();
+    const result = yield* execute({ ...request, handler: `tree:${request.treeId}` }, actor);
+    const tree = yield* Effect.try({
+      try: () => validatePluginTree(result.data),
+      catch: () =>
+        new PluginError({
+          reason: "invalid_result",
+          message: "The plugin returned an invalid native tree.",
+        }),
+    });
+    const current = yield* authorizeContribution(
+      request.installationId,
+      request.generation,
+      actor,
+      "ui.native-trees",
+    );
+    const nodeProjects = new Map<string, ProjectId>();
+    const byId = new Map(tree.nodes.map((node) => [node.id, node]));
+    for (const node of tree.nodes) {
+      if (node.kind === "group") continue;
+      let projectId: ProjectId;
+      if (node.kind === "project") projectId = node.projectId;
+      else {
+        const thread = yield* threads
+          .getThreadShell(node.threadId)
+          .pipe(Effect.mapError(() => pluginPermissionDenied()));
+        if (thread === null || thread.deletedAt !== null) return yield* pluginPermissionDenied();
+        projectId = thread.projectId;
+      }
+      if (!pluginCapabilityAllowed(current.record.installation, actor, "threads.read", projectId))
+        return yield* pluginPermissionDenied();
+      if (
+        node.kind === "project" &&
+        Option.isNone(
+          yield* projects.getShell(projectId).pipe(Effect.mapError(() => pluginPermissionDenied())),
+        )
+      )
+        return yield* pluginPermissionDenied();
+      nodeProjects.set(node.id, projectId);
+    }
+    for (const node of tree.nodes) {
+      let parentId = node.parentId;
+      const projectId = nodeProjects.get(node.id);
+      while (parentId !== undefined) {
+        const parentProject = nodeProjects.get(parentId);
+        if (projectId !== undefined && parentProject !== undefined && parentProject !== projectId)
+          return yield* new PluginError({
+            reason: "invalid_result",
+            message: "The tree places a reference under another project.",
+          });
+        parentId = byId.get(parentId)?.parentId;
+      }
+    }
+    yield* actor.authorize?.() ?? Effect.void;
+    if (!store.isCurrent(current.state) || assertNotTransitioning(request.installationId))
+      return yield* pluginPermissionDenied();
+    return tree;
+  });
+  const readCardView = Effect.fn("PluginService.readCardView")(function* (
+    input: PluginCardViewInput,
+    actor: PluginActor,
+  ) {
+    const request = yield* decodeCardViewInput(input).pipe(
+      Effect.mapError(
+        () =>
+          new PluginError({
+            reason: "invalid_input",
+            message: "The plugin card request is invalid.",
+          }),
+      ),
+    );
+    const current = yield* authorizeContribution(
+      request.installationId,
+      request.generation,
+      actor,
+      "ui.conversation-cards",
+    );
+    if (
+      !pluginCapabilityAllowed(current.record.installation, actor, "ui") ||
+      dataKeyFor(current.record) !== request.card.dataOwner ||
+      !current.record.installation.manifest.views.some(
+        (view) => view.id === request.card.viewId && view.placement === "conversation",
+      )
+    )
+      return yield* pluginPermissionDenied();
+    yield* Effect.try({
+      try: () => validatePluginCard(request.card),
+      catch: () =>
+        new PluginError({
+          reason: "invalid_input",
+          message: "The plugin card exceeds its bounds.",
+        }),
+    });
+    const result = yield* readView({
+      installationId: request.installationId,
+      generation: request.generation,
+      viewId: request.card.viewId,
+    });
+    yield* actor.authorize?.() ?? Effect.void;
+    if (!store.isCurrent(current.state) || assertNotTransitioning(request.installationId))
+      return yield* pluginPermissionDenied();
+    return result;
+  });
   const deliver = Effect.fn("PluginService.deliver")(function* (input: {
     readonly installationId: string;
     readonly generation: string;
@@ -1922,6 +2408,9 @@ const make = Effect.gen(function* () {
     remove,
     updateSettings,
     invoke,
+    readTree,
+    readCardView,
+    subscribeChanges,
     readView,
     deliver,
   });

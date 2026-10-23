@@ -50,6 +50,15 @@ const fixture = Effect.gen(function* () {
     export async function activate(ctx) {
       let activationDenied = false;
       try { await ctx.storage.get("activation"); } catch { activationDenied = true; }
+      ctx.trees.register("native", async () => {
+        await ctx.projects.list({limit: 1});
+        await ctx.threads.list({projectId: "p", limit: 1});
+        await ctx.threads.metadata({threadId: "t"});
+        await ctx.models.list({projectId: "p", limit: 1});
+        await ctx.ui.invalidate(["tree:native", "tree:native"]);
+        return {nodes: [{id: "t", kind: "thread", threadId: "t"}]};
+      });
+      ctx.handle("action:card", () => ({card:{viewId:"card",summary:"Historical proposal",data:{planId:"one"},dataOwner:"forged"}}));
       ctx.handle("action:echo", async (input, invocation) => {
         await ctx.storage.set("value", input);
         const caller = await ctx.settings.get("caller");
@@ -175,6 +184,40 @@ const provide = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   effect.pipe(Effect.provide(Layer.merge(runtimeLayer, NodeServices.layer)), Effect.scoped);
 
 describe("PluginSupervisor real child", () => {
+  it.live(
+    "carries additive SDK tree, metadata, invalidation and card requests through real IPC",
+    () =>
+      provide(
+        Effect.gen(function* () {
+          const supervisor = yield* PluginSupervisor.PluginSupervisor;
+          const input = yield* fixture;
+          const methods: string[] = [];
+          const result = yield* supervisor.invoke({ ...input, handler: "tree:native" }, (method) =>
+            Effect.sync(() => {
+              methods.push(method);
+              return {};
+            }),
+          );
+          expect(result.data).toEqual({ nodes: [{ id: "t", kind: "thread", threadId: "t" }] });
+          expect(methods).toEqual([
+            "projects.list",
+            "threads.list",
+            "threads.metadata",
+            "models.list",
+            "ui.invalidate",
+          ]);
+          const card = yield* supervisor.invoke(
+            { ...input, handler: "action:card" },
+            () => Effect.void,
+          );
+          expect(card.card).toEqual({
+            viewId: "card",
+            summary: "Historical proposal",
+            data: { planId: "one" },
+          });
+        }),
+      ),
+  );
   it.effect.each([
     { mode: "throw", reason: "operation_failed", workerFault: false },
     { mode: "hang", reason: "timeout", workerFault: false },

@@ -150,6 +150,7 @@ const collectSnapshot = async (directory: string) => {
     manifest.views.map((item) => item.id),
     (manifest.threadStatus ?? []).map((item) => item.id),
     (manifest.sidebarViews ?? []).map((item) => item.id),
+    (manifest.nativeTrees ?? []).map((item) => item.id),
     manifest.settings.map((item) => item.key),
     manifest.capabilities,
   ]) {
@@ -179,6 +180,16 @@ const collectSnapshot = async (directory: string) => {
       reason: "invalid_manifest",
       message: `Sidebar views require the "${PLUGIN_SIDEBAR_VIEW_CAPABILITY}" capability.`,
     });
+  for (const [declared, required] of [
+    [(manifest.nativeTrees ?? []).length > 0, "ui.native-trees"],
+    [manifest.views.some((view) => view.placement === "conversation"), "ui.conversation-cards"],
+  ] as const) {
+    if (declared && !pluginRequestedCapabilities(manifest).includes(required))
+      throw new PluginError({
+        reason: "invalid_manifest",
+        message: `This contribution requires the "${required}" capability.`,
+      });
+  }
   for (const setting of manifest.settings) {
     if (
       setting.default !== undefined &&

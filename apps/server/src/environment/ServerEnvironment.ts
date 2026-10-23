@@ -1,4 +1,6 @@
 import {
+  PLUGIN_CAPABILITIES,
+  PLUGIN_VIEW_BRIDGE_FEATURES,
   EnvironmentId,
   ORCHESTRATION_PROTOCOL_VERSION,
   PROVIDER_SEND_TURN_MAX_FILE_BYTES,
@@ -217,6 +219,11 @@ export const make = Effect.gen(function* () {
       plugins: {
         apiVersion: 1,
         recovery: true,
+        capabilities: PLUGIN_CAPABILITIES,
+        nativeTrees: true,
+        changes: true,
+        conversationCards: true,
+        viewBridgeFeatures: PLUGIN_VIEW_BRIDGE_FEATURES,
         ...(serverConfig.pluginsEnabled === false ? { executionDisabled: true } : {}),
       },
       repositoryIdentity: true,

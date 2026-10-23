@@ -285,3 +285,55 @@ describe("plugin package snapshots", () => {
     ),
   );
 });
+
+it.effect(
+  "requires named capabilities and unique declarations for native trees and conversation views",
+  () =>
+    provide(
+      Effect.gen(function* () {
+        const input = yield* fixture;
+        const nativeTrees = [{ id: "native", title: "Native" }];
+        yield* input.fs.writeFileString(
+          NodePath.join(input.directory, "t3-plugin.json"),
+          JSON.stringify({ ...manifest, nativeTrees }),
+        );
+        expect((yield* inspectPluginSource(input.directory).pipe(Effect.flip)).reason).toBe(
+          "invalid_manifest",
+        );
+        yield* input.fs.writeFileString(
+          NodePath.join(input.directory, "t3-plugin.json"),
+          JSON.stringify({
+            ...manifest,
+            capabilities: ["ui.native-trees"],
+            nativeTrees: [...nativeTrees, ...nativeTrees],
+          }),
+        );
+        expect((yield* inspectPluginSource(input.directory).pipe(Effect.flip)).reason).toBe(
+          "invalid_manifest",
+        );
+        yield* input.fs.writeFileString(NodePath.join(input.directory, "view.html"), "<p>Card</p>");
+        const views = [
+          { id: "card", title: "Card", placement: "conversation", entry: "view.html" },
+        ];
+        yield* input.fs.writeFileString(
+          NodePath.join(input.directory, "t3-plugin.json"),
+          JSON.stringify({ ...manifest, views }),
+        );
+        expect((yield* inspectPluginSource(input.directory).pipe(Effect.flip)).reason).toBe(
+          "invalid_manifest",
+        );
+        yield* input.fs.writeFileString(
+          NodePath.join(input.directory, "t3-plugin.json"),
+          JSON.stringify({
+            ...manifest,
+            capabilities: ["ui.native-trees", "ui.conversation-cards"],
+            nativeTrees,
+            views,
+          }),
+        );
+        expect((yield* inspectPluginSource(input.directory)).manifest.nativeTrees).toEqual(
+          nativeTrees,
+        );
+      }),
+    ),
+);

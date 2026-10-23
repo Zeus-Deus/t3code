@@ -9,11 +9,14 @@ import {
   CommandId,
   EventId,
   MessageId,
+  NodeId,
+  RuntimeRequestId,
   PluginError,
   ProjectId,
   ProviderInstanceId,
   RunId,
   ThreadId,
+  type ApplicationStoredEvent,
   type OrchestrationV2Run,
   type OrchestrationV2ThreadShell,
   type OrchestrationV2StoredEvent,
@@ -42,6 +45,7 @@ import * as Events from "../persistence/OrchestrationEventStore.ts";
 import * as Threads from "../orchestration-v2/ThreadManagementService.ts";
 import { OrchestratorProjectionError } from "../orchestration-v2/Orchestrator.ts";
 import * as Launch from "../orchestration-v2/ThreadLaunchService.ts";
+import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as Projects from "../project/ProjectService.ts";
 import * as Settings from "../serverSettings.ts";
 import { v2PullRequestThread } from "../orchestration-v2/testkit/pullRequestFixtures.ts";
@@ -298,6 +302,7 @@ const fixture = Effect.gen(function* () {
       Layer.succeed(Git.PluginGitSource, { checkout: (source) => gitCheckout(source) }),
     ),
     Layer.provide(domainLayer),
+    Layer.provide(Layer.mock(ProviderRegistry.ProviderRegistry)({})),
     Layer.provide(
       Layer.mock(Launch.ThreadLaunchService)({
         launch: (input) =>
@@ -4512,4 +4517,371 @@ it.effect("looks up each thread shell once when counting a backlog of finalized 
     expect((yield* f.plugins.backlog({ installationId: item.installationId })).count).toBe(3);
     expect(f.shellReads.length - readsBefore).toBe(1);
   }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect(
+  "serves authorized native trees, rechecks grant revocation and stamps card data ownership",
+  () =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      const extended: PluginManifest = {
+        ...manifest,
+        capabilities: [
+          ...manifest.capabilities,
+          "ui.native-trees",
+          "ui.conversation-cards",
+          "ui.changes",
+        ],
+        nativeTrees: [{ id: "projects", title: "Projects" }],
+        views: [
+          ...manifest.views,
+          { id: "card", title: "Plan", entry: "view.html", placement: "conversation" },
+        ],
+      };
+      yield* f.fs.writeFileString(
+        f.path.join(f.directory, "t3-plugin.json"),
+        yield* encodeJson(extended),
+      );
+      const installed = yield* f.install();
+      const enabled = yield* f.plugins.consent({
+        installationId: installed.installationId,
+        digest: installed.digest,
+        grants: {
+          capabilities: [
+            "storage",
+            "threads.read",
+            "ui",
+            "ui.native-trees",
+            "ui.conversation-cards",
+            "ui.changes",
+          ],
+          projectIds: [projectId],
+        },
+      });
+      f.setHandler(() =>
+        Effect.succeed({
+          data: {
+            nodes: [
+              { id: "p", kind: "project", projectId },
+              { id: "t", parentId: "p", kind: "thread", threadId },
+            ],
+          },
+        }),
+      );
+      const request = {
+        installationId: enabled.installationId,
+        generation: enabled.generation,
+        treeId: "projects",
+        operationId: "tree-read",
+      };
+      expect(
+        (yield* f.plugins.readTree(request, { ...actor, scopes: [AuthOrchestrationReadScope] }))
+          .nodes,
+      ).toHaveLength(2);
+      f.threadShells.set(threadId, { ...shell, deletedAt: at });
+      expect((yield* f.plugins.readTree(request, actor).pipe(Effect.flip)).reason).toBe(
+        "permission_denied",
+      );
+      f.threadShells.set(threadId, { ...shell, projectId: ProjectId.make("foreign") });
+      const denied = yield* f.plugins.readTree(request, actor).pipe(Effect.flip);
+      expect(denied.reason).toBe("permission_denied");
+      f.threadShells.set(threadId, shell);
+      f.setHandler(() =>
+        Effect.succeed({
+          card: { viewId: "card", summary: "Historical proposal", data: { planId: "one" } },
+        }),
+      );
+      const result = yield* f.plugins.invoke(
+        {
+          installationId: enabled.installationId,
+          generation: enabled.generation,
+          handler: "action:review",
+          operationId: "card",
+        },
+        actor,
+      );
+      expect(result.message).toContain("Historical proposal: Historical proposal");
+      expect(result.card).toMatchObject({
+        installationId: enabled.installationId,
+        generation: enabled.generation,
+        viewId: "card",
+        summary: "Historical proposal",
+        dataOwner: enabled.installationId,
+      });
+      if (!result.card) return yield* Effect.die("Expected a host card reference");
+      expect(
+        (yield* f.plugins.readCardView(
+          {
+            installationId: enabled.installationId,
+            generation: enabled.generation,
+            card: result.card,
+          },
+          actor,
+        )).html,
+      ).toContain("Board");
+      const foreign = yield* f.plugins
+        .readCardView(
+          {
+            installationId: enabled.installationId,
+            generation: enabled.generation,
+            card: { ...result.card, dataOwner: "foreign" },
+          },
+          actor,
+        )
+        .pipe(Effect.flip);
+      expect(foreign.reason).toBe("permission_denied");
+      yield* f.plugins.setEnabled({ installationId: enabled.installationId, enabled: false });
+      expect((yield* f.plugins.readTree(request, actor).pipe(Effect.flip)).reason).toBe(
+        "stale_generation",
+      );
+      const resumed = yield* f.plugins.setEnabled({
+        installationId: enabled.installationId,
+        enabled: true,
+      });
+      expect(
+        (yield* f.plugins.readCardView(
+          {
+            installationId: resumed.installationId,
+            generation: resumed.generation,
+            card: result.card,
+          },
+          actor,
+        )).html,
+      ).toContain("Board");
+      yield* f.plugins.remove({ installationId: resumed.installationId });
+      const reinstalled = yield* f.install();
+      const restored = yield* f.plugins.consent({
+        installationId: reinstalled.installationId,
+        digest: reinstalled.digest,
+        grants: enabled.grants,
+      });
+      expect(
+        (yield* f.plugins.readCardView(
+          {
+            installationId: restored.installationId,
+            generation: restored.generation,
+            card: result.card,
+          },
+          actor,
+        )).html,
+      ).toContain("Board");
+      yield* f.plugins.remove({ installationId: restored.installationId });
+      const otherSource = yield* f.fs.makeTempDirectoryScoped({ prefix: "plugin-other-source-" });
+      for (const file of ["t3-plugin.json", "plugin.mjs", "view.html"])
+        yield* f.fs.writeFileString(
+          f.path.join(otherSource, file),
+          yield* f.fs.readFileString(f.path.join(f.directory, file)),
+        );
+      const foreignInstalled = yield* f.plugins.install({
+        source: { kind: "local", directory: otherSource },
+      });
+      const foreignEnabled = yield* f.plugins.consent({
+        installationId: foreignInstalled.installationId,
+        digest: foreignInstalled.digest,
+        grants: enabled.grants,
+      });
+      expect(
+        (yield* f.plugins
+          .readCardView(
+            {
+              installationId: foreignEnabled.installationId,
+              generation: foreignEnabled.generation,
+              card: result.card,
+            },
+            actor,
+          )
+          .pipe(Effect.flip)).reason,
+      ).toBe("permission_denied");
+    }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect("coalesces payload-free contribution invalidations and revokes session callbacks", () =>
+  Effect.gen(function* () {
+    const f = yield* fixture;
+    const extended: PluginManifest = {
+      ...manifest,
+      capabilities: [...manifest.capabilities, "ui.native-trees", "ui.changes"],
+      nativeTrees: [{ id: "native", title: "Native" }],
+    };
+    yield* f.fs.writeFileString(
+      f.path.join(f.directory, "t3-plugin.json"),
+      yield* encodeJson(extended),
+    );
+    const installed = yield* f.install();
+    const enabled = yield* f.plugins.consent({
+      installationId: installed.installationId,
+      digest: installed.digest,
+      grants: {
+        capabilities: ["threads.read", "ui", "ui.native-trees", "ui.changes"],
+        projectIds: [projectId],
+      },
+    });
+    const changes = yield* Queue.unbounded<import("@t3tools/contracts").PluginChanged>();
+    let active = true;
+    const subscriber = yield* f.plugins
+      .subscribeChanges({
+        ...actor,
+        authorize: () =>
+          active
+            ? Effect.void
+            : Effect.fail(
+                new PluginError({ reason: "permission_denied", message: "Session revoked" }),
+              ),
+      })
+      .pipe(
+        Stream.runForEach((change) => Queue.offer(changes, change)),
+        Effect.forkChild,
+      );
+    const initial = [
+      yield* Queue.take(changes),
+      yield* Queue.take(changes),
+      yield* Queue.take(changes),
+    ];
+    expect(new Set(initial.map((change) => change.topic))).toEqual(
+      new Set(["tree:native", "view:board", "status:lane"]),
+    );
+    const emitted = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    f.setHandler((_input, host) =>
+      host("ui.invalidate", { topics: ["tree:native", "tree:native", "view:board"] }).pipe(
+        Effect.andThen(Deferred.succeed(emitted, undefined)),
+        Effect.andThen(Deferred.await(release)),
+        Effect.as({ message: "changed" }),
+      ),
+    );
+    const invocation = yield* f.plugins
+      .invoke(
+        {
+          installationId: enabled.installationId,
+          generation: enabled.generation,
+          handler: "action:review",
+          operationId: "invalidate",
+        },
+        actor,
+      )
+      .pipe(Effect.forkChild);
+    yield* Deferred.await(emitted);
+    yield* TestClock.adjust("25 millis");
+    const received = [yield* Queue.take(changes), yield* Queue.take(changes)];
+    expect(new Set(received.map((change) => change.topic))).toEqual(
+      new Set(["tree:native", "view:board"]),
+    );
+    expect(
+      received.every(
+        (change) => Object.keys(change).sort().join(",") === "generation,installationId,topic",
+      ),
+    ).toBe(true);
+    expect(yield* Queue.size(changes)).toBe(0);
+    active = false;
+    yield* Deferred.succeed(release, undefined);
+    yield* Fiber.join(invocation);
+    yield* TestClock.adjust("25 millis");
+    expect((yield* Fiber.join(subscriber).pipe(Effect.flip)).reason).toBe("permission_denied");
+  }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect(
+  "invalidates native grouping on distinct run and attention edges without reading streamed updates",
+  () =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      const extended: PluginManifest = {
+        ...manifest,
+        capabilities: [...manifest.capabilities, "ui.native-trees"],
+        nativeTrees: [{ id: "native", title: "Native" }],
+      };
+      yield* f.fs.writeFileString(
+        f.path.join(f.directory, "t3-plugin.json"),
+        yield* encodeJson(extended),
+      );
+      const installed = yield* f.install();
+      yield* f.plugins.consent({
+        installationId: installed.installationId,
+        digest: installed.digest,
+        grants: {
+          capabilities: ["threads.read", "ui", "ui.native-trees"],
+          projectIds: [projectId],
+        },
+      });
+      const requestId = RuntimeRequestId.make("request:grouping");
+      const events: ApplicationStoredEvent[] = [
+        ...(["starting", "running", "running", "completed"] as const).map(
+          (status, index): OrchestrationV2StoredEvent => ({
+            sequence: 50 + index,
+            commandId: null,
+            event: {
+              id: EventId.make(`event:grouping:${index}`),
+              threadId,
+              occurredAt: at,
+              type: "run.updated",
+              payload: { ...run, status },
+            },
+          }),
+        ),
+        ...(["pending", "pending", "resolved"] as const).map(
+          (status, index): OrchestrationV2StoredEvent => ({
+            sequence: 54 + index,
+            commandId: null,
+            event: {
+              id: EventId.make(`event:attention:${index}`),
+              threadId,
+              occurredAt: at,
+              type: "runtime-request.updated",
+              payload: {
+                id: requestId,
+                nodeId: NodeId.make("node:grouping"),
+                providerTurnId: null,
+                nativeRequestRef: null,
+                kind: "command",
+                status,
+                responseCapability: { type: "not_resumable", reason: "fixture" },
+                createdAt: at,
+                resolvedAt: status === "resolved" ? at : null,
+              },
+            },
+          }),
+        ),
+      ];
+      const drained = yield* Deferred.make<void>();
+      f.setLive(() =>
+        Stream.fromIterable(events).pipe(
+          Stream.rechunk(1),
+          Stream.tap((stored) =>
+            Effect.sync(() => {
+              if (!("event" in stored)) return;
+              if (stored.event.type === "run.updated") {
+                const status = stored.event.payload.status;
+                f.threadShells.set(threadId, {
+                  ...shell,
+                  status,
+                  activityRunStatus: status === "starting" || status === "running" ? status : null,
+                });
+              } else if (stored.event.type === "runtime-request.updated") {
+                f.threadShells.set(threadId, {
+                  ...shell,
+                  pendingRuntimeRequest:
+                    stored.event.payload.status === "pending"
+                      ? { id: requestId, kind: "command", createdAt: at }
+                      : null,
+                });
+              }
+            }),
+          ),
+          Stream.ensuring(Deferred.succeed(drained, undefined)),
+        ),
+      );
+      const changes = yield* Queue.unbounded<import("@t3tools/contracts").PluginChanged>();
+      yield* f.plugins.subscribeChanges(actor).pipe(
+        Stream.runForEach((change) => Queue.offer(changes, change)),
+        Effect.forkChild,
+      );
+      yield* Queue.take(changes);
+      yield* Queue.take(changes);
+      yield* Queue.take(changes);
+      yield* Deferred.await(drained);
+      yield* TestClock.adjust("25 millis");
+      expect(f.shellReads).toHaveLength(5);
+      expect(yield* Queue.size(changes)).toBe(1);
+      expect((yield* Queue.take(changes)).topic).toBe("tree:native");
+    }).pipe(Effect.provide(base()), Effect.scoped),
 );

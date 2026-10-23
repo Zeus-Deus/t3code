@@ -15,13 +15,14 @@ import type {
 } from "../../../../packages/plugin-sdk/src/index.ts";
 import {
   PLUGIN_CAPABILITIES,
-  PluginInvokeResult,
   PluginRunFinalizedEvent,
+  PluginInvokeResult,
 } from "@t3tools/contracts";
 import {
   MAX_PLUGIN_FAILURE_MESSAGE_CHARS,
   MAX_PLUGIN_PENDING_HOST_CALLS,
   PluginWorkerImages,
+  PluginWorkerResult,
   decodeParentMessage,
   pluginMessageFits,
   type PluginChildMessage,
@@ -30,7 +31,15 @@ import {
 } from "./pluginIpc.ts";
 import { safePluginPath } from "./pluginSource.ts";
 
-const decodeResult = Schema.decodeUnknownSync(PluginInvokeResult);
+const decodeWorkerResult = Schema.decodeUnknownSync(
+  Schema.Struct({ ...PluginWorkerResult.fields, intents: Schema.optionalKey(Schema.Unknown) }),
+);
+const decodePublicResult = Schema.decodeUnknownSync(PluginInvokeResult);
+const decodeResult = (value: unknown) => {
+  const { card, ...rest } = decodeWorkerResult(value);
+  const decoded = decodePublicResult(rest);
+  return card === undefined ? decoded : { ...decoded, card };
+};
 const decodeEvent = Schema.decodeUnknownSync(PluginRunFinalizedEvent);
 const decodeImages = Schema.decodeUnknownSync(PluginWorkerImages);
 const handlerFailureMessage = (error: unknown): string | undefined => {
@@ -212,7 +221,9 @@ export const runPluginHostChild = async (): Promise<void> => {
         ready ||
         handlers.has(name) ||
         handlers.size >= 256 ||
-        !/^(?:action:[\w.-]+|status:[\w.-]+|view:[\w.-]+:[\w.-]+|event:run\.finalized)$/.test(name)
+        !/^(?:action:[\w.-]+|status:[\w.-]+|tree:[\w.-]+|view:[\w.-]+:[\w.-]+|event:run\.finalized)$/.test(
+          name,
+        )
       )
         throw new Error("Plugin handler registration is invalid.");
       handlers.set(name, handler);
@@ -242,7 +253,36 @@ export const runPluginHostChild = async (): Promise<void> => {
           await hostCall("storage.delete", { key });
         },
       },
+      projects: {
+        list: async (input = {}) =>
+          (await hostCall("projects.list", input)) as Awaited<
+            ReturnType<PluginContext["projects"]["list"]>
+          >,
+      },
+      models: {
+        list: async (input) =>
+          (await hostCall("models.list", input)) as Awaited<
+            ReturnType<PluginContext["models"]["list"]>
+          >,
+      },
+      ui: {
+        invalidate: async (topics) => {
+          await hostCall("ui.invalidate", { topics });
+        },
+      },
+      trees: {
+        register: (id, handler) =>
+          handle(`tree:${id}`, async (_input, invocation) => ({ data: await handler(invocation) })),
+      },
       threads: {
+        list: async (input) =>
+          (await hostCall("threads.list", input)) as Awaited<
+            ReturnType<PluginContext["threads"]["list"]>
+          >,
+        metadata: async (input) =>
+          (await hostCall("threads.metadata", input)) as Awaited<
+            ReturnType<PluginContext["threads"]["metadata"]>
+          >,
         read: async (input) =>
           (await hostCall("threads.read", input)) as Awaited<
             ReturnType<PluginContext["threads"]["read"]>

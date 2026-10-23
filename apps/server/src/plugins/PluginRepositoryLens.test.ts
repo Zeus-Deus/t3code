@@ -111,7 +111,21 @@ const loadPlugin = Effect.fn("RepositoryLensTest.loadPlugin")((initialPath: stri
         },
       },
       storage: { get: unexpected, set: unexpected, delete: unexpected },
-      threads: { read: unexpected, send: unexpected, create: unexpected },
+      threads: {
+        read: unexpected,
+        send: unexpected,
+        create: unexpected,
+        list: unexpected,
+        metadata: unexpected,
+      },
+      projects: { list: unexpected },
+      models: { list: unexpected },
+      trees: {
+        register: () => {
+          throw new Error("Unexpected tree registration.");
+        },
+      },
+      ui: { invalidate: unexpected },
       events: {
         onRunFinalized: () => {
           throw new Error("Unexpected event subscription.");

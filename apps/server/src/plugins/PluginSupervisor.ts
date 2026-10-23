@@ -6,6 +6,7 @@ import {
   type PluginInvocationContext,
   type PluginCaller,
   type PluginInvokeResult,
+  type PluginConversationCard,
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import {
@@ -51,7 +52,8 @@ export interface PluginExecutionInput {
   readonly capabilities?: readonly string[];
 }
 /** A handler's result plus any image files it named, which the caller must resolve. */
-export type PluginWorkerOutput = PluginInvokeResult & {
+export type PluginWorkerOutput = Omit<PluginInvokeResult, "card"> & {
+  readonly card?: PluginConversationCard;
   readonly workerImages?: ReadonlyArray<PluginWorkerImage>;
 };
 export type PluginHostCall = (

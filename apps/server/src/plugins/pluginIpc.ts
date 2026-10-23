@@ -4,9 +4,20 @@ import {
   PLUGIN_RESULT_IMAGE_MIME_TYPES,
   PluginInvocationContext,
   PluginCaller,
-  PluginInvokeResult,
+  PluginConversationCard,
+  PluginClientIntent,
+  PluginResultImage,
   ThreadId,
 } from "@t3tools/contracts";
+
+export const PluginWorkerResult = Schema.Struct({
+  message: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(16_000))),
+  data: Schema.optionalKey(Schema.Unknown),
+  intents: Schema.optionalKey(Schema.Array(PluginClientIntent).check(Schema.isMaxLength(20))),
+  unsupportedIntentCount: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
+  images: Schema.optionalKey(Schema.Array(PluginResultImage).check(Schema.isMaxLength(4))),
+  card: Schema.optionalKey(PluginConversationCard),
+});
 
 const PLUGIN_IPC_VERSION = 1;
 const MAX_PLUGIN_MESSAGE_BYTES = 1_048_576;
@@ -20,6 +31,11 @@ export const PluginHostMethod = Schema.Literals([
   "threads.read",
   "threads.send",
   "threads.create",
+  "threads.list",
+  "threads.metadata",
+  "projects.list",
+  "models.list",
+  "ui.invalidate",
 ]);
 export type PluginHostMethod = typeof PluginHostMethod.Type;
 const id = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256));
@@ -75,7 +91,7 @@ export const PluginChildMessage = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("result"),
     invocationId: id,
-    result: PluginInvokeResult,
+    result: PluginWorkerResult,
     images: Schema.optionalKey(PluginWorkerImages),
   }),
   Schema.Struct({

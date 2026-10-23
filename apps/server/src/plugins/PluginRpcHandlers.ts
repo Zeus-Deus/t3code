@@ -23,6 +23,9 @@ export const pluginRpcTags = [
   WS_METHODS.pluginsUpdateSettings,
   WS_METHODS.pluginsInvoke,
   WS_METHODS.pluginsReadView,
+  WS_METHODS.pluginsReadTree,
+  WS_METHODS.pluginsReadCardView,
+  WS_METHODS.pluginsSubscribeChanges,
 ] as const;
 const group = WsRpcGroup.omit(
   ...[...WsRpcGroup.requests.keys()].filter(
@@ -69,6 +72,9 @@ export const layer = (actor: PluginActor, sessionId: AuthSessionId) =>
         [WS_METHODS.pluginsUpdateSettings]: (input) => plugins.updateSettings(input),
         [WS_METHODS.pluginsInvoke]: (input) => plugins.invoke(input, authorizedActor),
         [WS_METHODS.pluginsReadView]: (input) => plugins.readView(input),
+        [WS_METHODS.pluginsReadTree]: (input) => plugins.readTree(input, authorizedActor),
+        [WS_METHODS.pluginsReadCardView]: (input) => plugins.readCardView(input, authorizedActor),
+        [WS_METHODS.pluginsSubscribeChanges]: () => plugins.subscribeChanges(authorizedActor),
       });
     }),
   );
