@@ -61,7 +61,7 @@ export function buildProjectView<
   readonly allThreads: ReadonlyArray<ProjectViewThread>;
   readonly foldedKeys: ReadonlySet<string>;
   readonly routeThreadKey: string | null;
-  /** The project the sidebar is filtered to: it always shows, however quiet or empty. */
+  /** The project the sidebar is filtered to: the only heading, however quiet or empty. */
   readonly scopedProjectKey: string | null;
   readonly now: number;
 }): {
@@ -113,6 +113,8 @@ export function buildProjectView<
   const quietSections: ProjectViewSection<TGroup, TThread>[] = [];
   for (const group of input.groups) {
     const key = group.projectKey;
+    // The thread lists are already filtered; other projects would only look empty.
+    if (input.scopedProjectKey !== null && key !== input.scopedProjectKey) continue;
     const result = section(key, group);
     const pinnedOpen = key === input.scopedProjectKey || holdsRoute.has(key);
     if (pinnedOpen || result.liveCount > 0) {

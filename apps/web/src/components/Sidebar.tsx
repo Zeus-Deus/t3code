@@ -166,7 +166,6 @@ import {
   threadActionRequiresOperate,
 } from "./threadActionMenu.logic";
 import { usePluginThreadMenu } from "./plugins/usePluginThreadMenu";
-import { PluginSidebarViewSources } from "./plugins/PluginCatalogueSubscriptions";
 import {
   applySidebarThreadDrop,
   filterSidebarV2VisibleThreads,
@@ -256,7 +255,11 @@ import {
   SidebarQuietProjectsToggle,
   SidebarViewSwitch,
 } from "./sidebar/SidebarProjectView";
-import { useSidebarProjectFolds, useSidebarView } from "./sidebar/sidebarView";
+import {
+  useSidebarProjectFolds,
+  useSidebarView,
+  useSidebarViewSessionStore,
+} from "./sidebar/sidebarView";
 import {
   SidebarProjectFolderHeader,
   sidebarFolderRowId,
@@ -1273,8 +1276,8 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
 
   const sidebarView = useSidebarView();
   const { foldedKeys: foldedProjectKeys, toggleFold: toggleProjectFold } = useSidebarProjectFolds();
-  // Idle projects start folded away on every launch, as the shelves' paging does.
-  const [quietProjectsExpanded, setQuietProjectsExpanded] = useState(false);
+  const quietProjectsExpanded = useSidebarViewSessionStore((state) => state.quietProjectsExpanded);
+  const toggleQuietProjects = useSidebarViewSessionStore((state) => state.toggleQuietProjects);
   const projectViewRules = sidebarView.selected?.view ?? null;
   const {
     workingShelfEnabled,
@@ -2991,7 +2994,6 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   return (
     <>
       <ThreadContextDragGhost />
-      <PluginSidebarViewSources />
       <SidebarChromeHeader isElectron={isElectron} />
       <SidebarContent
         className="min-h-full"
@@ -3189,7 +3191,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                 <SidebarViewSwitch
                   options={sidebarViewOptions}
                   selectedKey={sidebarView.selected?.key ?? null}
-                  onSelect={selectSidebarView}
+                  onSelect={sidebarView.select}
                 />
               </div>
             ) : null}
@@ -3460,7 +3462,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                               key="quiet-projects"
                               count={projectLayout.quietSections.length}
                               expanded={quietProjectsExpanded}
-                              onToggle={() => setQuietProjectsExpanded((value) => !value)}
+                              onToggle={toggleQuietProjects}
                             />,
                           );
                           if (quietProjectsExpanded) {

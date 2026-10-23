@@ -78,6 +78,12 @@ function projectsPlugin(overrides: Partial<PluginInstallation> = {}): PluginInst
   };
 }
 
+function SidebarList(props: { onRender?: (view: string) => void }) {
+  const view = useSidebarView();
+  props.onRender?.(view.selected?.view.title ?? "Activity");
+  return <output data-testid="list-view">{view.selected?.view.title ?? "Activity"}</output>;
+}
+
 function Harness() {
   const view = useSidebarView();
   return (
@@ -146,6 +152,36 @@ describe("sidebar view choice", () => {
       );
       await expect.element(renderedView()).toHaveTextContent("Projects");
     }
+  });
+
+  it("returns from Settings without rendering a view disabled there", async () => {
+    setup([projectsPlugin()]);
+    // The app layout keeps the sources mounted while Settings replaces the thread list.
+    const seen: string[] = [];
+    const layout = (showList: boolean) => (
+      <>
+        <PluginSidebarViewSources />
+        {showList ? <SidebarList onRender={(view) => seen.push(view)} /> : null}
+      </>
+    );
+    window.localStorage.setItem(
+      "t3code:sidebar:view",
+      JSON.stringify({
+        key: "t3code.projects/projects",
+        environmentId: laptop,
+        pluginName: "Projects",
+        view: { id: "projects", title: "Projects", groupBy: "project" },
+      }),
+    );
+    await using screen = await render(layout(true));
+    await expect.element(page.getByTestId("list-view")).toHaveTextContent("Projects");
+
+    await screen.rerender(layout(false));
+    await act(() => catalogue.update({ installations: [] }));
+    seen.length = 0;
+    await screen.rerender(layout(true));
+    await expect.element(page.getByTestId("list-view")).toHaveTextContent("Activity");
+    expect(seen).not.toContain("Projects");
   });
 
   it("keeps the remembered view while its environment's plugins are still loading", async () => {

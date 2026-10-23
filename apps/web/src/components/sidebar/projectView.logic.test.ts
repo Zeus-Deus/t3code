@@ -118,6 +118,22 @@ describe("buildProjectView", () => {
     expect(build({ groups: [empty], scopedProjectKey: "empty" }).sections).toHaveLength(1);
   });
 
+  it("lists only the filtered project, even when the view shows empty projects", () => {
+    const app = group("app", [ref(laptop, "app")]);
+    const docs = group("docs", [ref(laptop, "docs")], daysAgo(1));
+    const old = group("old", [ref(laptop, "old")], daysAgo(30));
+    const a1 = thread("a1", laptop, "app");
+    const { sections, quietSections } = build({
+      view: { ...view, emptyProjects: "show", quietAfterDays: 3 },
+      groups: [app, docs, old],
+      liveThreads: [a1],
+      allThreads: [a1],
+      scopedProjectKey: "app",
+    });
+    expect(sections.map((section) => section.key)).toEqual(["app"]);
+    expect(quietSections).toEqual([]);
+  });
+
   it("shows threads without a project only while something there is live or open", () => {
     const scratch = { ...group("scratch", [ref(laptop, "scratch")]), isScratch: true as const };
     const parked = thread("parked", laptop, "scratch");

@@ -15,6 +15,8 @@ import { act, render } from "../../test/render";
 import type { SidebarProjectSnapshot } from "../sidebarProjectGrouping";
 import { makeThreadFixture } from "../test-fixtures";
 import type { Thread } from "../types";
+import { useUiStateStore } from "../uiStateStore";
+import { PluginSidebarViewSources } from "./plugins/PluginCatalogueSubscriptions";
 import Sidebar from "./Sidebar";
 import { useSidebarViewSourceStore } from "./sidebar/sidebarView";
 import { SidebarProvider } from "./ui/sidebar";
@@ -232,7 +234,15 @@ const thread = (
 const settled = { settledOverride: "settled" as const, settledAt: NOW };
 const routeTo = (value: Thread): ScopedThreadRef => scopeThreadRef(value.environmentId, value.id);
 
-function projectsPlugin(enabled = true): PluginInstallation {
+type ProjectsRules = { emptyProjects?: "show" | "hide"; quietAfterDays?: number };
+const projectsView = (rules: ProjectsRules) => ({
+  id: "projects",
+  title: "Projects",
+  groupBy: "project" as const,
+  ...rules,
+});
+
+function projectsPlugin(enabled = true, rules: ProjectsRules = {}): PluginInstallation {
   const digest = "a".repeat(64);
   return {
     installationId: "inst-projects",
@@ -247,7 +257,7 @@ function projectsPlugin(enabled = true): PluginInstallation {
       actions: [],
       views: [],
       settings: [],
-      sidebarViews: [{ id: "projects", title: "Projects", groupBy: "project" }],
+      sidebarViews: [projectsView(rules)],
     },
     source: { kind: "local", directory: "/plugins/projects" },
     digest,
@@ -262,16 +272,23 @@ function projectsPlugin(enabled = true): PluginInstallation {
 }
 
 /** Laptop and server both have a project with id `p1`; only the grouped one shares a heading. */
-function setup(input: { threads: Thread[]; route: Thread | null; chooseProjects?: boolean }) {
+function setup(input: {
+  threads: Thread[];
+  route: Thread | null;
+  chooseProjects?: boolean;
+  rules?: ProjectsRules;
+  scope?: string;
+}) {
   window.localStorage.clear();
   useSidebarViewSourceStore.setState({ sources: new Map() });
+  useUiStateStore.getState().setSidebarProjectScopeKey(input.scope ?? null);
   const app = [project(laptop, "p1", "App"), project(server, "p9", "App")];
   const docs = [project(server, "p1", "Docs")];
   data.update({
     threads: input.threads,
     projects: [...app, ...docs],
     groups: [group("repo:app", "App", app), group("server:p1", "Docs", docs)],
-    installations: [projectsPlugin()],
+    installations: [projectsPlugin(true, input.rules)],
     route: input.route === null ? null : routeTo(input.route),
   });
   if (input.chooseProjects !== false) {
@@ -281,7 +298,7 @@ function setup(input: { threads: Thread[]; route: Thread | null; chooseProjects?
         key: pluginSidebarViewKey("zeus-deus.projects", "projects"),
         environmentId: laptop,
         pluginName: "Projects",
-        view: { id: "projects", title: "Projects", groupBy: "project" },
+        view: projectsView(input.rules ?? {}),
       }),
     );
   }
@@ -290,6 +307,7 @@ function setup(input: { threads: Thread[]; route: Thread | null; chooseProjects?
 const renderSidebar = () =>
   render(
     <SidebarProvider>
+      <PluginSidebarViewSources />
       <Sidebar routeReveal={{ observedKey: null, pendingKey: null }} />
     </SidebarProvider>,
   );
@@ -362,6 +380,23 @@ describe("Sidebar project view", () => {
     expect(sectionNames()).toEqual(["repo:app", "server:p1"]);
   });
 
+  it("shows only the filtered project's heading, even with empty projects shown", async () => {
+    const a1 = thread("a1", laptop, "p1");
+    const d1 = thread("d1", server, "p1");
+    setup({
+      threads: [a1, d1],
+      route: a1,
+      rules: { emptyProjects: "show", quietAfterDays: 3 },
+      scope: "repo:app",
+    });
+    await using _screen = await renderSidebar();
+
+    await expect.element(page.getByRole("button", { name: "App, 1 active" })).toBeVisible();
+    expect(sectionNames()).toEqual(["repo:app"]);
+    expect(rowTitles()).toEqual(["a1"]);
+    expect(page.getByTestId("sidebar-quiet-projects-toggle").elements()).toHaveLength(0);
+  });
+
   it("folds a project to its open thread and remembers the fold", async () => {
     const a1 = thread("a1", laptop, "p1");
     const a2 = thread("a2", laptop, "p1");
@@ -385,8 +420,15 @@ describe("Sidebar project view", () => {
       .element(page.getByRole("button", { name: "Projects", exact: true }))
       .toHaveAttribute("aria-pressed", "true");
 
+    using scrolled = vi.spyOn(Element.prototype, "scrollIntoView");
     await act(() => data.update({ installations: [projectsPlugin(false)] }));
     await expect.poll(sectionNames).toEqual([]);
+    // The rows moved, so the open one is brought back into view.
+    await expect
+      .poll(() =>
+        scrolled.mock.contexts.some((row) => row instanceof Element && row.textContent === "s1"),
+      )
+      .toBe(true);
     expect(page.getByRole("group", { name: "Sidebar view" }).elements()).toHaveLength(0);
     await expect.element(page.getByText("s1")).toHaveAttribute("aria-current", "page");
     expect(rowTitles()).toEqual(["a1", "s1"]);

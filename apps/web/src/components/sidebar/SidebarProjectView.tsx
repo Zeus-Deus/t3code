@@ -104,7 +104,7 @@ export function SidebarProjectSectionHeader(props: {
       >
         {name}
       </span>
-      <span className="shrink-0 text-xs tabular-nums text-sidebar-muted-foreground/70 group-hover/project-section:opacity-0 group-focus-within/project-section:opacity-0">
+      <span className="shrink-0 text-xs tabular-nums text-sidebar-muted-foreground/70 group-hover/project-section:opacity-0 group-focus-within/project-section:opacity-0 pointer-coarse:opacity-0">
         {foldable ? (
           props.liveCount
         ) : props.lastActivityAt !== null ? (

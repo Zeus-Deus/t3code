@@ -79,6 +79,16 @@ export function useSidebarView() {
   };
 }
 
+/** "N more projects" stays open for the session, across Settings visits, but not relaunches. */
+export const useSidebarViewSessionStore = create<{
+  readonly quietProjectsExpanded: boolean;
+  readonly toggleQuietProjects: () => void;
+}>()((set) => ({
+  quietProjectsExpanded: false,
+  toggleQuietProjects: () =>
+    set((state) => ({ quietProjectsExpanded: !state.quietProjectsExpanded })),
+}));
+
 const SIDEBAR_PROJECT_FOLDS_KEY = "t3code:sidebar:project-folds";
 const FoldedProjects = Schema.Array(Schema.String);
 const NO_FOLDS: ReadonlyArray<string> = [];

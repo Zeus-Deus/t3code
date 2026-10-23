@@ -48,8 +48,8 @@ function PluginSidebarViewSource(props: { readonly environmentId: EnvironmentId 
 }
 
 /**
- * Reports which sidebar views each connected environment's plugins offer. Mounted with the sidebar
- * on every route, so disabling a plugin in settings falls back at once.
+ * Reports which sidebar views each connected environment's plugins offer. Mounted by the app
+ * layout on every route, including Settings, so disabling a plugin there falls back at once.
  */
 export function PluginSidebarViewSources() {
   const environmentIds = useConnectedEnvironmentIds();
