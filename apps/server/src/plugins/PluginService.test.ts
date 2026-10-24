@@ -1,3 +1,7 @@
+// @effect-diagnostics nodeBuiltinImport:off -- a disposable loopback WS fixture exercises real transport authorization.
+import * as NodeHttp from "node:http";
+import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
+import * as NodeSocket from "@effect/platform-node/NodeSocket";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import {
@@ -8,6 +12,7 @@ import {
   AuthOrchestrationReadScope,
   CommandId,
   EventId,
+  EnvironmentId,
   MessageId,
   NodeId,
   RuntimeRequestId,
@@ -61,8 +66,14 @@ import * as Git from "./PluginGitSource.ts";
 import * as Delivery from "./PluginEventDelivery.ts";
 import type * as RpcGroup from "effect/rpc/RpcGroup";
 import * as RpcTest from "effect/rpc/RpcTest";
+import * as RpcClient from "effect/rpc/RpcClient";
+import * as RpcServer from "effect/rpc/RpcServer";
+import * as RpcSerialization from "effect/rpc/RpcSerialization";
+import * as HttpServer from "effect/http/HttpServer";
 import * as RpcAuthorization from "../auth/RpcAuthorization.ts";
 import * as Sessions from "../auth/SessionStore.ts";
+import * as Secrets from "../auth/ServerSecretStore.ts";
+import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as RpcHandlers from "./PluginRpcHandlers.ts";
 import { rpcInstrumentationLayer } from "../observability/RpcInstrumentation.ts";
 import type { PluginActor } from "./PluginAuthority.ts";
@@ -149,7 +160,7 @@ const base = (home?: string) => {
   );
   return Database.layer.pipe(Layer.provideMerge(common));
 };
-const fixture = Effect.gen(function* () {
+const makeFixture = Effect.fn("PluginServiceTest.fixture")(function* (realWorker = false) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const directory = yield* fs.makeTempDirectoryScoped({ prefix: "plugin-source-" });
@@ -283,20 +294,37 @@ const fixture = Effect.gen(function* () {
     ),
     Layer.provideMerge(Receipts.layer),
     Layer.provide(
-      Layer.succeed(Supervisor.PluginSupervisor, {
-        invoke: (input, host) => {
-          calls.push(input);
-          hostOperation = host;
-          return handler(input, host);
-        },
-        stop: (id) =>
-          Effect.gen(function* () {
-            stopped.push(id);
-            if (stopEntered) yield* Deferred.succeed(stopEntered, undefined);
-            if (stopBarrier) yield* Deferred.await(stopBarrier);
+      realWorker
+        ? Supervisor.layer.pipe(
+            Layer.provide(
+              Layer.succeed(Supervisor.PluginRuntimeConfig, {
+                selfInvocation: {
+                  command: process.execPath,
+                  entrypoint: path.join(import.meta.dirname, "../bin.ts"),
+                },
+                startupTimeoutMs: 10000,
+                invocationTimeoutMs: 10000,
+                cancelGraceMs: 500,
+                stopGraceMs: 500,
+                restartBackoffMs: 0,
+                maxFailures: 3,
+              }),
+            ),
+          )
+        : Layer.succeed(Supervisor.PluginSupervisor, {
+            invoke: (input, host) => {
+              calls.push(input);
+              hostOperation = host;
+              return handler(input, host);
+            },
+            stop: (id) =>
+              Effect.gen(function* () {
+                stopped.push(id);
+                if (stopEntered) yield* Deferred.succeed(stopEntered, undefined);
+                if (stopBarrier) yield* Deferred.await(stopBarrier);
+              }),
+            resume: () => Effect.void,
           }),
-        resume: () => Effect.void,
-      }),
     ),
     Layer.provide(
       Layer.succeed(Git.PluginGitSource, { checkout: (source) => gitCheckout(source) }),
@@ -422,6 +450,274 @@ const fixture = Effect.gen(function* () {
     },
   };
 });
+const fixture = makeFixture();
+
+it.live(
+  "revoking a persisted session blocks a late effect across real WS, service and worker IPC",
+  () =>
+    Effect.gen(function* () {
+      const f = yield* makeFixture(true);
+      yield* f.fs.writeFileString(
+        f.path.join(f.directory, "plugin.mjs"),
+        `
+      export function activate(ctx) {
+        let release, rejection;
+        ctx.handle("action:private", input => {
+          if (input === "report") return {data: rejection};
+          release(); return {};
+        });
+        ctx.handle("action:review", async () => {
+          const gate = new Promise(resolve => { release = resolve; });
+          await ctx.storage.set("entered", true);
+          await gate;
+          try { await ctx.threads.send({threadId: ${JSON.stringify(threadId)}, text: "Must not dispatch", idempotencyKey: "late"}); }
+          catch (error) { rejection = error.reason; }
+          return {};
+        });
+      }
+    `,
+      );
+      const enabled = yield* f.enable();
+      const sessions = Context.get(
+        yield* Layer.build(
+          Sessions.layer.pipe(
+            Layer.provide(Secrets.layer),
+            Layer.provide(
+              Layer.succeed(ServerEnvironment.ServerEnvironmentIdentity, {
+                getEnvironmentId: Effect.succeed(EnvironmentId.make("plugin-ws-fixture")),
+              }),
+            ),
+          ),
+        ),
+        Sessions.SessionStore,
+      );
+      const session = yield* sessions.issue({ subject: "plugin-ws-fixture", scopes: actor.scopes });
+      const group = WsRpcGroup.omit(
+        ...[...WsRpcGroup.requests.keys()].filter(
+          (
+            tag,
+          ): tag is Exclude<
+            RpcGroup.Rpcs<typeof WsRpcGroup>["_tag"],
+            typeof WS_METHODS.pluginsInvoke
+          > => tag !== WS_METHODS.pluginsInvoke,
+        ),
+      );
+      const http = Context.get(
+        yield* Layer.build(
+          NodeHttpServer.layer(NodeHttp.createServer, {
+            host: "127.0.0.1",
+            port: 0,
+          }),
+        ),
+        HttpServer.HttpServer,
+      );
+      const handler = yield* RpcServer.toHttpEffectWebsocket(group).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            RpcHandlers.layer(actor, session.sessionId).pipe(
+              Layer.provide(Layer.succeed(Service.PluginService, f.plugins)),
+              Layer.provide(Layer.succeed(Sessions.SessionStore, sessions)),
+            ),
+            rpcInstrumentationLayer,
+            RpcAuthorization.layer(actor.scopes),
+            RpcSerialization.layerJson,
+          ),
+        ),
+      );
+      yield* http.serve(handler);
+      if (http.address._tag === "UnixPathAddress")
+        return yield* Effect.die("Expected loopback TCP fixture");
+      const protocol = yield* Layer.build(
+        RpcClient.layerProtocolSocket().pipe(
+          Layer.provide(NodeSocket.layerWebSocket(`ws://127.0.0.1:${http.address.port}/rpc`)),
+          Layer.provide(RpcSerialization.layerJson),
+        ),
+      );
+      const client = yield* RpcClient.make(group).pipe(Effect.provideContext(protocol));
+      const entered = yield* Deferred.make<void>();
+      f.afterUpdate(() => Deferred.succeed(entered, undefined));
+      const pending = yield* client[WS_METHODS.pluginsInvoke]({
+        installationId: enabled.installationId,
+        generation: enabled.generation,
+        handler: "action:review",
+        operationId: "revoked-session",
+      }).pipe(Effect.result, Effect.forkScoped);
+      yield* Deferred.await(entered);
+      f.afterUpdate(undefined);
+      expect(yield* sessions.revoke(session.sessionId)).toBe(true);
+      yield* f.plugins.invoke(
+        {
+          installationId: enabled.installationId,
+          generation: enabled.generation,
+          handler: "action:private",
+          operationId: "release-from-authorized-client",
+        },
+        actor,
+      );
+      expect(yield* Fiber.join(pending)).toMatchObject({
+        _tag: "Failure",
+        failure: { reason: "permission_denied" },
+      });
+      expect(f.commands).toEqual([]);
+      expect(
+        (yield* f.plugins.invoke(
+          {
+            installationId: enabled.installationId,
+            generation: enabled.generation,
+            handler: "action:private",
+            operationId: "inspect-host-rejection",
+            input: "report",
+          },
+          actor,
+        )).data,
+      ).toBe("permission_denied");
+      expect((yield* f.store.read).installations[0]?.storage.entered).toBe(true);
+      expect((yield* sessions.assertActive(session.sessionId).pipe(Effect.flip))._tag).toBe(
+        "SessionCredentialVerificationError",
+      );
+    }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.live("rejects hostile trees and cards from real IPC and keeps the same worker usable", () =>
+  Effect.gen(function* () {
+    const f = yield* makeFixture(true);
+    const extended: PluginManifest = {
+      ...manifest,
+      capabilities: [...manifest.capabilities, "ui.native-trees", "ui.conversation-cards"],
+      nativeTrees: [{ id: "hostile", title: "Hostile fixture" }],
+      views: [
+        ...manifest.views,
+        { id: "card", title: "Card", entry: "view.html", placement: "conversation" },
+      ],
+    };
+    yield* f.fs.writeFileString(
+      f.path.join(f.directory, "t3-plugin.json"),
+      yield* encodeJson(extended),
+    );
+    yield* f.fs.writeFileString(
+      f.path.join(f.directory, "plugin.mjs"),
+      `
+      export function activate(ctx) {
+        let mode = "healthy";
+        ctx.handle("action:review", input => {
+          mode = input;
+          if (mode === "card") return {card: {viewId: "card", summary: "Bounded fixture", data: "😀".repeat(600)}};
+          return {data: process.pid};
+        });
+        ctx.trees.register("hostile", () => {
+          if (mode === "cycle") return {nodes: [{id: "a", kind: "group", title: "A", parentId: "b"}, {id: "b", kind: "group", title: "B", parentId: "a"}]};
+          if (mode === "depth") return {nodes: Array.from({length: 17}, (_, i) => ({id: String(i), kind: "group", title: "Group", ...(i ? {parentId: String(i - 1)} : {})}))};
+          if (mode === "nodes") return {nodes: Array.from({length: 2001}, (_, i) => ({id: String(i), kind: "group", title: "Group"}))};
+          if (mode === "bytes") return {nodes: [], extra: "😀".repeat(33000)};
+          return {nodes: Array.from({length: 2000}, (_, i) => ({id: String(i), kind: "group", title: "Group"}))};
+        });
+      }
+    `,
+    );
+    const installed = yield* f.install();
+    const enabled = yield* f.plugins.consent({
+      installationId: installed.installationId,
+      digest: installed.digest,
+      grants: {
+        capabilities: ["threads.read", "ui", "ui.native-trees", "ui.conversation-cards"],
+        projectIds: [projectId],
+      },
+    });
+    const invocation = {
+      installationId: enabled.installationId,
+      generation: enabled.generation,
+      handler: "action:review",
+    };
+    const healthy = yield* f.plugins.invoke(
+      { ...invocation, operationId: "healthy", input: "healthy" },
+      actor,
+    );
+    expect(healthy.data).toBeTypeOf("number");
+    const tree = {
+      installationId: enabled.installationId,
+      generation: enabled.generation,
+      treeId: "hostile",
+    };
+    expect(
+      (yield* f.plugins.readTree({ ...tree, operationId: "max-valid" }, actor)).nodes,
+    ).toHaveLength(2000);
+    for (const mode of ["cycle", "depth", "nodes", "bytes", "card"]) {
+      const selected = yield* f.plugins
+        .invoke({ ...invocation, operationId: `select-${mode}`, input: mode }, actor)
+        .pipe(Effect.result);
+      const invalid =
+        mode === "card"
+          ? selected
+          : yield* f.plugins
+              .readTree({ ...tree, operationId: `reject-${mode}` }, actor)
+              .pipe(Effect.result);
+      expect(invalid).toMatchObject({ _tag: "Failure", failure: { reason: "invalid_result" } });
+      expect(
+        (yield* f.plugins.invoke(
+          { ...invocation, operationId: `recover-${mode}`, input: "healthy" },
+          actor,
+        )).data,
+      ).toBe(healthy.data);
+      expect((yield* f.plugins.list()).installations[0]).toMatchObject({
+        status: "idle",
+        error: null,
+      });
+    }
+  }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.live.each(["disable", "revoke", "generation"] as const)(
+  "a real worker cannot dispatch a late host effect after a service %s transition",
+  (transition) =>
+    Effect.gen(function* () {
+      const f = yield* makeFixture(true);
+      yield* f.fs.writeFileString(
+        f.path.join(f.directory, "plugin.mjs"),
+        `
+      export function activate(ctx) {
+        ctx.handle("action:review", async (_, invocation) => {
+          const canceled = new Promise(resolve => invocation.signal.addEventListener("abort", resolve, {once: true}));
+          await ctx.storage.set("entered", true);
+          await canceled;
+          try { await ctx.threads.send({threadId: ${JSON.stringify(threadId)}, text: "Must not dispatch", idempotencyKey: "late"}); }
+          catch { return {message: "revoked"}; }
+          throw new Error("Late authority survived");
+        });
+      }
+    `,
+      );
+      const enabled = yield* f.enable();
+      const entered = yield* Deferred.make<void>();
+      f.afterUpdate(() => Deferred.succeed(entered, undefined));
+      const pending = yield* f.plugins
+        .invoke(
+          {
+            installationId: enabled.installationId,
+            generation: enabled.generation,
+            handler: "action:review",
+            operationId: "transition",
+          },
+          actor,
+        )
+        .pipe(Effect.result, Effect.forkScoped);
+      yield* Deferred.await(entered);
+      f.afterUpdate(undefined);
+      const current =
+        transition === "disable"
+          ? yield* f.plugins.setEnabled({ installationId: enabled.installationId, enabled: false })
+          : yield* f.plugins.consent({
+              installationId: enabled.installationId,
+              digest: enabled.digest,
+              grants:
+                transition === "revoke" ? { capabilities: [], projectIds: [] } : enabled.grants,
+            });
+      expect(current.generation).not.toBe(enabled.generation);
+      expect(yield* Fiber.join(pending)).toMatchObject({ _tag: "Failure" });
+      expect(f.commands).toEqual([]);
+      expect((yield* f.store.read).installations[0]?.storage.entered).toBe(true);
+      expect((yield* f.plugins.list()).installations[0]?.generation).toBe(current.generation);
+    }).pipe(Effect.provide(base()), Effect.scoped),
+);
 
 it.effect(
   "stages updates without stopping the working version and promotes only exact consent",

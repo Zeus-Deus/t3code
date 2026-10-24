@@ -1,4 +1,8 @@
+// @effect-diagnostics nodeBuiltinImport:off -- captured fixture processes prove recovery after SIGKILL.
+import * as NodeChildProcess from "node:child_process";
+import * as NodePath from "node:path";
 import { expect, it } from "@effect/vitest";
+import { CommandId, ThreadId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -6,6 +10,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Sqlite from "../persistence/Sqlite.ts";
 import * as Receipts from "./PluginReceipts.ts";
+import * as CoreReceipts from "../persistence/OrchestrationCommandReceipts.ts";
 import { runMigrations } from "../persistence/Migrations.ts";
 const layer = Receipts.layer.pipe(
   Layer.provideMerge(Sqlite.layerMemory),
@@ -189,4 +194,154 @@ it.effect("does not migrate or rewrite an already-current ledger on first use", 
     });
     expect(yield* sql`PRAGMA schema_version`).toEqual(before);
   }).pipe(Effect.provide(layer)),
+);
+
+it.live.each(["reserved", "transaction", "committed"] as const)(
+  "recovers after SIGKILL at the %s boundary without losing or duplicating a core receipt",
+  (stage) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const directory = yield* fs.makeTempDirectoryScoped({ prefix: "plugin-receipt-kill-" });
+      const filename = NodePath.join(directory, "core.sqlite");
+      const database = Sqlite.layerFromPath(filename);
+      const services = Layer.mergeAll(Receipts.layer, CoreReceipts.layer).pipe(
+        Layer.provideMerge(database),
+      );
+      yield* Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`CREATE TABLE fixture_effects(thread_id TEXT NOT NULL)`;
+      }).pipe(Effect.provide(database));
+      const child = yield* Effect.acquireRelease(
+        Effect.sync(() => {
+          const process = NodeChildProcess.fork(
+            new URL("./fixtures/receiptCrashChild.ts", import.meta.url),
+            [filename, stage],
+            { execArgv: [], stdio: ["ignore", "ignore", "pipe", "ipc"] },
+          );
+          let stderr = "";
+          process.stderr?.setEncoding("utf8").on("data", (chunk: string) => {
+            stderr = (stderr + chunk).slice(-4000);
+          });
+          const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
+            (resolve) => process.once("close", (code, signal) => resolve({ code, signal })),
+          );
+          const ready = new Promise<void>((resolve, reject) => {
+            process.once("error", reject);
+            process.once("message", (message) => {
+              if (
+                typeof message === "object" &&
+                message !== null &&
+                "stage" in message &&
+                message.stage === stage
+              )
+                resolve();
+              else reject(new Error("Unexpected receipt fixture barrier"));
+            });
+            void exited.then(({ code, signal }) =>
+              reject(new Error(`Receipt fixture exited before kill: ${code}/${signal}: ${stderr}`)),
+            );
+          });
+          return { process, exited, ready };
+        }),
+        (child) =>
+          Effect.promise(async () => {
+            if (child.process.exitCode === null && child.process.signalCode === null)
+              child.process.kill("SIGKILL");
+            await child.exited;
+          }),
+      );
+      yield* Effect.tryPromise(() => child.ready);
+      expect(child.process.pid).toBeTypeOf("number");
+      expect(child.process.kill("SIGKILL")).toBe(true);
+      expect(yield* Effect.promise(() => child.exited)).toEqual({ code: null, signal: "SIGKILL" });
+      yield* Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const receipts = yield* Receipts.PluginReceipts;
+        const core = yield* CoreReceipts.OrchestrationCommandReceiptRepository;
+        const committed = stage === "committed";
+        expect(yield* sql`PRAGMA integrity_check`).toEqual([{ integrity_check: "ok" }]);
+        expect(yield* sql`SELECT status FROM orchestration_command_receipts`).toEqual(
+          committed ? [{ status: "accepted" }] : [],
+        );
+        expect(yield* sql`SELECT * FROM fixture_effects`).toHaveLength(committed ? 1 : 0);
+        expect(yield* sql`SELECT result_json FROM plugin_operation_receipts`).toEqual([
+          { result_json: null },
+        ]);
+        yield* receipts.releaseUncommitted("crash-operation", "original");
+        expect(yield* sql`SELECT operation_key FROM plugin_operation_receipts`).toHaveLength(
+          committed ? 1 : 0,
+        );
+        expect(yield* sql`SELECT operation_key FROM plugin_event_reservations`).toHaveLength(
+          committed ? 1 : 0,
+        );
+        if (committed) {
+          expect(
+            yield* receipts
+              .reserve({
+                installationId: "plugin",
+                generation: "two",
+                key: "crash-operation",
+                requestDigest: "changed",
+              })
+              .pipe(Effect.flip),
+          ).toMatchObject({ code: "idempotency_conflict" });
+        }
+        yield* receipts.reserve({
+          installationId: "plugin",
+          generation: "two",
+          key: "crash-operation",
+          requestDigest: "original",
+          deliveryId: "run",
+        });
+        yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const inserted = yield* core.insertIfAbsent({
+              commandId: CommandId.make("crash-operation"),
+              aggregateKind: "thread",
+              aggregateId: ThreadId.make("retained-thread"),
+              commandType: "thread.create",
+              acceptedAt: "2026-10-23T12:00:00.000Z",
+              resultSequence: 1,
+              status: "accepted",
+              error: null,
+            });
+            expect(inserted).toBe(!committed);
+            if (inserted) yield* sql`INSERT INTO fixture_effects VALUES('retained-thread')`;
+          }),
+        );
+        yield* receipts.complete("crash-operation", { threadId: "retained-thread" });
+        yield* receipts.acknowledge({
+          installationId: "plugin",
+          generation: "two",
+          runId: "run",
+          deliveryId: "run",
+        });
+        expect(yield* sql`SELECT * FROM fixture_effects`).toEqual([
+          { thread_id: "retained-thread" },
+        ]);
+        expect(yield* sql`SELECT status FROM orchestration_command_receipts`).toEqual([
+          { status: "accepted" },
+        ]);
+      }).pipe(Effect.provide(services));
+      yield* Effect.gen(function* () {
+        const receipts = yield* Receipts.PluginReceipts;
+        const identity = { installationId: "plugin", generation: "three" };
+        expect(
+          yield* receipts.reserve({
+            ...identity,
+            key: "crash-operation",
+            requestDigest: "original",
+          }),
+        ).toEqual({ result: { threadId: "retained-thread" } });
+        expect(yield* receipts.delivered({ ...identity, runId: "run" })).toBe(true);
+        expect(
+          yield* receipts
+            .reserve({ ...identity, key: "crash-operation", requestDigest: "changed" })
+            .pipe(Effect.flip),
+        ).toMatchObject({
+          code: "idempotency_conflict",
+          priorEffect: { threadId: "retained-thread" },
+        });
+      }).pipe(Effect.provide(services));
+    }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
 );

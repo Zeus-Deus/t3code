@@ -20,6 +20,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -42,6 +43,7 @@ import * as Database from "./PluginDatabase.ts";
 import * as Store from "./PluginStore.ts";
 import * as Receipts from "./PluginReceipts.ts";
 import * as Host from "./PluginHost.ts";
+import * as Supervisor from "./PluginSupervisor.ts";
 
 const projectId = ProjectId.make("project");
 const actor: PluginActor = {
@@ -50,12 +52,12 @@ const actor: PluginActor = {
   runtimeMode: "full-access",
   scopes: [AuthOrchestrationOperateScope, AuthOrchestrationReadScope],
 };
-const base = () =>
+const base = (database?: ReturnType<typeof Sqlite.layerFromPath>) =>
   Database.layer.pipe(
     Layer.provideMerge(
       Layer.mergeAll(
         NodeServices.layer,
-        Sqlite.layerMemory,
+        (database ?? Sqlite.layerMemory).pipe(Layer.provide(NodeServices.layer)),
         Config.layerTest(process.cwd(), { prefix: "plugin-host-test-" }).pipe(
           Layer.provide(NodeServices.layer),
         ),
@@ -1453,6 +1455,152 @@ it.effect(
           .pipe(Effect.flip, Effect.orDie)).code,
       ).toBe("idempotency_conflict");
     }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.live(
+  "retains a guarded core commit when its real plugin worker is SIGKILLed, restarted and reopened",
+  () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const directory = yield* fs.makeTempDirectoryScoped({ prefix: "plugin-guarded-kill-" });
+      const database = Sqlite.layerFromPath(`${directory}/core.sqlite`);
+      yield* fs.writeFileString(
+        `${directory}/plugin.mjs`,
+        `
+      export function activate(ctx) {
+        ctx.handle("action:pid", () => ({data: process.pid}));
+        ctx.handle("action:create", async input => ({data: await ctx.threads.create(input)}));
+      }
+    `,
+      );
+      const key = yield* Effect.gen(function* () {
+        const f = yield* fixture;
+        const sql = yield* SqlClient.SqlClient;
+        const core = Context.get(
+          yield* Layer.build(CoreReceipts.layer),
+          CoreReceipts.OrchestrationCommandReceiptRepository,
+        );
+        const supervisor = Context.get(
+          yield* Layer.build(
+            Supervisor.layer.pipe(
+              Layer.provide(
+                Layer.succeed(Supervisor.PluginRuntimeConfig, {
+                  selfInvocation: {
+                    command: process.execPath,
+                    entrypoint: new URL("../bin.ts", import.meta.url).pathname,
+                  },
+                  startupTimeoutMs: 10000,
+                  invocationTimeoutMs: 10000,
+                  cancelGraceMs: 500,
+                  stopGraceMs: 500,
+                  restartBackoffMs: 0,
+                  maxFailures: 3,
+                }),
+              ),
+            ),
+          ),
+          Supervisor.PluginSupervisor,
+        );
+        const input = {
+          installationId: "plugin",
+          generation: "one",
+          directory,
+          entry: "plugin.mjs",
+          dataDirectory: directory,
+          capabilities: ["threads.create"],
+          caller: { kind: "client" as const },
+          operationId: f.invocation.operationId,
+        };
+        const pid = (yield* supervisor.invoke(
+          { ...input, handler: "action:pid" },
+          () => Effect.void,
+        )).data;
+        if (typeof pid !== "number") return yield* Effect.die("Expected the fixture worker PID");
+        const committed = yield* Deferred.make<CommandId>();
+        const stopped = yield* Deferred.make<void>();
+        f.setBeforeLaunch((commandId) =>
+          core
+            .upsert({
+              commandId,
+              aggregateKind: "thread",
+              aggregateId: ThreadId.make(`${commandId}:thread`),
+              commandType: "thread.create",
+              acceptedAt: "2026-10-23T12:00:00.000Z",
+              resultSequence: 1,
+              status: "accepted",
+              error: null,
+            })
+            .pipe(
+              Effect.orDie,
+              Effect.andThen(Deferred.succeed(committed, commandId)),
+              Effect.andThen(Effect.never),
+            ),
+        );
+        const call: Supervisor.PluginHostCall = (method, value) =>
+          f.host
+            .call(f.invocation, method, value)
+            .pipe(Effect.onExit(() => Deferred.succeed(stopped, undefined)));
+        const pending = yield* supervisor
+          .invoke({ ...input, handler: "action:create", input: f.request }, call)
+          .pipe(Effect.result, Effect.forkScoped);
+        const commandId = yield* Deferred.await(committed);
+        process.kill(pid, "SIGKILL");
+        expect(yield* Fiber.join(pending)).toMatchObject({
+          _tag: "Failure",
+          failure: { reason: "crashed" },
+        });
+        yield* Deferred.await(stopped);
+        expect(yield* sql`SELECT status FROM orchestration_command_receipts`).toEqual([
+          { status: "accepted" },
+        ]);
+        expect(yield* sql`SELECT result_json FROM plugin_operation_receipts`).toEqual([
+          { result_json: null },
+        ]);
+        expect(
+          (yield* f.host
+            .call(f.invocation, "threads.create", { ...f.request, text: "Changed after kill" })
+            .pipe(Effect.flip, Effect.orDie)).code,
+        ).toBe("idempotency_conflict");
+        f.setBeforeLaunch((retriedKey) =>
+          core.getByCommandId({ commandId: retriedKey }).pipe(
+            Effect.orDie,
+            Effect.tap((receipt) => Effect.sync(() => expect(Option.isSome(receipt)).toBe(true))),
+            Effect.asVoid,
+          ),
+        );
+        const restarted = yield* supervisor.invoke(
+          { ...input, handler: "action:pid" },
+          () => Effect.void,
+        );
+        expect(restarted.data).not.toBe(pid);
+        expect(
+          (yield* supervisor.invoke({ ...input, handler: "action:create", input: f.request }, call))
+            .data,
+        ).toEqual({ threadId: `${commandId}:thread` });
+        expect(f.launches()).toBe(1);
+        expect(yield* sql`SELECT status FROM orchestration_command_receipts`).toHaveLength(1);
+        return commandId;
+      }).pipe(Effect.provide(base(database)), Effect.scoped);
+      yield* Effect.gen(function* () {
+        const receipts = yield* Receipts.PluginReceipts;
+        const sql = yield* SqlClient.SqlClient;
+        const row = (yield* sql<{
+          request_digest: string;
+        }>`SELECT request_digest FROM plugin_operation_receipts WHERE operation_key=${key}`)[0];
+        if (!row) return yield* Effect.die("The committed plugin receipt was lost on reopen");
+        expect(
+          yield* receipts.reserve({
+            installationId: "plugin",
+            generation: "after-reopen",
+            key,
+            requestDigest: row.request_digest,
+          }),
+        ).toEqual({ result: { threadId: `${key}:thread` } });
+        expect(yield* (yield* SqlClient.SqlClient)`PRAGMA integrity_check`).toEqual([
+          { integrity_check: "ok" },
+        ]);
+      }).pipe(Effect.provide(Receipts.layer.pipe(Layer.provideMerge(database))));
+    }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
 );
 
 const grantWorktrees = Effect.fn("test.grantWorktrees")(function* (

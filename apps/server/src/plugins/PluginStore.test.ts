@@ -1,7 +1,9 @@
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
+import { CommandId, EventId, ProjectId } from "@t3tools/contracts";
 import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -11,6 +13,9 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Sqlite from "../persistence/Sqlite.ts";
 import * as Config from "../config.ts";
+import * as EventSink from "../orchestration-v2/EventSink.ts";
+import * as EventStore from "../orchestration-v2/EventStore.ts";
+import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as Database from "./PluginDatabase.ts";
 import * as Store from "./PluginStore.ts";
 
@@ -295,6 +300,85 @@ it.effect("defers an unreadable database failure to plugin operations and preser
     expect(yield* fs.readFileString(`${config.stateDir}/plugins/state.sqlite`)).toBe(bytes);
     expect(yield* (yield* SqlClient.SqlClient)`SELECT 1 AS available`).toEqual([{ available: 1 }]);
   }).pipe(Effect.provide(testLayer()), Effect.scoped),
+);
+
+it.effect.each(["corrupt", "blocked", "newer"] as const)(
+  "keeps core project commits and replay available while plugin startup is %s",
+  (fault) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const config = yield* Config.ServerConfig;
+      const directory = `${config.stateDir}/plugins`;
+      const filename = `${directory}/state.sqlite`;
+      if (fault === "blocked") yield* fs.writeFileString(directory, "blocked plugin directory");
+      else {
+        yield* fs.makeDirectory(directory, { recursive: true });
+        if (fault === "corrupt") yield* fs.writeFileString(filename, "corrupt plugin database");
+        else
+          yield* Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient;
+            yield* sql`CREATE TABLE future_state(value TEXT)`;
+            yield* sql`INSERT INTO future_state VALUES('private future bytes')`;
+            yield* sql`PRAGMA user_version=99`;
+          }).pipe(Effect.provide(NodeSqliteClient.layer({ filename })));
+      }
+      const artifact = fault === "blocked" ? directory : filename;
+      const before = yield* fs.readFile(artifact);
+      const store = yield* buildStore;
+      expect((yield* store.read.pipe(Effect.flip)).operation).toBe("read");
+      const core = Context.get(
+        yield* Layer.build(
+          EventSink.layer.pipe(
+            Layer.provide(EventStore.layer),
+            Layer.provide(ProjectionStore.layer),
+          ),
+        ),
+        EventSink.EventSinkV2,
+      );
+      const projectId = ProjectId.make("core-project-during-plugin-fault");
+      const commandId = CommandId.make("core-project-during-plugin-fault");
+      const stamp = "2026-10-23T12:00:00.000Z";
+      const command = {
+        commandId,
+        projectId,
+        commandType: "project.create",
+        acceptedAt: DateTime.makeUnsafe(stamp),
+        event: {
+          eventId: EventId.make("core-project-during-plugin-fault"),
+          aggregateKind: "project" as const,
+          aggregateId: projectId,
+          occurredAt: stamp,
+          commandId,
+          causationEventId: null,
+          correlationId: null,
+          metadata: {},
+          type: "project.created" as const,
+          payload: {
+            projectId,
+            title: "Core remains writable",
+            workspaceRoot: "/fixture/core",
+            defaultModelSelection: null,
+            scripts: [],
+            createdAt: stamp,
+            updatedAt: stamp,
+          },
+        },
+      };
+      const first = yield* core.commitProjectCommand(command);
+      expect(first.committed).toBe(true);
+      const replay = yield* core.commitProjectCommand(command);
+      expect(replay.committed).toBe(false);
+      expect(replay.receipt).toEqual(first.receipt);
+      const sql = yield* SqlClient.SqlClient;
+      expect(
+        yield* sql`SELECT title FROM projection_projects WHERE project_id=${projectId}`,
+      ).toEqual([{ title: "Core remains writable" }]);
+      expect(
+        yield* sql`SELECT status FROM orchestration_command_receipts WHERE command_id=${commandId}`,
+      ).toEqual([{ status: "accepted" }]);
+      expect((yield* store.read.pipe(Effect.flip)).operation).toBe("read");
+      expect(yield* fs.readFile(artifact)).toEqual(before);
+    }).pipe(Effect.provide(testLayer()), Effect.scoped),
 );
 it.effect("catalogue and KV writes do not take the core writer lock after import", () =>
   Effect.gen(function* () {
