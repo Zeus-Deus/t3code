@@ -43,6 +43,11 @@ export function resetPluginStartPageForTests(): void {
  */
 export function useStartPageDecided(): boolean {
   const { startPage } = usePluginStartPage();
+  const router = useRouter();
+  useEffect(() => {
+    // The app opened on another page, so a later visit to "/" is not the app opening.
+    if (router.state.location.pathname !== "/") appAtomRegistry.set(startPagePhaseAtom, "settled");
+  }, [router]);
   return useAtomValue(startPagePhaseAtom) === "settled" || startPage === null;
 }
 

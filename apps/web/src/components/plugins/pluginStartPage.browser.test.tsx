@@ -516,3 +516,22 @@ it("leaves a page the person opened while the welcome waited", async () => {
   expect(router.state.location.pathname).toBe("/settings");
   expect(boot.navigate).not.toHaveBeenCalled();
 });
+
+it("does not open the start page on a later visit after the app opened elsewhere", async () => {
+  setup();
+  bootReady();
+  const onDraft = vi.fn();
+  await using screen = await render(
+    <AppAtomRegistryProvider>
+      <Startup welcome={null} onDraft={onDraft} />
+    </AppAtomRegistryProvider>,
+    { router: "/settings" },
+  );
+  await expect.element(screen.getByText("elsewhere")).toBeVisible();
+
+  // Later in the session, e.g. after deleting the last thread, the app returns to the landing.
+  await act(() => screen.router?.navigate({ to: "/" }));
+  await expect.element(screen.getByText("landing")).toBeVisible();
+  expect(boot.navigate).not.toHaveBeenCalled();
+  expect(onDraft).toHaveBeenCalledTimes(1);
+});
