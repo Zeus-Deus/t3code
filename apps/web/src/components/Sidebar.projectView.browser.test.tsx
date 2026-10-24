@@ -20,6 +20,7 @@ import { useThreadSelectionStore } from "../threadSelectionStore";
 import { useUiStateStore } from "../uiStateStore";
 import { PluginSidebarViewSources } from "./plugins/PluginCatalogueSubscriptions";
 import Sidebar from "./Sidebar";
+import { resetPluginTreeSnapshotsForTests } from "./sidebar/pluginTreeSources";
 import { useSidebarViewSourceStore } from "./sidebar/sidebarView";
 import { SidebarProvider } from "./ui/sidebar";
 
@@ -342,6 +343,7 @@ function setup(input: {
   window.localStorage.clear();
   useThreadSelectionStore.getState().clearSelection();
   useSidebarViewSourceStore.setState({ sources: new Map() });
+  resetPluginTreeSnapshotsForTests();
   useUiStateStore.getState().setSidebarProjectScopeKey(input.scope ?? null);
   const app = [project(laptop, "p1", "App"), project(server, "p9", "App")];
   const docs = [project(server, "p1", "Docs")];
@@ -753,6 +755,71 @@ describe("Sidebar plugin tree", () => {
     await act(() => data.update({ installations: [treePlugin(false)] }));
     await expect.poll(sectionNames).toEqual([]);
     await expect.element(page.getByText("a")).toHaveAttribute("aria-current", "page");
+  });
+
+  it("says when the tree could not load and the sidebar shows activity instead", async () => {
+    const a = thread("a", laptop, "p1");
+    // Neither environment serves the tree; the plugin stays enabled and chosen.
+    setupTree({ threads: [a], route: a, trees: new Map() });
+    await using _screen = await renderSidebar();
+    await expect.element(page.getByText("Couldn't load Focus. Showing Activity.")).toBeVisible();
+    expect(sectionNames()).toEqual([]);
+    await expect.element(page.getByText("a")).toHaveAttribute("aria-current", "page");
+    await expect
+      .element(page.getByRole("button", { name: "Toggle Focus view", exact: true }))
+      .toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("keeps the last rows of a failed refresh as possibly out of date until a read succeeds", async () => {
+    const a = thread("a", laptop, "p1");
+    const b = thread("b", laptop, "p1");
+    const mine = [treeGroup("g", "Mine"), treeThread("n", "a", "g")];
+    setupTree({
+      threads: [a, b],
+      route: a,
+      trees: new Map([
+        [laptop, mine],
+        [server, []],
+      ]),
+    });
+    await using _screen = await renderSidebar();
+    await expect.poll(sectionNames).toEqual([`tree:${laptop}:g`, "\0plugin-tree-other"]);
+    expect(page.getByText("Focus may be out of date.").elements()).toHaveLength(0);
+
+    await act(() => data.update({ trees: new Map([[server, []]]), treeRevision: 1 }));
+    await expect.element(page.getByText("Focus may be out of date.")).toBeVisible();
+    expect(sectionNames()).toEqual([`tree:${laptop}:g`, "\0plugin-tree-other"]);
+    const reads = data.read().treeReads.length;
+
+    await act(() =>
+      data.update({
+        trees: new Map([
+          [laptop, mine],
+          [server, []],
+        ]),
+        treeRevision: 2,
+      }),
+    );
+    await expect.poll(() => page.getByText("Focus may be out of date.").elements()).toHaveLength(0);
+    // Recovery came from the change signal; nothing polls in between.
+    expect(data.read().treeReads).toHaveLength(reads + 2);
+  });
+
+  it("calls the tree incomplete when one environment never served it while another did", async () => {
+    const a = thread("a", laptop, "p1");
+    const s = thread("s", server, "p9");
+    setupTree({
+      threads: [a, s],
+      route: a,
+      trees: new Map([[laptop, [treeGroup("g", "Mine"), treeThread("n", "a", "g")]]]),
+    });
+    await using _screen = await renderSidebar();
+    await expect
+      .element(page.getByText("Part of Focus couldn't load. It may be incomplete."))
+      .toBeVisible();
+    expect(page.getByText(/Showing Activity/).elements()).toHaveLength(0);
+    await expect.poll(sectionNames).toEqual([`tree:${laptop}:g`, "\0plugin-tree-other"]);
+    expect(rowTitles()).toEqual(["a", "s"]);
   });
 
   it("lines up rows listed after a nested heading with the rows of the heading they continue", async () => {

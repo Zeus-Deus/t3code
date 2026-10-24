@@ -56,6 +56,7 @@ import { usePendingThreadOrder } from "../../state/thread-order";
 import { threadListEnvironmentsAtom } from "../../state/server";
 import type { PendingNewTask } from "../../state/use-pending-new-tasks";
 import { useQueuedThreadKeys } from "../../state/use-thread-outbox";
+import { PluginTreeNotice } from "../plugins/PluginTreeNotice";
 import { usePluginTreeList } from "../plugins/usePluginTreeList";
 import {
   buildPluginTreeThreadListItems,
@@ -777,6 +778,7 @@ export function HomeScreen(props: HomeScreenProps) {
           onProjectChange={props.onProjectChange}
         />
       ) : null}
+      <PluginTreeNotice notice={hasSearchQuery ? null : pluginTree.notice} />
     </>
   );
 

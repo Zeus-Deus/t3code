@@ -3,6 +3,7 @@ import {
   findPluginTreeInstallation,
   isPluginSidebarTreeOption,
   pluginRunnableInstallations,
+  pluginTreeNotice,
   pluginTreeTopic,
   resolvePluginSidebarView,
   togglePluginTreeFold,
@@ -28,12 +29,15 @@ interface TreeSnapshot {
   readonly generation: string;
   /** The last snapshot this generation served; kept while a refresh fails or the link drops. */
   readonly nodes: ReadonlyArray<PluginTreeNode> | null;
+  /** The latest read failed. */
+  readonly failed: boolean;
 }
 
 type SnapshotUpdate = {
   readonly installationId: string;
   readonly generation: string;
   readonly nodes: ReadonlyArray<PluginTreeNode> | null;
+  readonly failed: boolean;
 } | null;
 
 /**
@@ -88,6 +92,7 @@ function PluginTreeSnapshotFetcher(props: {
           installationId,
           generation,
           nodes: result._tag === "Success" ? result.value.nodes : null,
+          failed: result._tag !== "Success",
         });
       });
     return () => {
@@ -115,6 +120,8 @@ export function usePluginTreeList(
   readonly select: (choice: PluginSidebarTreeOption | null) => void;
   /** Null until any environment has served the chosen tree; the list stays as it is meanwhile. */
   readonly sources: ReadonlyArray<PluginTreeSource> | null;
+  /** One line when a read of the chosen tree failed; null otherwise. */
+  readonly notice: string | null;
   readonly folds: ReadonlySet<string>;
   readonly toggleFold: (sectionKey: string, collapsedByDefault: boolean) => void;
   readonly fetchers: ReactNode;
@@ -158,12 +165,26 @@ export function usePluginTreeList(
           return nodes === null ? [] : [{ environmentId, nodes }];
         });
 
+  const notice =
+    selectedTree === null || snapshots.key !== selectedTree.key
+      ? null
+      : pluginTreeNotice(
+          selectedTree.tree.title,
+          environmentIds.flatMap((environmentId) => {
+            const snapshot = snapshots.byEnvironment.get(environmentId);
+            return snapshot === undefined
+              ? []
+              : [{ failed: snapshot.failed, hasNodes: snapshot.nodes !== null }];
+          }),
+        );
+
   const folds = new Set(preferences?.threadListTreeFolds ?? []);
   return {
     options: treeOptions,
     selected: selectedTree,
     select: (choice) => savePreferences({ threadListPluginTree: choice }),
     sources: sources.length === 0 ? null : sources,
+    notice,
     folds,
     toggleFold: (sectionKey, collapsedByDefault) =>
       savePreferences({

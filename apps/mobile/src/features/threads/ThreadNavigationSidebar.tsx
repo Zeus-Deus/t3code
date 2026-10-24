@@ -50,6 +50,7 @@ import { useThreadListSearchMatches } from "./useThreadListSearchMatches";
 import { useHomeListOptions } from "../home/home-list-options";
 import { buildHomeListFilterMenu } from "../home/home-list-filter-menu";
 import { buildHomeProjectScopes } from "../home/homeThreadList";
+import { PluginTreeNotice } from "../plugins/PluginTreeNotice";
 import { usePluginTreeList } from "../plugins/usePluginTreeList";
 import {
   buildPluginTreeThreadListItems,
@@ -769,6 +770,9 @@ function ThreadNavigationSidebarPane(
     filterMenu,
     onOpenSettings: props.onOpenSettings,
   });
+  const treeNotice = (
+    <PluginTreeNotice notice={props.searchQuery.trim().length > 0 ? null : pluginTree.notice} />
+  );
   const listEmpty = (
     <Text
       className={
@@ -855,6 +859,7 @@ function ThreadNavigationSidebarPane(
                 scrollEventThrottle={16}
                 showsVerticalScrollIndicator={false}
                 style={styles.threadList}
+                ListHeaderComponent={treeNotice}
                 ListEmptyComponent={listEmpty}
               />
             </GestureDetector>
@@ -929,6 +934,7 @@ function ThreadNavigationSidebarPane(
                 scrollEventThrottle={16}
                 showsVerticalScrollIndicator={false}
                 style={styles.threadList}
+                ListHeaderComponent={treeNotice}
                 ListEmptyComponent={listEmpty}
               />
             </GestureDetector>

@@ -1,6 +1,7 @@
 import {
   findPluginTreeInstallation,
   pluginRunnableInstallations,
+  pluginTreeNotice,
   pluginTreeTopic,
   type PluginSidebarTreeOption,
   type PluginTreeSource,
@@ -80,6 +81,10 @@ const usePluginTreeSnapshotStore = create<PluginTreeSnapshotState>()((set) => ({
       return { key, snapshots };
     }),
 }));
+
+export function resetPluginTreeSnapshotsForTests(): void {
+  usePluginTreeSnapshotStore.setState({ key: null, snapshots: new Map() });
+}
 
 /**
  * Reads one environment's snapshot of the chosen tree while the tree is shown: when it mounts,
@@ -174,6 +179,26 @@ export function PluginTreeSnapshotSources(props: {
       snoozeWake={props.snoozeWake}
     />
   ));
+}
+
+/**
+ * One line for the chosen tree when a read failed: nothing shown, rows that may be out of date, or
+ * one environment missing. Null while every read succeeded or is still loading.
+ */
+export function usePluginTreeNotice(choice: PluginSidebarTreeOption | null): string | null {
+  const environments = useEnvironmentIdentities();
+  const key = usePluginTreeSnapshotStore((state) => state.key);
+  const snapshots = usePluginTreeSnapshotStore((state) => state.snapshots);
+  if (choice === null || key !== choice.key) return null;
+  return pluginTreeNotice(
+    choice.tree.title,
+    environments.flatMap(({ environmentId }) => {
+      const snapshot = snapshots.get(environmentId);
+      return snapshot === undefined
+        ? []
+        : [{ failed: snapshot.failed, hasNodes: snapshot.nodes !== null }];
+    }),
+  );
 }
 
 /**

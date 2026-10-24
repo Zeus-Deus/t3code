@@ -428,3 +428,25 @@ export function buildPluginTreeLayout<TProject, TThread extends PluginTreeThread
 export const pluginTreeThreadKeys = (
   sections: ReadonlyArray<{ readonly threads: ReadonlyArray<PluginTreeThread> }>,
 ) => sections.flatMap((section) => section.threads.map(threadKey));
+
+/** What the sidebar knows about one environment's latest read of the chosen tree. */
+export interface PluginTreeReadState {
+  readonly failed: boolean;
+  /** A snapshot from this installation and generation is still being shown. */
+  readonly hasNodes: boolean;
+}
+
+/**
+ * One line telling the person a failed read changed what they see, or null. Rows the tree did not
+ * place stay reachable either way; this only keeps the chosen layout from looking current.
+ */
+export function pluginTreeNotice(
+  title: string,
+  reads: ReadonlyArray<PluginTreeReadState>,
+): string | null {
+  if (!reads.some((read) => read.failed)) return null;
+  if (!reads.some((read) => read.hasNodes)) return `Couldn't load ${title}. Showing Activity.`;
+  return reads.every((read) => !read.failed || read.hasNodes)
+    ? `${title} may be out of date.`
+    : `Part of ${title} couldn't load. It may be incomplete.`;
+}

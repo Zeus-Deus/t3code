@@ -4,6 +4,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   buildPluginTreeLayout,
   PLUGIN_TREE_OTHER_SECTION_KEY,
+  pluginTreeNotice,
   pluginTreeThreadKeys,
   togglePluginTreeFold,
 } from "./nativeTrees.ts";
@@ -316,5 +317,44 @@ describe("buildPluginTreeLayout", () => {
     });
     expect(result.placedKeys.has(key(thread("a")))).toBe(true);
     expect(pluginTreeThreadKeys(result.sections)).toEqual([key(thread("a"))]);
+  });
+});
+
+describe("pluginTreeNotice", () => {
+  it("says nothing while every environment's last read succeeded or is still loading", () => {
+    expect(pluginTreeNotice("Projects", [])).toBeNull();
+    expect(
+      pluginTreeNotice("Projects", [
+        { failed: false, hasNodes: true },
+        { failed: false, hasNodes: false },
+      ]),
+    ).toBeNull();
+  });
+
+  it("says the sidebar shows Activity only when no environment's tree is shown", () => {
+    expect(pluginTreeNotice("Projects", [{ failed: true, hasNodes: false }])).toBe(
+      "Couldn't load Projects. Showing Activity.",
+    );
+  });
+
+  it("calls retained rows out of date rather than claiming Activity", () => {
+    expect(pluginTreeNotice("Projects", [{ failed: true, hasNodes: true }])).toBe(
+      "Projects may be out of date.",
+    );
+    expect(
+      pluginTreeNotice("Projects", [
+        { failed: true, hasNodes: true },
+        { failed: false, hasNodes: true },
+      ]),
+    ).toBe("Projects may be out of date.");
+  });
+
+  it("calls the tree incomplete when one environment never served it but another did", () => {
+    expect(
+      pluginTreeNotice("Projects", [
+        { failed: true, hasNodes: false },
+        { failed: false, hasNodes: true },
+      ]),
+    ).toBe("Part of Projects couldn't load. It may be incomplete.");
   });
 });

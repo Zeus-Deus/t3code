@@ -257,7 +257,11 @@ import {
 } from "./sidebar/SidebarThreadRow";
 import { SidebarDraftBlock } from "./sidebar/SidebarDraftBlock";
 import { buildProjectView, type ProjectViewSection } from "./sidebar/projectView.logic";
-import { PluginTreeSnapshotSources, usePluginTreeSources } from "./sidebar/pluginTreeSources";
+import {
+  PluginTreeSnapshotSources,
+  usePluginTreeNotice,
+  usePluginTreeSources,
+} from "./sidebar/pluginTreeSources";
 import {
   SidebarProjectSectionHeader,
   SidebarQuietProjectsToggle,
@@ -1375,6 +1379,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       ? sidebarView.selected
       : null;
   const treeSources = usePluginTreeSources(selectedTree);
+  const treeNotice = usePluginTreeNotice(selectedTree);
   const projectViewRules =
     sidebarView.selected === null
       ? null
@@ -3373,6 +3378,11 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                 {threadSearch.isPending ? "Searching thread messages…" : "No threads found"}
               </p>
             )
+          ) : null}
+          {!isSearchingThreads && treeNotice !== null ? (
+            <p role="status" className="px-2 pb-1.5 text-xs text-sidebar-muted-foreground">
+              {treeNotice}
+            </p>
           ) : null}
           {!isSearchingThreads ? (
             <TooltipProvider
