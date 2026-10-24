@@ -292,6 +292,37 @@ it("starts the usual way at once when the environment cannot open the page", asy
       "plugin missing",
       () => appAtomRegistry.set(boot.catalogue, AsyncResult.success({ installations: [] })),
     ],
+    // Mixed versions: neither side may leave the landing waiting for plugins it cannot list.
+    [
+      "server without plugins",
+      () =>
+        appAtomRegistry.set(boot.config, {
+          environment: { capabilities: {} },
+        } as ServerConfig),
+    ],
+    [
+      "server with a newer plugin API",
+      () =>
+        appAtomRegistry.set(boot.config, {
+          environment: { capabilities: { plugins: { apiVersion: PLUGIN_API_VERSION + 1 } } },
+        } as ServerConfig),
+    ],
+    [
+      "client no longer supported",
+      () =>
+        appAtomRegistry.set(
+          boot.catalog,
+          catalogOf({ ...primaryEntry(environmentId), unsupportedReason: "Update T3 Code" }),
+        ),
+    ],
+    [
+      "first connection failed and is retrying",
+      () =>
+        appAtomRegistry.set(
+          boot.connection,
+          AsyncResult.success({ ...connected, phase: "backoff", lastFailure: null }),
+        ),
+    ],
   ];
   for (const [label, change] of cases) {
     setup();
