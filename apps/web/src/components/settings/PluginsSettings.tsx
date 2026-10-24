@@ -58,6 +58,7 @@ import { useEffect, useId, useRef, useState, type ReactNode, type Ref } from "re
 import { flushSync } from "react-dom";
 
 import { requestConfirmDialog } from "../../confirmDialog";
+import { isElectron } from "../../env";
 import { cn } from "../../lib/utils";
 import { useProjects } from "../../state/entities";
 import type { EnvironmentPresentation } from "../../state/environments";
@@ -231,10 +232,41 @@ function EnvironmentPlugins(props: {
   const supported = environmentSupportsPlugins(
     props.environment.serverConfig?.environment.capabilities,
   );
+  // The installation whose settings form has unsaved values, if any.
+  const [dirtyId, setDirtyId] = useState<string | null>(null);
+  const dirtyName =
+    dirtyId === null
+      ? null
+      : (catalogue.installations.find((entry) => entry.installationId === dirtyId)?.manifest.name ??
+        "this plugin");
+  const reportDirty = (installationId: string, dirty: boolean) =>
+    setDirtyId((current) => (dirty ? installationId : current === installationId ? null : current));
   const select = (installationId: string) => {
     setSelectedId(installationId);
     setDetailOpen(true);
   };
+  // A finished install selects the new plugin, which would drop the unsaved values.
+  const startInstall = async () => {
+    if (dirtyName !== null && !(await confirmDiscardSettings(dirtyName))) return;
+    setDialog({ kind: "install" });
+  };
+
+  // Leaving the page or switching environment would drop the unsaved values. Electron cancels a
+  // prevented unload without asking, so closing, quitting or updating the desktop app would
+  // silently stall; there only in-app navigation asks.
+  useBlocker({
+    disabled: dirtyName === null,
+    enableBeforeUnload: dirtyName !== null && !isElectron,
+    shouldBlockFn: async ({ current, next }) => {
+      if (
+        current.pathname === next.pathname &&
+        JSON.stringify(current.search) === JSON.stringify(next.search)
+      ) {
+        return false;
+      }
+      return !(await confirmDiscardSettings(dirtyName ?? "this plugin"));
+    },
+  });
   const body = (() => {
     switch (catalogue.availability) {
       case "unknown":
@@ -307,8 +339,12 @@ function EnvironmentPlugins(props: {
                 selectedId={selectedId}
                 detailOpen={detailOpen}
                 canInstall={canInstall && supported}
+                dirtyId={dirtyId}
+                dirtyName={dirtyName}
+                onDirtyChange={reportDirty}
                 onSelect={select}
                 onBack={() => setDetailOpen(false)}
+                onInstall={() => void startInstall()}
                 onDialog={setDialog}
               />
             )}
@@ -327,7 +363,7 @@ function EnvironmentPlugins(props: {
             size="xs"
             variant="ghost-muted"
             disabled={!canInstall || !supported}
-            onClick={() => setDialog({ kind: "install" })}
+            onClick={() => void startInstall()}
           >
             <PlusIcon className="size-3" />
             Install plugin
@@ -462,19 +498,22 @@ function PluginBrowser(props: {
   readonly selectedId: string | null;
   readonly detailOpen: boolean;
   readonly canInstall: boolean;
+  readonly dirtyId: string | null;
+  readonly dirtyName: string | null;
+  readonly onDirtyChange: (installationId: string, dirty: boolean) => void;
   readonly onSelect: (installationId: string) => void;
   readonly onBack: () => void;
+  readonly onInstall: () => void;
   readonly onDialog: (dialog: PluginDialog) => void;
 }) {
-  const { environment, installations, executionDisabled, detailOpen } = props;
+  const { environment, installations, executionDisabled, detailOpen, dirtyId, dirtyName } = props;
   const { environmentId } = environment;
   const idPrefix = useId();
   const listRef = useRef<HTMLDivElement>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState("");
   const [attentionOnly, setAttentionOnly] = useState(false);
-  // The installation whose settings form has unsaved values, if any.
-  const [dirtyId, setDirtyId] = useState<string | null>(null);
   const canManage = useAtomValue(pluginEnvironment.setEnabled.permissionAtom(environmentId));
   const { toggle, busy, backlogDialog } = usePluginEnabledToggle({
     environmentId,
@@ -498,29 +537,7 @@ function PluginBrowser(props: {
     props.selectedId === null
       ? (installations[0] ?? null)
       : (installations.find((entry) => entry.installationId === props.selectedId) ?? null);
-  const dirtyName =
-    dirtyId === null
-      ? null
-      : (installations.find((entry) => entry.installationId === dirtyId)?.manifest.name ??
-        "this plugin");
   const rowId = (installationId: string) => `${idPrefix}-plugin-${installationId}`;
-  const reportDirty = (installationId: string, dirty: boolean) =>
-    setDirtyId((current) => (dirty ? installationId : current === installationId ? null : current));
-
-  // Leaving the page or switching environment would drop the unsaved values.
-  useBlocker({
-    disabled: dirtyName === null,
-    enableBeforeUnload: dirtyName !== null,
-    shouldBlockFn: async ({ current, next }) => {
-      if (
-        current.pathname === next.pathname &&
-        JSON.stringify(current.search) === JSON.stringify(next.search)
-      ) {
-        return false;
-      }
-      return !(await confirmDiscardSettings(dirtyName ?? "this plugin"));
-    },
-  });
 
   const select = async (installationId: string) => {
     if (dirtyName !== null && dirtyId !== installationId) {
@@ -532,7 +549,10 @@ function PluginBrowser(props: {
   };
   const back = () => {
     flushSync(props.onBack);
-    if (selected !== null) document.getElementById(rowId(selected.installationId))?.focus();
+    const row = selected === null ? null : document.getElementById(rowId(selected.installationId));
+    // A search or the attention filter may have hidden the row since it was opened.
+    if (isRendered(row)) row?.focus();
+    else searchRef.current?.focus();
   };
   const clearFilters = () => {
     setQuery("");
@@ -556,6 +576,7 @@ function PluginBrowser(props: {
       >
         <div className="space-y-2 border-b border-border/50 px-3 py-3 sm:px-4">
           <Input
+            ref={searchRef}
             type="search"
             size="sm"
             aria-label="Search plugins"
@@ -614,7 +635,7 @@ function PluginBrowser(props: {
                 type="button"
                 disabled={!props.canInstall}
                 className="flex w-full cursor-pointer items-center gap-3 px-3 py-3 text-left text-sm text-muted-foreground transition-colors outline-none hover:bg-muted/25 hover:text-foreground focus-visible:bg-muted/25 focus-visible:text-foreground disabled:pointer-events-none disabled:opacity-64 sm:px-4"
-                onClick={() => props.onDialog({ kind: "install" })}
+                onClick={props.onInstall}
               >
                 <PlusIcon className="size-4 shrink-0" />
                 Install plugin
@@ -653,7 +674,7 @@ function PluginBrowser(props: {
                 canManage={canManage}
                 onToggle={toggle}
                 onDialog={props.onDialog}
-                onDirtyChange={reportDirty}
+                onDirtyChange={props.onDirtyChange}
               />
             ) : (
               <h2
@@ -834,7 +855,9 @@ function PluginEditor(props: {
 
       {manifest.settings.length > 0 && !readOnly ? (
         <PluginSettingsForm
-          key={installation.generation}
+          // New generations of the same files (enable, disable, consent) keep the draft. Other
+          // files may declare other settings, so a draft never carries across a digest.
+          key={installation.digest}
           environmentId={environmentId}
           installation={installation}
           canManage={canManage}

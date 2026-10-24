@@ -1,4 +1,10 @@
 import { RegistryProvider } from "@effect/atom-react";
+import {
+  createBrowserHistory,
+  createRootRoute,
+  createRouter,
+  RouterProvider,
+} from "@tanstack/react-router";
 import { EnvironmentId, ProjectId, type PluginInstallation } from "@t3tools/contracts";
 import { AsyncResult } from "effect/reactivity";
 import type { ReactNode } from "react";
@@ -893,4 +899,123 @@ it("removes the selected plugin with its data only when asked, then shows the ne
   );
   await pushCatalogue([board!]);
   await expect.element(pluginHeading("Workflow Board")).toBeInTheDocument();
+});
+
+it("keeps an unsaved value when the host stamps a new generation of the same files", async () => {
+  const lens = installationFixture({
+    installationId: "inst-2",
+    manifest: { ...installationFixture({}).manifest, id: "examples.lens", name: "Lens" },
+  });
+  setup([configurable(), lens]);
+  await using _screen = await renderWide();
+
+  const label = page.getByRole("textbox", { name: "Board label" });
+  await userEvent.fill(label, "Sprint board");
+  // Turning a plugin off, on another device or with the switch beside the form, records a new
+  // generation of the same approved files.
+  await pushCatalogue([
+    configurable({ generation: "gen-2", enabled: false, status: "disabled" }),
+    lens,
+  ]);
+  await expect.element(label).toHaveValue("Sprint board");
+  await expect.element(page.getByText("Unsaved changes")).toBeInTheDocument();
+
+  using confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+  await press(page.getByRole("button", { name: "Select Lens" }));
+  expect(confirm).toHaveBeenCalledWith("Discard unsaved changes to Workflow Board settings?");
+  await expect.element(label).toHaveValue("Sprint board");
+});
+
+it("asks before an install replaces unsaved settings, from either Install button", async () => {
+  setup(configurable(), {
+    environmentIds: ["env-1", "env-2"],
+    selected: "env-2",
+    installResult: installationFixture({ installationId: "inst-new" }),
+  });
+  await using _screen = await renderWide();
+
+  const label = page.getByRole("textbox", { name: "Board label" });
+  await userEvent.fill(label, "Sprint board");
+  using confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+  const [header, listRow] = page.getByRole("button", { name: "Install plugin" }).elements();
+  await act(() => (header as HTMLElement).click());
+  expect(confirm).toHaveBeenCalledWith("Discard unsaved changes to Workflow Board settings?");
+  expect(page.getByRole("dialog").query()).toBeNull();
+  await expect.element(label).toHaveValue("Sprint board");
+
+  confirm.mockClear();
+  await act(() => (listRow as HTMLElement).click());
+  expect(confirm).toHaveBeenCalledTimes(1);
+  expect(page.getByRole("dialog").query()).toBeNull();
+
+  confirm.mockReturnValue(true);
+  await act(() => (listRow as HTMLElement).click());
+  await expect.element(page.getByText("Install plugin on Machine 2")).toBeInTheDocument();
+  await userEvent.fill(page.getByRole("textbox", { name: "Source" }), "/plugins/board");
+  await press(page.getByRole("button", { name: "Install and review" }));
+  await expect
+    .element(page.getByRole("button", { name: "Approve and enable" }))
+    .toBeInTheDocument();
+  expect(callsWithEnvironment(":install")).toEqual([
+    expect.objectContaining({ environmentId: "env-2" }),
+  ]);
+});
+
+it("returns focus to the list when the plugin left behind is filtered out", async () => {
+  const [board, lens, notes] = lineup();
+  const crashed = { status: "error" as const, error: "Crashed" };
+  setup([{ ...board!, ...crashed }, lens!, { ...notes!, ...crashed }]);
+  await using _screen = await renderNarrow();
+
+  await press(page.getByRole("button", { name: "Needs attention (2)" }));
+  await press(page.getByRole("button", { name: "Select Notes" }));
+  await expect.element(pluginHeading("Notes")).toHaveFocus();
+  // Fixed elsewhere while it is open, so the attention filter no longer lists it.
+  await pushCatalogue([{ ...board!, ...crashed }, lens!, notes!]);
+
+  await press(page.getByRole("button", { name: "All plugins on Workstation" }));
+  expect(page.getByRole("button", { name: "Select Notes" }).query()).toBeNull();
+  await expect.element(page.getByRole("searchbox", { name: "Search plugins" })).toHaveFocus();
+});
+
+/** Mounted on browser history, the kind the app uses, which is what answers a page unload. */
+async function renderOnBrowserHistory() {
+  const history = createBrowserHistory();
+  const router = createRouter({
+    routeTree: createRootRoute({ component: () => settings() }),
+    history,
+  });
+  // The shared test router uses memory history, which never sees an unload.
+  const screen = await render(<RouterProvider router={router} />, {
+    router: false,
+    container: sized(1100),
+  });
+  return {
+    router,
+    [Symbol.asyncDispose]: async () => {
+      await screen[Symbol.asyncDispose]();
+      history.destroy();
+    },
+  };
+}
+const unloadPrevented = () => {
+  const event = new Event("beforeunload", { cancelable: true });
+  window.dispatchEvent(event);
+  return event.defaultPrevented;
+};
+async function editBoardLabel() {
+  await userEvent.fill(page.getByRole("textbox", { name: "Board label" }), "Sprint board");
+  await expect.element(page.getByText("Unsaved changes")).toBeInTheDocument();
+  // Commits the page's leave guard for the edit.
+  await act(() => {});
+}
+
+it("asks the browser to confirm leaving with unsaved settings", async () => {
+  setup(configurable());
+  await using _screen = await renderOnBrowserHistory();
+
+  await expect.element(page.getByRole("textbox", { name: "Board label" })).toBeInTheDocument();
+  expect(unloadPrevented()).toBe(false);
+  await editBoardLabel();
+  expect(unloadPrevented()).toBe(true);
 });
