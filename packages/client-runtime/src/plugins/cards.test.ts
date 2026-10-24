@@ -50,7 +50,7 @@ describe("resolvePluginCardPresentation", () => {
     const cases: Array<[ReturnType<typeof present>, string | null]> = [
       [present(null), null],
       [present([launcher()], { supported: false }), "cannot show plugin cards"],
-      [present([]), "not installed here"],
+      [present([]), "This card’s original installation is unavailable here."],
       [present([launcher()], { executionDisabled: true }), "turned off"],
       [present([launcher({ enabled: false, status: "disabled" })]), ""],
       [
@@ -88,6 +88,32 @@ describe("resolvePluginCardPresentation", () => {
   it("never matches another installation that happens to share the plugin id", () => {
     const other = launcher({ installationId: "inst-other" });
     expect(present([other])).toMatchObject({ kind: "summary", pluginName: null });
+    // Nor one whose server says it owns other data: a foreign source, or a reinstall after deletion.
+    expect(present([launcher({ installationId: "inst-other", dataOwner: "inst-other" })])).toEqual({
+      kind: "summary",
+      pluginName: null,
+      reason: "This card’s original installation is unavailable here.",
+    });
+  });
+
+  it("mounts the reinstalled installation that the server says retained the card's data", () => {
+    const reinstalled = launcher({ installationId: "inst-new", dataOwner: "owner-1" });
+    expect(present([reinstalled])).toMatchObject({
+      kind: "live",
+      installation: { installationId: "inst-new", generation: "gen-new" },
+      view: { id: "task" },
+    });
+    // The card's own installation wins whenever it is still listed.
+    const own = launcher({ dataOwner: "owner-1" });
+    expect(present([reinstalled, own])).toMatchObject({
+      kind: "live",
+      installation: { installationId: "inst-launcher" },
+    });
+    // The retained owner still has to be allowed to serve it.
+    expect(present([{ ...reinstalled, enabled: false, status: "disabled" }])).toMatchObject({
+      kind: "summary",
+      pluginName: "Task launcher",
+    });
   });
 
   it("gives no reason while the environment's capabilities are still unknown", () => {

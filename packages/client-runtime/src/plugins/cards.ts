@@ -34,8 +34,13 @@ export function resolvePluginCardPresentation(input: {
   readonly installations: ReadonlyArray<PluginInstallation> | null;
   readonly executionDisabled: boolean;
 }): PluginCardPresentation {
+  // A same-source reinstall gets a new installation id but keeps the card's data. Only the
+  // server's explicit owner says so; a shared plugin id, source or path never does.
   const installation =
     input.installations?.find((entry) => entry.installationId === input.card.installationId) ??
+    input.installations?.find(
+      (entry) => entry.dataOwner !== undefined && entry.dataOwner === input.card.dataOwner,
+    ) ??
     null;
   const summary = (reason: string | null): PluginCardPresentation => ({
     kind: "summary",
@@ -49,7 +54,8 @@ export function resolvePluginCardPresentation(input: {
   // Before the lookup: safe mode is the reason even where a list of runnable plugins is empty.
   if (input.executionDisabled) return summary("Plugin code is turned off on this environment.");
   if (installation === null) {
-    return summary("The plugin that made this card is not installed here.");
+    // Not "removed": the catalogue may be filtered, or come from a server without owner metadata.
+    return summary("This card’s original installation is unavailable here.");
   }
   if (!isPluginActive(installation)) {
     return summary(pluginInactiveReason(installation) ?? "The plugin is not running.");
