@@ -20,6 +20,7 @@ const sources = vi.hoisted(() => ({
   presentations: new Map<string, unknown>(),
   session: null as unknown,
   installations: null as ReadonlyArray<unknown> | null,
+  catalogueFailed: false,
 }));
 
 vi.mock("../connection/runtime", () => ({ connectionAtomRuntime: {} }));
@@ -48,9 +49,11 @@ vi.mock("@t3tools/client-runtime/state/plugins", async () => {
     createPluginEnvironmentAtoms: () => ({
       catalogue: () =>
         Atom.make(() =>
-          sources.installations === null
-            ? AsyncResult.initial()
-            : AsyncResult.success({ installations: sources.installations }),
+          sources.catalogueFailed
+            ? AsyncResult.fail(new Error("Could not list plugins"))
+            : sources.installations === null
+              ? AsyncResult.initial()
+              : AsyncResult.success({ installations: sources.installations }),
         ),
     }),
   };
@@ -87,6 +90,7 @@ function setup(input: {
   readonly phase: string;
   readonly capabilities: unknown;
   readonly session: unknown;
+  readonly catalogueFailed?: boolean;
 }) {
   sources.presentations = new Map([
     [
@@ -99,6 +103,7 @@ function setup(input: {
   ]);
   sources.session = input.session;
   sources.installations = [projectsTree()];
+  sources.catalogueFailed = input.catalogueFailed ?? false;
 }
 
 const pluginsApi = { plugins: { apiVersion: PLUGIN_API_VERSION } };
@@ -128,6 +133,39 @@ it("keeps the remembered tree while its environment is still reporting", () => {
     expect(selectedTree(), label).toMatchObject({
       source: { status: "pending" },
       selected: { key: remembered.key },
+    });
+  }
+});
+
+it("falls back to activity where the environment can never serve the tree", () => {
+  for (const [label, input] of [
+    ["server without plugins", { phase: "connected", capabilities: {}, session: reader }],
+    [
+      "server with a newer plugin API",
+      {
+        phase: "connected",
+        capabilities: { plugins: { apiVersion: PLUGIN_API_VERSION + 1 } },
+        session: reader,
+      },
+    ],
+    [
+      "session without read access",
+      {
+        phase: "connected",
+        capabilities: pluginsApi,
+        session: { authenticated: true, permissions: [] },
+      },
+    ],
+    [
+      "plugin list failed",
+      { phase: "connected", capabilities: pluginsApi, session: reader, catalogueFailed: true },
+    ],
+  ] as const) {
+    setup(input);
+    // Web reports these as ready with no choices, so the remembered tree stops showing as chosen.
+    expect(selectedTree(), label).toMatchObject({
+      source: { status: "ready", options: [] },
+      selected: null,
     });
   }
 });

@@ -177,9 +177,13 @@ export const pluginAttentionCountAtom = (environmentIds: ReadonlyArray<Environme
 
 const PENDING_SOURCE: PluginSidebarViewSource = { status: "pending" };
 
+const NO_TREES_SOURCE: PluginSidebarViewSource = { status: "ready", options: [] };
+
 /**
  * The plugin trees each environment offers, for the thread list's view choice. An environment
- * whose plugins are not known yet is pending, so a remembered tree survives a reconnect.
+ * whose plugins are not known yet is pending, so a remembered tree survives a reconnect. One that
+ * answered it cannot list them (no plugin support, a newer plugin API, no read access, a failed
+ * list) offers none, so a remembered tree from it falls back to activity, as on web.
  */
 const pluginTreeViewSourcesFamily = Atom.family((key: string) =>
   Atom.make((get): ReadonlyMap<EnvironmentId, PluginSidebarViewSource> => {
@@ -187,12 +191,30 @@ const pluginTreeViewSourcesFamily = Atom.family((key: string) =>
     for (const rawEnvironmentId of key.split("\n")) {
       if (rawEnvironmentId === "") continue;
       const environmentId = EnvironmentId.make(rawEnvironmentId);
+      const presentation = get(environmentPresentations.presentationsAtom).get(environmentId);
+      const sessionResult = get(environmentSession.sessionStateAtom(environmentId));
+      const capabilities = presentation?.serverConfig?.environment.capabilities;
+      if (presentation?.connection.phase !== "connected" || capabilities === undefined) {
+        sources.set(environmentId, PENDING_SOURCE);
+        continue;
+      }
+      if (!environmentSupportsPlugins(capabilities)) {
+        sources.set(environmentId, NO_TREES_SOURCE);
+        continue;
+      }
+      if (AsyncResult.isInitial(sessionResult)) {
+        sources.set(environmentId, PENDING_SOURCE);
+        continue;
+      }
       const catalogue = readAvailableCatalogue(get, environmentId);
-      const data =
-        catalogue === null ? null : Option.getOrNull(AsyncResult.value(catalogue.result));
+      if (catalogue === null || AsyncResult.isFailure(catalogue.result)) {
+        sources.set(environmentId, NO_TREES_SOURCE);
+        continue;
+      }
+      const data = Option.getOrNull(AsyncResult.value(catalogue.result));
       sources.set(
         environmentId,
-        catalogue === null || data === null
+        data === null
           ? PENDING_SOURCE
           : {
               status: "ready",
