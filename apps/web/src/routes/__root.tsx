@@ -22,6 +22,7 @@ import { AddProjectToMachineDialogHost } from "../components/AddProjectToMachine
 import { ConfirmDialogHost } from "../components/ConfirmDialogHost";
 import { DevReplayHost } from "../components/DevReplayHost";
 import { FirstRunGate } from "../components/onboarding/FirstRunGate";
+import { useStartPageDecided } from "../components/plugins/pluginStartPage";
 import { ConnectOnboardingDialog } from "../components/cloud/ConnectOnboardingDialog";
 import { RelayClientInstallDialog } from "../components/cloud/RelayClientInstallDialog";
 import { SshPasswordPromptDialog } from "../components/desktop/SshPasswordPromptDialog";
@@ -324,8 +325,38 @@ function EventRouter({
   const serverConfig = useAtomValue(primaryServerConfigAtom);
   const serverWelcome = useAtomValue(primaryServerWelcomeAtom);
   const readPathname = useEffectEvent(() => pathname);
+  const startPageDecided = useStartPageDecided();
   const handledBootstrapThreadIdRef = useRef<string | null>(null);
+  const deferredBootstrapRef = useRef<ServerLifecycleWelcomePayload | null>(null);
   const skipInitialBootstrapNavigationRef = useRef(skipInitialBootstrapNavigation);
+
+  const openBootstrapThread = useEffectEvent(async (payload: ServerLifecycleWelcomePayload) => {
+    if (!payload.bootstrapThreadId || readPathname() !== "/") {
+      return;
+    }
+    if (skipInitialBootstrapNavigationRef.current) {
+      skipInitialBootstrapNavigationRef.current = false;
+      handledBootstrapThreadIdRef.current = payload.bootstrapThreadId;
+      return;
+    }
+    if (handledBootstrapThreadIdRef.current === payload.bootstrapThreadId) {
+      return;
+    }
+    // A plugin start page may still replace "/"; this thread is only its usual fallback.
+    if (!startPageDecided) {
+      deferredBootstrapRef.current = payload;
+      return;
+    }
+    await navigate({
+      to: "/$environmentId/$threadId",
+      params: {
+        environmentId: payload.environment.environmentId,
+        threadId: payload.bootstrapThreadId,
+      },
+      replace: true,
+    });
+    handledBootstrapThreadIdRef.current = payload.bootstrapThreadId;
+  });
 
   const handleWelcome = useEffectEvent((payload: ServerLifecycleWelcomePayload | null) => {
     if (!payload) return;
@@ -348,27 +379,7 @@ function EventRouter({
           scopeProjectRef(payload.environment.environmentId, payload.bootstrapProjectId),
         );
       useUiStateStore.getState().setProjectExpanded(bootstrapProjectKey, true);
-
-      if (readPathname() !== "/") {
-        return;
-      }
-      if (skipInitialBootstrapNavigationRef.current) {
-        skipInitialBootstrapNavigationRef.current = false;
-        handledBootstrapThreadIdRef.current = payload.bootstrapThreadId;
-        return;
-      }
-      if (handledBootstrapThreadIdRef.current === payload.bootstrapThreadId) {
-        return;
-      }
-      await navigate({
-        to: "/$environmentId/$threadId",
-        params: {
-          environmentId: payload.environment.environmentId,
-          threadId: payload.bootstrapThreadId,
-        },
-        replace: true,
-      });
-      handledBootstrapThreadIdRef.current = payload.bootstrapThreadId;
+      await openBootstrapThread(payload);
     })().catch(() => undefined);
   });
 
@@ -376,6 +387,13 @@ function EventRouter({
   useEffect(() => {
     handleWelcome(serverWelcome);
   }, [serverWelcome]);
+
+  useEffect(() => {
+    const deferred = deferredBootstrapRef.current;
+    if (!startPageDecided || deferred === null) return;
+    deferredBootstrapRef.current = null;
+    void openBootstrapThread(deferred).catch(() => undefined);
+  }, [startPageDecided]);
 
   return null;
 }

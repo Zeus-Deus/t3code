@@ -8,10 +8,12 @@ import { type AuthSessionState, EnvironmentId } from "@t3tools/contracts";
 import { useNavigate, useRouter } from "@tanstack/react-router";
 import * as Schema from "effect/Schema";
 import { AsyncResult, Atom } from "effect/reactivity";
-import { useEffect, useEffectEvent, useReducer } from "react";
+import { useEffect, useEffectEvent } from "react";
 
+import { isHostedStaticApp } from "../../hostedPairing";
 import { useLocalStorage } from "../../hooks/useLocalStorage";
-import { useEnvironment, useEnvironments } from "../../state/environments";
+import { appAtomRegistry } from "../../rpc/atomRegistry";
+import { useEnvironment, useEnvironments, usePrimaryEnvironmentId } from "../../state/environments";
 import { usePluginCatalogue } from "../../state/plugins";
 import { environmentSession } from "../../state/session";
 
@@ -26,13 +28,28 @@ export function usePluginStartPage() {
 
 // The start page applies when the app opens, not on every later visit to the landing. It is
 // "opening" from the decision until its route has loaded, while the landing must keep holding.
-let startPagePhase: "waiting" | "opening" | "settled" = "waiting";
+const startPagePhaseAtom = Atom.make<"waiting" | "opening" | "settled">("waiting").pipe(
+  Atom.keepAlive,
+  Atom.withLabel("web-plugin-start-page-phase"),
+);
 
 export function resetPluginStartPageForTests(): void {
-  startPagePhase = "waiting";
+  appAtomRegistry.set(startPagePhaseAtom, "waiting");
+}
+
+/**
+ * False while this app load's start page may still replace "/". Other startup navigation from
+ * "/" waits for it, so the start page and the usual landing are one decision.
+ */
+export function useStartPageDecided(): boolean {
+  const { startPage } = usePluginStartPage();
+  return useAtomValue(startPagePhaseAtom) === "settled" || startPage === null;
 }
 
 const NO_SESSION_ATOM = Atom.make(AsyncResult.initial<AuthSessionState>());
+// The persisted catalog is ready before platform discovery registers the primary environment,
+// which is never persisted. Only the hosted app has no primary environment to wait for.
+const REQUIRES_PRIMARY_ENVIRONMENT = !isHostedStaticApp();
 
 /**
  * Opens this device's start page from the landing, once per app load. Returns true while the
@@ -42,10 +59,13 @@ const NO_SESSION_ATOM = Atom.make(AsyncResult.initial<AuthSessionState>());
 export function useHoldLandingForStartPage(): boolean {
   const { startPage } = usePluginStartPage();
   const { isReady } = useEnvironments();
+  const primaryEnvironmentId = usePrimaryEnvironmentId();
+  const catalogComplete =
+    isReady && (!REQUIRES_PRIMARY_ENVIRONMENT || primaryEnvironmentId !== null);
   const navigate = useNavigate();
   const router = useRouter();
   const isStillOnIndex = useEffectEvent(() => router.state.location.pathname === "/");
-  const [, rerender] = useReducer((count: number) => count + 1, 0);
+  const startPagePhase = useAtomValue(startPagePhaseAtom);
   const preference = startPagePhase === "waiting" ? startPage : null;
   const environmentId = preference === null ? null : EnvironmentId.make(preference.environmentId);
   const environment = useEnvironment(environmentId);
@@ -57,7 +77,7 @@ export function useHoldLandingForStartPage(): boolean {
   const environmentState =
     environmentId === null
       ? ("unavailable" as const)
-      : !isReady ||
+      : !catalogComplete ||
           phase === "connecting" ||
           // An enabled environment starts connecting as soon as it is registered; until its
           // supervisor reports, its state still reads as the never-connected default.
@@ -84,21 +104,29 @@ export function useHoldLandingForStartPage(): boolean {
   const viewId = resolution.kind === "open" ? resolution.viewId : null;
   useEffect(() => {
     // Once opening, later renders resolve to the core landing; only the navigation ends that.
-    if (resolution.kind === "pending" || startPagePhase !== "waiting") return;
-    startPagePhase = "settled";
-    if (environmentId === null || installationId === null || viewId === null) return;
-    // A page the person opened while this was loading wins over the start page.
-    if (!isStillOnIndex()) return;
-    startPagePhase = "opening";
+    if (resolution.kind === "pending" || appAtomRegistry.get(startPagePhaseAtom) !== "waiting") {
+      return;
+    }
+    if (
+      environmentId === null ||
+      installationId === null ||
+      viewId === null ||
+      // A page the person opened while this was loading wins over the start page.
+      !isStillOnIndex()
+    ) {
+      appAtomRegistry.set(startPagePhaseAtom, "settled");
+      return;
+    }
+    appAtomRegistry.set(startPagePhaseAtom, "opening");
     void navigate({
       to: "/plugins/$environmentId/$installationId/$viewId",
       params: { environmentId, installationId, viewId },
       replace: true,
     }).finally(() => {
-      startPagePhase = "settled";
-      // Still here only if the route never committed: let the usual landing take over.
-      rerender();
+      // Still on the landing only if the route never committed: the usual landing takes over.
+      appAtomRegistry.set(startPagePhaseAtom, "settled");
     });
   }, [navigate, resolution.kind, environmentId, installationId, viewId]);
-  return startPagePhase === "opening" || resolution.kind !== "core";
+  // Released together with `useStartPageDecided`, so the bootstrap thread goes before a draft.
+  return startPage !== null && startPagePhase !== "settled";
 }

@@ -1,9 +1,17 @@
 import {
   AVAILABLE_CONNECTION_STATE,
-  presentEnvironmentConnection,
+  connectionRegistrationCatalogEntry,
+  PrimaryConnectionRegistration,
+  PrimaryConnectionTarget,
   type SupervisorConnectionState,
 } from "@t3tools/client-runtime/connection";
-import { PLUGIN_API_VERSION, type PluginInstallation } from "@t3tools/contracts";
+import type { EnvironmentCatalogState } from "@t3tools/client-runtime/state/connections";
+import {
+  EnvironmentId,
+  PLUGIN_API_VERSION,
+  type PluginInstallation,
+  type ServerConfig,
+} from "@t3tools/contracts";
 import { AsyncResult } from "effect/reactivity";
 import { expect, it, vi } from "vite-plus/test";
 
@@ -15,16 +23,19 @@ type CatalogueResult = AsyncResult.AsyncResult<{
   readonly installations: ReadonlyArray<PluginInstallation>;
 }>;
 
-// The start page's environment as it boots: catalog, connection, config, session, plugin list.
+// The sources the real environment hooks read as the app boots: the connection catalog, the
+// supervisor's state, server config, session and plugin list.
 const boot = await vi.hoisted(async () => {
   const { Atom, AsyncResult } = await import("effect/reactivity");
-  const { AVAILABLE_CONNECTION_STATE } = await import("@t3tools/client-runtime/connection");
   return {
-    catalogReady: Atom.keepAlive(Atom.make(false)),
-    enabled: Atom.keepAlive(Atom.make(true)),
-    // The connection state atom starts here before the supervisor reports anything.
-    connection: Atom.keepAlive(Atom.make(AVAILABLE_CONNECTION_STATE)),
-    config: Atom.keepAlive(Atom.make<unknown>(null)),
+    catalog: Atom.keepAlive(
+      Atom.make<EnvironmentCatalogState>({ isReady: false, entries: new Map() }),
+    ),
+    // Initial until the supervisor reports; the presentation reads that as never connected.
+    connection: Atom.keepAlive(
+      Atom.make<AsyncResult.AsyncResult<SupervisorConnectionState>>(AsyncResult.initial(true)),
+    ),
+    config: Atom.keepAlive(Atom.make<ServerConfig | null>(null)),
     session: Atom.keepAlive(Atom.make<SessionResult>(AsyncResult.initial(true))),
     catalogue: Atom.keepAlive(Atom.make<CatalogueResult>(AsyncResult.initial(true))),
     navigate: vi.fn(),
@@ -35,29 +46,23 @@ vi.mock(import("@tanstack/react-router"), async (original) => ({
   ...(await original()),
   useNavigate: (() => boot.navigate) as never,
 }));
-vi.mock(import("../../state/environments"), async (original) => {
-  const { useAtomValue } = await import("@effect/atom-react");
+vi.mock(import("../../connection/catalog"), async (original) => {
+  const { Atom } = await import("effect/reactivity");
+  const actual = await original();
   return {
-    ...(await original()),
-    useEnvironments: () => ({
-      isReady: useAtomValue(boot.catalogReady),
-      networkStatus: "online" as const,
-      environments: [],
-      presentationById: new Map(),
-    }),
-    useEnvironment: ((environmentId: string | null) => {
-      const enabled = useAtomValue(boot.enabled);
-      const connection = useAtomValue(boot.connection);
-      const config = useAtomValue(boot.config);
-      return environmentId === null
-        ? null
-        : {
-            environmentId,
-            entry: { enabled },
-            connection: presentEnvironmentConnection(connection),
-            serverConfig: config,
-          };
-    }) as never,
+    environmentCatalog: {
+      ...actual.environmentCatalog,
+      catalogValueAtom: boot.catalog,
+      networkStatusValueAtom: Atom.make("online" as const),
+      stateAtom: () => boot.connection,
+    },
+  };
+});
+vi.mock(import("../../state/server"), async (original) => {
+  const actual = await original();
+  return {
+    ...actual,
+    serverEnvironment: { ...actual.serverEnvironment, configValueAtom: () => boot.config },
   };
 });
 vi.mock(import("../../state/session"), async (original) => {
@@ -90,12 +95,37 @@ vi.mock(import("../../state/query"), async (original) => {
   };
 });
 
-import { resetPluginStartPageForTests, useHoldLandingForStartPage } from "./pluginStartPage";
+import {
+  resetPluginStartPageForTests,
+  useHoldLandingForStartPage,
+  useStartPageDecided,
+} from "./pluginStartPage";
 
 const environmentId = "3efb6998-96fa-4265-872e-4eb43d15a9c7";
 const pluginsConfig = {
   environment: { capabilities: { plugins: { apiVersion: PLUGIN_API_VERSION } } },
-};
+} as ServerConfig;
+
+// Platform discovery registers the primary environment; it is never in the persisted catalog.
+function primaryEntry(id: string) {
+  return connectionRegistrationCatalogEntry(
+    new PrimaryConnectionRegistration({
+      target: new PrimaryConnectionTarget({
+        environmentId: EnvironmentId.make(id),
+        label: "This machine",
+        httpBaseUrl: "http://localhost:3773",
+        wsBaseUrl: "ws://localhost:3773",
+      }),
+    }),
+  );
+}
+
+function catalogOf(...entries: ReadonlyArray<ReturnType<typeof primaryEntry>>) {
+  return {
+    isReady: true,
+    entries: new Map(entries.map((entry) => [entry.target.environmentId, entry])),
+  };
+}
 
 function board(): PluginInstallation {
   const digest = "b".repeat(64);
@@ -140,9 +170,8 @@ function setup() {
     "t3code:plugins:start-page",
     JSON.stringify({ environmentId, pluginId: "examples.workflow-board", viewId: "board" }),
   );
-  appAtomRegistry.set(boot.catalogReady, false);
-  appAtomRegistry.set(boot.enabled, true);
-  appAtomRegistry.set(boot.connection, AVAILABLE_CONNECTION_STATE);
+  appAtomRegistry.set(boot.catalog, { isReady: false, entries: new Map() });
+  appAtomRegistry.set(boot.connection, AsyncResult.initial(true));
   appAtomRegistry.set(boot.config, null);
   appAtomRegistry.set(boot.session, AsyncResult.initial(true));
   appAtomRegistry.set(boot.catalogue, AsyncResult.initial(true));
@@ -151,15 +180,23 @@ function setup() {
 }
 
 function bootReady() {
-  appAtomRegistry.set(boot.catalogReady, true);
-  appAtomRegistry.set(boot.connection, connected);
+  appAtomRegistry.set(boot.catalog, catalogOf(primaryEntry(environmentId)));
+  appAtomRegistry.set(boot.connection, AsyncResult.success(connected));
   appAtomRegistry.set(boot.config, pluginsConfig);
   appAtomRegistry.set(boot.session, AsyncResult.success({ granted: true }));
   appAtomRegistry.set(boot.catalogue, AsyncResult.success({ installations: [board()] }));
 }
 
+// The landing's hold, and whether other startup navigation (the bootstrap thread) may run.
 function Probe() {
-  return <p>{useHoldLandingForStartPage() ? "holding" : "landing"}</p>;
+  const holding = useHoldLandingForStartPage();
+  const decided = useStartPageDecided();
+  return (
+    <>
+      <p>{holding ? "holding" : "landing"}</p>
+      <p>{decided ? "decided" : "undecided"}</p>
+    </>
+  );
 }
 
 function renderLanding() {
@@ -180,9 +217,16 @@ it("holds the landing through a cold start and then opens the start page", async
   setup();
   await using screen = await renderLanding();
   const steps: ReadonlyArray<readonly [string, () => void]> = [
-    ["catalog read", () => appAtomRegistry.set(boot.catalogReady, true)],
-    ["connecting", () => appAtomRegistry.set(boot.connection, connecting)],
-    ["connected", () => appAtomRegistry.set(boot.connection, connected)],
+    [
+      "persisted catalog read before the primary registers",
+      () => appAtomRegistry.set(boot.catalog, catalogOf()),
+    ],
+    [
+      "primary registered",
+      () => appAtomRegistry.set(boot.catalog, catalogOf(primaryEntry(environmentId))),
+    ],
+    ["connecting", () => appAtomRegistry.set(boot.connection, AsyncResult.success(connecting))],
+    ["connected", () => appAtomRegistry.set(boot.connection, AsyncResult.success(connected))],
     ["config loaded", () => appAtomRegistry.set(boot.config, pluginsConfig)],
     [
       "session loaded",
@@ -192,6 +236,7 @@ it("holds the landing through a cold start and then opens the start page", async
   for (const [label, step] of steps) {
     await act(step);
     await expect.element(screen.getByText("holding"), { message: label }).toBeVisible();
+    await expect.element(screen.getByText("undecided"), { message: label }).toBeVisible();
     expect(boot.navigate, label).not.toHaveBeenCalled();
   }
 
@@ -199,25 +244,45 @@ it("holds the landing through a cold start and then opens the start page", async
     appAtomRegistry.set(boot.catalogue, AsyncResult.success({ installations: [board()] })),
   );
   await vi.waitFor(() => expect(boot.navigate).toHaveBeenCalledWith(pluginRoute));
+  await expect.element(screen.getByText("decided")).toBeVisible();
+});
+
+it("leaves startup navigation alone without a start page", async () => {
+  setup();
+  localStorage.removeItem("t3code:plugins:start-page");
+  await using screen = await renderLanding();
+  await expect.element(screen.getByText("landing")).toBeVisible();
+  await expect.element(screen.getByText("decided")).toBeVisible();
+  expect(boot.navigate).not.toHaveBeenCalled();
 });
 
 it("starts the usual way at once when the environment cannot open the page", async () => {
   const cases: ReadonlyArray<readonly [string, () => void]> = [
     [
+      "removed",
+      () =>
+        appAtomRegistry.set(
+          boot.catalog,
+          catalogOf(primaryEntry("a1b2c3d4-0000-4000-8000-000000000000")),
+        ),
+    ],
+    [
       "disabled",
       () => {
-        appAtomRegistry.set(boot.enabled, false);
-        appAtomRegistry.set(boot.connection, AVAILABLE_CONNECTION_STATE);
+        appAtomRegistry.set(
+          boot.catalog,
+          catalogOf({ ...primaryEntry(environmentId), enabled: false }),
+        );
+        appAtomRegistry.set(boot.connection, AsyncResult.success(AVAILABLE_CONNECTION_STATE));
       },
     ],
     [
       "failed",
       () =>
-        appAtomRegistry.set(boot.connection, {
-          ...connected,
-          phase: "blocked",
-          lastFailure: null,
-        }),
+        appAtomRegistry.set(
+          boot.connection,
+          AsyncResult.success({ ...connected, phase: "blocked", lastFailure: null }),
+        ),
     ],
     [
       "session without access",
@@ -234,6 +299,7 @@ it("starts the usual way at once when the environment cannot open the page", asy
     change();
     await using screen = await renderLanding();
     await expect.element(screen.getByText("landing"), { message: label }).toBeVisible();
+    await expect.element(screen.getByText("decided"), { message: label }).toBeVisible();
     expect(boot.navigate, label).not.toHaveBeenCalled();
   }
 });
@@ -258,11 +324,13 @@ it("keeps holding until the start page has opened", async () => {
       </AppAtomRegistryProvider>,
     );
     await expect.element(screen.getByText("holding"), { message: render }).toBeVisible();
+    await expect.element(screen.getByText("undecided"), { message: render }).toBeVisible();
   }
 
-  // The route never committed, so the landing takes over rather than staying blank.
+  // The route never committed, so the usual landing and bootstrap thread take over.
   await act(() => finishNavigation());
   await expect.element(screen.getByText("landing")).toBeVisible();
+  await expect.element(screen.getByText("decided")).toBeVisible();
   expect(boot.navigate).toHaveBeenCalledTimes(1);
 });
 
@@ -274,6 +342,7 @@ it("leaves a page the person opened while the start page was loading", async () 
   await act(() => screen.router?.navigate({ to: "/settings" }));
   await act(bootReady);
   expect(boot.navigate).not.toHaveBeenCalled();
+  await expect.element(screen.getByText("decided")).toBeVisible();
 
   // Settled for this app load: a later visit to the landing starts the usual way.
   await screen.rerender(
