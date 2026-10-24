@@ -99,6 +99,17 @@ it("decodes additive workflow choices, bounded native trees and historical card 
 });
 
 describe("plugin wire compatibility", () => {
+  it("keeps optional retained card ownership without requiring it from older hosts", () => {
+    expect(decodeCatalogue({ installations: [installation] }).installations[0]).not.toHaveProperty(
+      "dataOwner",
+    );
+    expect(
+      decodeCatalogue({
+        installations: [{ ...installation, dataOwner: "retained-owner" }],
+      }).installations[0],
+    ).toMatchObject({ installationId: "test.plugin", dataOwner: "retained-owner" });
+  });
+
   it("keeps known catalogue features when a newer host adds capabilities and placements", () => {
     const catalogue = decodeCatalogue({
       installations: [

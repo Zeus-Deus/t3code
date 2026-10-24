@@ -4908,6 +4908,11 @@ it.effect(
       });
       if (!result.card) return yield* Effect.die("Expected a host card reference");
       expect(
+        (yield* f.plugins.list()).installations.find(
+          (entry) => entry.installationId === enabled.installationId,
+        ),
+      ).toMatchObject({ dataOwner: result.card.dataOwner });
+      expect(
         (yield* f.plugins.readCardView(
           {
             installationId: enabled.installationId,
@@ -4953,6 +4958,12 @@ it.effect(
         digest: reinstalled.digest,
         grants: enabled.grants,
       });
+      expect(restored).toMatchObject({ dataOwner: result.card.dataOwner });
+      expect(
+        (yield* f.plugins.list()).installations.find(
+          (entry) => entry.installationId === restored.installationId,
+        ),
+      ).toMatchObject({ dataOwner: result.card.dataOwner });
       expect(
         (yield* f.plugins.readCardView(
           {
@@ -4984,6 +4995,28 @@ it.effect(
             {
               installationId: foreignEnabled.installationId,
               generation: foreignEnabled.generation,
+              card: result.card,
+            },
+            actor,
+          )
+          .pipe(Effect.flip)).reason,
+      ).toBe("permission_denied");
+      yield* f.plugins.remove({ installationId: foreignEnabled.installationId, deleteData: true });
+      const retained = yield* f.install();
+      yield* f.plugins.remove({ installationId: retained.installationId, deleteData: true });
+      const fresh = yield* f.install();
+      const freshEnabled = yield* f.plugins.consent({
+        installationId: fresh.installationId,
+        digest: fresh.digest,
+        grants: enabled.grants,
+      });
+      expect(freshEnabled).toMatchObject({ dataOwner: freshEnabled.installationId });
+      expect(
+        (yield* f.plugins
+          .readCardView(
+            {
+              installationId: freshEnabled.installationId,
+              generation: freshEnabled.generation,
               card: result.card,
             },
             actor,

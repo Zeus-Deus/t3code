@@ -387,6 +387,8 @@ export type PluginPendingUpdate = typeof PluginPendingUpdate.Type;
 export const PluginInstallation = Schema.Struct({
   installationId: identifier,
   generation: identifier,
+  /** Matches retained card data after reinstall; the server still authorizes every card read. */
+  dataOwner: Schema.optionalKey(identifier),
   pendingUpdate: Schema.optionalKey(PluginPendingUpdate),
   recordIssue: Schema.optionalKey(text(64)),
   compatibility: Schema.optionalKey(PluginCompatibility),

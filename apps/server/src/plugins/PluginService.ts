@@ -725,6 +725,7 @@ const make = Effect.gen(function* () {
     const { attention: _attention, recovery: _recovery, ...rest } = installation;
     return {
       ...rest,
+      ...(record.rawRecord === undefined ? { dataOwner: dataKeyFor(record) } : {}),
       status,
       compatibility,
       observerError: record.deliveryError ?? null,
