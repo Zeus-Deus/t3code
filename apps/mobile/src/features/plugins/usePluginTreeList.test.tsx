@@ -27,7 +27,12 @@ const choice = {
 const harness = vi.hoisted(() => ({
   // Per environment: the nodes its next read serves, or undefined to fail it.
   served: new Map<string, unknown>(),
-  revision: 0,
+  // Undefined while the change subscription has not reported its first count.
+  revision: 0 as number | undefined,
+  generation: "gen-1",
+  connected: true,
+  // A read for this environment stays in flight until the test settles it.
+  pending: new Map<string, Promise<unknown>>(),
   reads: [] as string[],
   result: null as null | {
     readonly sources: unknown;
@@ -58,10 +63,10 @@ vi.mock("../../state/plugins", () => ({
       ),
   }),
   usePluginCatalogue: () => ({
-    availability: "available",
-    loaded: true,
+    availability: harness.connected ? "available" : "disconnected",
+    loaded: harness.connected,
     error: null,
-    installations: [installation],
+    installations: harness.connected ? [{ ...installation, generation: harness.generation }] : [],
     executionDisabled: false,
   }),
   usePluginChangeRevision: () => harness.revision,
@@ -69,6 +74,8 @@ vi.mock("../../state/plugins", () => ({
 vi.mock("../../state/use-atom-command", () => ({
   useAtomCommand: () => async (request: { readonly environmentId: string }) => {
     harness.reads.push(request.environmentId);
+    const pending = harness.pending.get(request.environmentId);
+    if (pending !== undefined) return pending;
     const nodes = harness.served.get(request.environmentId);
     // The hook only tells a read that served nodes from one that did not.
     return nodes === undefined
@@ -109,6 +116,9 @@ beforeEach(() => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   harness.served = new Map();
   harness.revision = 0;
+  harness.generation = "gen-1";
+  harness.connected = true;
+  harness.pending = new Map();
   harness.reads = [];
   harness.result = null;
   root = createRoot(document.createElement("div"));
@@ -162,4 +172,73 @@ it("calls the tree incomplete, not activity, when only another environment serve
     sources: [{ environmentId: laptop, nodes: [group("mine")] }],
     notice: "Part of Projects couldn't load. It may be incomplete.",
   });
+});
+
+it("drops the previous generation's rows and failure while the new generation waits", async () => {
+  harness.served.set(laptop, [group("old-generation")]);
+  await renderList([laptop]);
+  harness.served.delete(laptop);
+  harness.revision = 1;
+  await renderList([laptop]);
+  expect(harness.result).toMatchObject({ notice: "Projects may be out of date." });
+
+  // New grants: a new generation, before its change subscription answers.
+  harness.generation = "gen-2";
+  harness.revision = undefined;
+  await renderList([laptop]);
+  expect(harness.result).toMatchObject({ sources: null, notice: null });
+
+  // Its first read is in flight.
+  let finish!: (result: unknown) => void;
+  harness.pending.set(
+    laptop,
+    new Promise((resolve) => {
+      finish = resolve;
+    }),
+  );
+  harness.revision = 0;
+  await renderList([laptop]);
+  expect(harness.result).toMatchObject({ sources: null, notice: null });
+
+  await act(async () =>
+    finish({
+      _tag: "Failure",
+      cause: new PluginError({ reason: "permission_denied", message: "new grants" }),
+    }),
+  );
+  expect(harness.result).toMatchObject({
+    sources: null,
+    notice: "Couldn't load Projects. Showing Activity.",
+  });
+  expect(harness.reads).toEqual([laptop, laptop, laptop]);
+});
+
+it("keeps the same generation's rows while disconnected or resubscribing", async () => {
+  harness.served.set(laptop, [group("mine")]);
+  await renderList([laptop]);
+  harness.served.delete(laptop);
+  harness.revision = 1;
+  await renderList([laptop]);
+  const stale = {
+    sources: [{ environmentId: laptop, nodes: [group("mine")] }],
+    notice: "Projects may be out of date.",
+  };
+  expect(harness.result).toMatchObject(stale);
+
+  harness.connected = false;
+  await renderList([laptop]);
+  expect(harness.result).toMatchObject(stale);
+
+  // Reconnected to the same generation; its change subscription has not counted yet.
+  harness.connected = true;
+  harness.revision = undefined;
+  await renderList([laptop]);
+  expect(harness.result).toMatchObject(stale);
+  expect(harness.reads).toEqual([laptop, laptop]);
+
+  harness.served.set(laptop, [group("mine")]);
+  harness.revision = 0;
+  await renderList([laptop]);
+  expect(harness.result).toMatchObject({ notice: null });
+  expect(harness.reads).toEqual([laptop, laptop, laptop]);
 });

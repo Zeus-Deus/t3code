@@ -33,12 +33,21 @@ interface TreeSnapshot {
   readonly failed: boolean;
 }
 
-type SnapshotUpdate = {
-  readonly installationId: string;
-  readonly generation: string;
-  readonly nodes: ReadonlyArray<PluginTreeNode> | null;
-  readonly failed: boolean;
-} | null;
+type SnapshotUpdate =
+  | {
+      /** The catalogue names this installation and generation; nothing was read yet. */
+      readonly kind: "identity";
+      readonly installationId: string;
+      readonly generation: string;
+    }
+  | {
+      readonly kind: "result";
+      readonly installationId: string;
+      readonly generation: string;
+      readonly nodes: ReadonlyArray<PluginTreeNode> | null;
+      readonly failed: boolean;
+    }
+  | null;
 
 /**
  * Reads one environment's snapshot of the chosen tree while the list shows it: on mount, when the
@@ -78,6 +87,9 @@ function PluginTreeSnapshotFetcher(props: {
       latest.current.onReport(environmentId, null);
       return;
     }
+    // Before waiting on the change subscription, so a new generation never shows its
+    // predecessor's rows or failure.
+    latest.current.onReport(environmentId, { kind: "identity", installationId, generation });
     // Read after the change subscription first reports, not before it and again at its first count.
     if (revision === undefined) return;
     let cancelled = false;
@@ -89,6 +101,7 @@ function PluginTreeSnapshotFetcher(props: {
       .then((result) => {
         if (cancelled) return;
         latest.current.onReport(environmentId, {
+          kind: "result",
           installationId,
           generation,
           nodes: result._tag === "Success" ? result.value.nodes : null,
@@ -143,17 +156,24 @@ export function usePluginTreeList(
   }>({ key: null, byEnvironment: new Map() });
   const report = (key: string, environmentId: EnvironmentId, update: SnapshotUpdate) =>
     setSnapshots((current) => {
+      const previous = current.key === key ? current.byEnvironment.get(environmentId) : undefined;
+      // A new installation or generation may have other grants; its predecessor's rows go.
+      const sameIdentity =
+        update !== null &&
+        previous?.installationId === update.installationId &&
+        previous.generation === update.generation;
+      // Knowing the same identity again (a reconnect) keeps its last rows and failure.
+      if (update?.kind === "identity" && sameIdentity) return current;
       const byEnvironment = new Map(current.key === key ? current.byEnvironment : []);
-      const previous = byEnvironment.get(environmentId);
       if (update === null) byEnvironment.delete(environmentId);
       else {
-        // A new installation or generation may have other grants; its predecessor's rows go.
-        const kept =
-          previous?.installationId === update.installationId &&
-          previous.generation === update.generation
-            ? previous.nodes
-            : null;
-        byEnvironment.set(environmentId, { ...update, nodes: update.nodes ?? kept });
+        const kept = sameIdentity ? (previous?.nodes ?? null) : null;
+        byEnvironment.set(environmentId, {
+          installationId: update.installationId,
+          generation: update.generation,
+          nodes: update.kind === "result" ? (update.nodes ?? kept) : kept,
+          failed: update.kind === "result" && update.failed,
+        });
       }
       return { key, byEnvironment };
     });

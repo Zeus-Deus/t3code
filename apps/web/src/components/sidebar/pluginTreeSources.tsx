@@ -40,7 +40,8 @@ interface PluginTreeSnapshotState {
     environmentId: EnvironmentId,
     update:
       | {
-          readonly kind: "loading" | "failed";
+          /** The catalogue names this installation and generation; nothing was read yet. */
+          readonly kind: "identity" | "loading" | "failed";
           readonly installationId: string;
           readonly generation: string;
         }
@@ -67,11 +68,12 @@ const usePluginTreeSnapshotStore = create<PluginTreeSnapshotState>()((set) => ({
         return { key, snapshots };
       }
       // A new installation or generation may have other grants; its predecessor's rows go.
-      const kept =
+      const sameIdentity =
         previous?.installationId === update.installationId &&
-        previous.generation === update.generation
-          ? previous.nodes
-          : null;
+        previous.generation === update.generation;
+      // Knowing the same identity again (a reconnect) keeps its last rows and failure.
+      if (update.kind === "identity" && sameIdentity && state.key === key) return state;
+      const kept = sameIdentity ? previous.nodes : null;
       snapshots.set(environmentId, {
         installationId: update.installationId,
         generation: update.generation,
@@ -125,6 +127,9 @@ function PluginTreeSnapshotSource(props: {
       report(choice.key, environmentId, { kind: "withdrawn" });
       return;
     }
+    // Before waiting on the change subscription, so a new generation never shows its
+    // predecessor's rows or failure.
+    report(choice.key, environmentId, { kind: "identity", installationId, generation });
     if (revision === undefined) return;
     let cancelled = false;
     report(choice.key, environmentId, { kind: "loading", installationId, generation });
