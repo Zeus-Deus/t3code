@@ -1055,6 +1055,188 @@ describe("PluginSupervisor real child", () => {
     ),
   );
 
+  it.live.each(
+    (["activation", "dispatch"] as const).flatMap((stage) =>
+      (["revoked", "stopped", "healthy"] as const).map((change) => ({ stage, change })),
+    ),
+  )("rechecks $stage admission without blocking stop ($change)", ({ stage, change }) =>
+    provide(
+      Effect.gen(function* () {
+        const supervisor = yield* PluginSupervisor.PluginSupervisor;
+        const input = yield* fixture;
+        const fs = yield* FileSystem.FileSystem;
+        yield* fs.writeFileString(
+          NodePath.join(input.directory, "plugin.mjs"),
+          `
+        import {writeFile} from "node:fs/promises";
+        import {join} from "node:path";
+        export async function activate(ctx) {
+          await writeFile(join(ctx.dataDirectory, "activated"), "started");
+          ctx.handle("action:echo", async () => {
+            await writeFile(join(ctx.dataDirectory, "handled"), "ran");
+            return {message: "healthy"};
+          });
+        }
+      `,
+        );
+        const entered = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        let revoked = false;
+        let checks = 0;
+        const admission = Effect.gen(function* () {
+          if (++checks === (stage === "activation" ? 1 : 2)) {
+            yield* Deferred.succeed(entered, undefined);
+            yield* Deferred.await(release);
+          }
+          if (revoked)
+            return yield* new PluginError({
+              reason: "permission_denied",
+              message: "Caller revoked.",
+            });
+        });
+        const pending = yield* supervisor
+          .invoke(input, () => Effect.void, admission)
+          .pipe(Effect.result, Effect.forkScoped);
+        yield* Deferred.await(entered);
+        if (change === "revoked") revoked = true;
+        else if (change === "stopped") yield* supervisor.stop(input.installationId);
+        yield* Deferred.succeed(release, undefined);
+        const result = yield* Fiber.join(pending);
+        expect(result).toMatchObject(
+          change === "healthy"
+            ? { _tag: "Success", success: { message: "healthy" } }
+            : {
+                _tag: "Failure",
+                failure: { reason: change === "revoked" ? "permission_denied" : "cancelled" },
+              },
+        );
+        expect(yield* fs.exists(NodePath.join(input.directory, "activated"))).toBe(
+          stage === "dispatch" || change === "healthy",
+        );
+        expect(yield* fs.exists(NodePath.join(input.directory, "handled"))).toBe(
+          change === "healthy",
+        );
+        expect(
+          (yield* supervisor.invoke({ ...input, operationId: "fresh" }, () => Effect.void)).message,
+        ).toBe("healthy");
+      }),
+    ),
+  );
+
+  it.effect(
+    "runs activation admission after restart backoff without reusing its earlier authority",
+    () =>
+      Effect.gen(function* () {
+        const supervisor = yield* PluginSupervisor.PluginSupervisor;
+        const input = yield* fixture;
+        const fs = yield* FileSystem.FileSystem;
+        yield* fs.writeFileString(
+          NodePath.join(input.directory, "plugin.mjs"),
+          `
+        import {readFile, writeFile} from "node:fs/promises";
+        import {join} from "node:path";
+        export async function activate(ctx) {
+          const file = join(ctx.dataDirectory, "activations");
+          const count = Number(await readFile(file, "utf8").catch(() => "0"));
+          await writeFile(file, String(count + 1));
+          ctx.handle("action:crash", () => process.exit(42));
+          ctx.handle("action:echo", () => ({message: "healthy"}));
+        }
+      `,
+        );
+        expect(
+          (yield* supervisor
+            .invoke({ ...input, handler: "action:crash" }, () => Effect.void)
+            .pipe(Effect.flip)).reason,
+        ).toBe("crashed");
+        let revoked = false;
+        let checks = 0;
+        const pending = yield* supervisor
+          .invoke(
+            input,
+            () => Effect.void,
+            Effect.suspend(() => {
+              checks++;
+              return revoked
+                ? Effect.fail(
+                    new PluginError({ reason: "permission_denied", message: "Caller revoked." }),
+                  )
+                : Effect.void;
+            }),
+          )
+          .pipe(Effect.result, Effect.forkScoped);
+        yield* TestClock.adjust(99);
+        expect(checks).toBe(0);
+        revoked = true;
+        yield* TestClock.adjust(1);
+        expect(yield* Fiber.join(pending)).toMatchObject({
+          _tag: "Failure",
+          failure: { reason: "permission_denied" },
+        });
+        expect(checks).toBe(1);
+        expect(yield* fs.readFileString(NodePath.join(input.directory, "activations"))).toBe("1");
+      }).pipe(
+        Effect.provide(PluginSupervisor.layer.pipe(Layer.provide(NodeServices.layer))),
+        Effect.provideService(PluginSupervisor.PluginRuntimeConfig, {
+          selfInvocation: {
+            command: process.execPath,
+            entrypoint: NodePath.resolve(import.meta.dirname, "../bin.ts"),
+          },
+          startupTimeoutMs: 10_000,
+          invocationTimeoutMs: 10_000,
+          stopGraceMs: 500,
+          restartBackoffMs: 100,
+          maxFailures: 3,
+        }),
+        Effect.provide(NodeServices.layer),
+        Effect.scoped,
+      ),
+  );
+
+  it.effect("caps prepared dispatches after concurrent awaited admissions", () =>
+    provide(
+      Effect.gen(function* () {
+        const supervisor = yield* PluginSupervisor.PluginSupervisor;
+        const input = yield* fixture;
+        const prepared = yield* Queue.unbounded<void>();
+        const entered = yield* Queue.unbounded<void>();
+        const failed = yield* Queue.unbounded<string>();
+        const release = yield* Deferred.make<void>();
+        const running = yield* Effect.forEach(
+          Array.from({ length: 9 }, (_, index) => index),
+          (index) => {
+            let checks = 0;
+            return supervisor
+              .invoke(
+                { ...input, handler: "action:hold", operationId: `prepared-${index}` },
+                () => Queue.offer(entered, undefined).pipe(Effect.andThen(Effect.never)),
+                Effect.gen(function* () {
+                  if (++checks !== 2) return;
+                  yield* Queue.offer(prepared, undefined);
+                  yield* Deferred.await(release);
+                }),
+              )
+              .pipe(
+                Effect.result,
+                Effect.tap((result) =>
+                  result._tag === "Failure"
+                    ? Queue.offer(failed, result.failure.reason)
+                    : Effect.void,
+                ),
+                Effect.forkScoped,
+              );
+          },
+        );
+        for (const _index of running) yield* Queue.take(prepared);
+        yield* Deferred.succeed(release, undefined);
+        expect(yield* Queue.take(failed)).toBe("busy");
+        for (const _index of running.slice(0, 8)) yield* Queue.take(entered);
+        yield* supervisor.stop(input.installationId);
+        yield* Effect.forEach(running, Fiber.join);
+      }),
+    ),
+  );
+
   it.effect("rejects oversized invocation inputs before launching code", () =>
     provide(
       Effect.gen(function* () {

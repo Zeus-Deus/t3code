@@ -548,6 +548,15 @@ const make = Effect.gen(function* () {
     }
     return result;
   });
+  const updateAndStop = Effect.fn("PluginService.updateAndStop")(function* (
+    installationId: string,
+    f: (record: PluginStore.StoredInstallation) => PluginStore.StoredInstallation,
+  ) {
+    // Once revocation commits, caller interruption must not leave its worker executing.
+    const result = yield* update(installationId, f);
+    yield* supervisor.stop(installationId);
+    return result;
+  }, Effect.uninterruptible);
   // Snapshot references belong to this store, including legacy absolute references.
   const snapshotDirectory = Effect.fn("PluginService.snapshotDirectory")(function* (
     installationId: string,
@@ -661,7 +670,7 @@ const make = Effect.gen(function* () {
         Effect.gen(function* () {
           const generation = yield* id;
           const timestamp = yield* now;
-          yield* update(record.installation.installationId, (current) =>
+          yield* updateAndStop(record.installation.installationId, (current) =>
             current.installation.generation === record.installation.generation
               ? {
                   ...current,
@@ -676,7 +685,6 @@ const make = Effect.gen(function* () {
                 }
               : current,
           );
-          yield* supervisor.stop(record.installation.installationId);
         }),
       ),
     );
@@ -1476,7 +1484,7 @@ const make = Effect.gen(function* () {
             : observationStart,
         ]),
       );
-      const result = yield* update(input.installationId, (record) => {
+      const result = yield* updateAndStop(input.installationId, (record) => {
         const { pendingUpdate: _pending, ...active } = record.installation;
         const {
           pendingDirectory: _directory,
@@ -1565,7 +1573,6 @@ const make = Effect.gen(function* () {
           },
         };
       });
-      yield* supervisor.stop(input.installationId);
       yield* releaseObsoleteSnapshots(current);
       return result;
     },
@@ -1596,7 +1603,7 @@ const make = Effect.gen(function* () {
         : { eventCursor: current.eventCursor };
       const generation = yield* id;
       const timestamp = yield* now;
-      const result = yield* update(input.installationId, (record) => ({
+      const result = yield* updateAndStop(input.installationId, (record) => ({
         ...record,
         eventCursor: Math.max(record.eventCursor, choice.eventCursor),
         eventBacklogChoiceRequired:
@@ -1612,7 +1619,6 @@ const make = Effect.gen(function* () {
           updatedAt: timestamp,
         },
       }));
-      yield* supervisor.stop(input.installationId);
       return result;
     },
     transition,
@@ -1670,11 +1676,10 @@ const make = Effect.gen(function* () {
     function* (input: { readonly installationId: string; readonly deleteData?: boolean }) {
       const current = yield* mutable(input.installationId);
       const generation = yield* id;
-      yield* update(input.installationId, (record) => ({
+      yield* updateAndStop(input.installationId, (record) => ({
         ...record,
         installation: { ...record.installation, generation, enabled: false, status: "disabled" },
       }));
-      yield* supervisor.stop(input.installationId);
       yield* removeSnapshot(input.installationId);
       // Keep a disabled, retryable entry if stopping or removing executable bytes fails.
       if (input.deleteData) {
@@ -1837,6 +1842,23 @@ const make = Effect.gen(function* () {
                 ...(caller.lineage === undefined ? {} : { lineage: caller.lineage }),
               }
             : yield* subagentOf(targetThreadId);
+      const admission = Effect.gen(function* () {
+        yield* actor.authorize?.() ?? Effect.void;
+        let state = yield* read;
+        yield* actor.authorize?.() ?? Effect.void;
+        if (!store.isCurrent(state)) {
+          state = yield* read;
+          yield* actor.authorize?.() ?? Effect.void;
+          if (!store.isCurrent(state)) return yield* pluginPermissionDenied();
+        }
+        const current = recordFor(state, input.installationId);
+        if (!current) return yield* notFound();
+        const denied =
+          PluginStore.assertMutablePluginRecord(current) ??
+          assertPluginActive(present(current), input.generation) ??
+          assertNotTransitioning(input.installationId);
+        if (denied) return yield* denied;
+      });
       const output = yield* supervisor.invoke(
         {
           ...input,
@@ -1918,6 +1940,7 @@ const make = Effect.gen(function* () {
             value,
           );
         },
+        admission,
       );
       const latest = yield* get(input.installationId);
       const revoked = assertPluginActive(present(latest), input.generation);

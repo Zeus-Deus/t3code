@@ -261,6 +261,9 @@ export class PluginStore extends Context.Service<
     readonly update: <A, E, R>(
       f: (state: PluginState) => Effect.Effect<readonly [A, PluginState], E, R>,
     ) => Effect.Effect<A, E | PluginStoreError, R>;
+    readonly tryUpdate: <A, E, R>(
+      f: (state: PluginState) => Effect.Effect<readonly [A, PluginState], E, R>,
+    ) => Effect.Effect<Option.Option<A>, E | PluginStoreError, R>;
     readonly changes: Stream.Stream<void>;
     readonly subscribeChanges: Effect.Effect<Stream.Stream<void>, never, Scope.Scope>;
   }
@@ -463,44 +466,50 @@ const make = Effect.gen(function* () {
     Effect.provideService(Crypto.Crypto, crypto),
     Effect.mapError((cause) => new PluginStoreError({ operation: "read", cause })),
   );
-  const update: PluginStore["Service"]["update"] = Effect.fn("PluginStore.update")(
-    function* <A, E, R>(
-      f: (state: PluginState) => Effect.Effect<readonly [A, PluginState], E, R>,
-    ): Effect.fn.Return<A, E | PluginStoreError, R> {
-      const current = yield* readUnsafe;
-      const [value, state] = yield* f(current);
-      if (state === current) return value;
-      const sql = yield* database.client.pipe(
-        Effect.mapError((cause) => new PluginStoreError({ operation: "write", cause })),
+  const commit = Effect.fn("PluginStore.commit")(function* <A, E, R>(
+    f: (state: PluginState) => Effect.Effect<readonly [A, PluginState], E, R>,
+  ): Effect.fn.Return<A, E | PluginStoreError, R> {
+    const current = yield* readUnsafe;
+    const [value, state] = yield* f(current);
+    if (state === current) return value;
+    const sql = yield* database.client.pipe(
+      Effect.mapError((cause) => new PluginStoreError({ operation: "write", cause })),
+    );
+    yield* sql
+      .withTransaction(persist(sql, current, state))
+      .pipe(
+        Effect.mapError((cause) =>
+          isPluginStoreError(cause) ? cause : new PluginStoreError({ operation: "write", cause }),
+        ),
       );
-      yield* sql
-        .withTransaction(persist(sql, current, state))
-        .pipe(
-          Effect.mapError((cause) =>
-            isPluginStoreError(cause) ? cause : new PluginStoreError({ operation: "write", cause }),
-          ),
+    cached = state;
+    if (
+      current.installations.length !== state.installations.length ||
+      state.installations.some((record, index) => {
+        const previous = current.installations[index];
+        return (
+          record.installation !== previous?.installation ||
+          record.removed !== previous?.removed ||
+          record.deliveryError !== previous?.deliveryError ||
+          record.eventBacklogChoiceRequired !== previous?.eventBacklogChoiceRequired ||
+          record.repair !== previous?.repair ||
+          record.previous !== previous?.previous ||
+          record.activeSource !== previous?.activeSource ||
+          record.sourceRequest !== previous?.sourceRequest
         );
-      cached = state;
-      if (
-        current.installations.length !== state.installations.length ||
-        state.installations.some((record, index) => {
-          const previous = current.installations[index];
-          return (
-            record.installation !== previous?.installation ||
-            record.removed !== previous?.removed ||
-            record.deliveryError !== previous?.deliveryError ||
-            record.eventBacklogChoiceRequired !== previous?.eventBacklogChoiceRequired ||
-            record.repair !== previous?.repair ||
-            record.previous !== previous?.previous ||
-            record.activeSource !== previous?.activeSource ||
-            record.sourceRequest !== previous?.sourceRequest
-          );
-        })
-      )
-        yield* PubSub.publish(changes, undefined);
-      return value;
-    },
+      })
+    )
+      yield* PubSub.publish(changes, undefined);
+    return value;
+  });
+  const update: PluginStore["Service"]["update"] = Effect.fn("PluginStore.update")(
+    commit,
     lock.withPermits(1),
+    Effect.uninterruptible,
+  );
+  const tryUpdate: PluginStore["Service"]["tryUpdate"] = Effect.fn("PluginStore.tryUpdate")(
+    commit,
+    lock.withPermitsIfAvailable(1),
     Effect.uninterruptible,
   );
   return PluginStore.of({
@@ -508,6 +517,7 @@ const make = Effect.gen(function* () {
     read: lock.withPermits(1)(readUnsafe),
     isCurrent: (state) => cached === state,
     update,
+    tryUpdate,
     changes: Stream.fromPubSub(changes),
     subscribeChanges: Effect.map(PubSub.subscribe(changes), Stream.fromSubscription),
   });

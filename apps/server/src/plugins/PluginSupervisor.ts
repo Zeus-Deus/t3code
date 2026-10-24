@@ -85,6 +85,7 @@ export class PluginSupervisor extends Context.Service<
     readonly invoke: (
       input: PluginExecutionInput,
       hostCall: PluginHostCall,
+      admission?: Effect.Effect<void, PluginError>,
     ) => Effect.Effect<PluginWorkerOutput, PluginError>;
     readonly stop: (installationId: string) => Effect.Effect<void>;
     readonly resume: (installationId: string) => Effect.Effect<void>;
@@ -240,6 +241,7 @@ const make = Effect.gen(function* () {
   const acquireWorker = Effect.fn("PluginSupervisor.acquireWorker")(function* (
     input: PluginExecutionInput,
     epoch: number,
+    admission: Effect.Effect<void, PluginError>,
   ) {
     const previous = failures.get(input.installationId);
     if (previous && previous.generation !== input.generation) failures.delete(input.installationId);
@@ -251,6 +253,8 @@ const make = Effect.gen(function* () {
       });
     if (!workers.has(input.installationId) && failureCount > 0)
       yield* Effect.sleep(Math.min(30_000, config.restartBackoffMs * 2 ** (failureCount - 1)));
+    // Admission must follow backoff while retaining the stop epoch captured by invoke.
+    yield* admission;
     let created = false;
     const worker = yield* Effect.try({
       try: () => {
@@ -463,6 +467,7 @@ const make = Effect.gen(function* () {
   const invoke = Effect.fn("PluginSupervisor.invoke")(function* (
     input: PluginExecutionInput,
     hostCall: PluginHostCall,
+    admission: Effect.Effect<void, PluginError> = Effect.void,
   ) {
     if (!pluginMessageFits(input))
       return yield* new PluginError({
@@ -470,7 +475,7 @@ const make = Effect.gen(function* () {
         message: "Plugin input exceeds the transport limit.",
       });
     const epoch = epochs.get(input.installationId) ?? 0;
-    const worker = yield* acquireWorker(input, epoch);
+    const worker = yield* acquireWorker(input, epoch, admission);
     const execute = Effect.gen(function* () {
       yield* Deferred.await(worker.ready);
       if (worker.stopping || worker.failed || (epochs.get(input.installationId) ?? 0) !== epoch)
@@ -496,11 +501,15 @@ const make = Effect.gen(function* () {
         settled: false,
       };
       const invocationId = String(++sequence);
-      worker.active.set(invocationId, invocation);
       yield* Effect.addFinalizer(() =>
         Effect.gen(function* () {
           invocation.closed = true;
-          if (!invocation.settled && !worker.failed && !worker.stopping) {
+          if (
+            worker.active.get(invocationId) === invocation &&
+            !invocation.settled &&
+            !worker.failed &&
+            !worker.stopping
+          ) {
             if (!send(worker, { type: "cancel", invocationId })) failWorker(worker, "crashed");
             yield* Deferred.await(invocation.cancelled).pipe(
               Effect.timeoutOrElse({
@@ -550,6 +559,19 @@ const make = Effect.gen(function* () {
           if (!send(worker, message)) failWorker(worker, "crashed");
         }
       }).pipe(Effect.forkScoped);
+      yield* admission;
+      // No yield may separate admission, the capacity check, registration and sending.
+      if (worker.active.size >= 8)
+        return yield* new PluginError({
+          reason: "busy",
+          message: "This plugin has too many active invocations.",
+        });
+      worker.active.set(invocationId, invocation);
+      if (worker.stopping || worker.failed || (epochs.get(input.installationId) ?? 0) !== epoch)
+        return yield* new PluginError({
+          reason: "cancelled",
+          message: "Plugin execution was revoked.",
+        });
       if (
         !send(worker, {
           type: "invoke",

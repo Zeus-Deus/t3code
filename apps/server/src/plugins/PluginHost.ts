@@ -313,23 +313,34 @@ const make = Effect.gen(function* () {
           currentState: PluginStore.PluginState,
         ) => Effect.Effect<readonly [A, PluginStore.PluginState], PluginError>,
       ) {
-        // External session checks must not hold the global catalogue commit lock.
-        yield* actor.authorize?.() ?? Effect.void;
-        return yield* store.update((currentState) =>
-          Effect.gen(function* () {
-            const current = currentState.installations.find(
-              (r) => r.installation.installationId === invocation.installationId,
-            );
-            if (current === undefined || current.removed)
-              return yield* new PluginError({
-                reason: "not_found",
-                message: "The plugin installation no longer exists.",
-              });
-            const denied = assertPluginActive(current.installation, invocation.generation);
-            if (denied) return yield* denied;
-            return yield* f(current, currentState);
-          }),
-        );
+        const attempt = () =>
+          store.tryUpdate((currentState) =>
+            Effect.gen(function* () {
+              const current = currentState.installations.find(
+                (r) => r.installation.installationId === invocation.installationId,
+              );
+              if (current === undefined || current.removed)
+                return yield* new PluginError({
+                  reason: "not_found",
+                  message: "The plugin installation no longer exists.",
+                });
+              const denied =
+                PluginStore.assertMutablePluginRecord(current) ??
+                assertPluginActive(current.installation, invocation.generation);
+              if (denied) return yield* denied;
+              if (!pluginCapabilityAllowed(current.installation, actor, "storage"))
+                return yield* pluginPermissionDenied();
+              return yield* f(current, currentState);
+            }),
+          );
+        // Authorizers may reenter this store. A missed admission waits for the owner, then
+        // rechecks authority; the invocation's cancellation bounds contention, not a busy error.
+        while (true) {
+          yield* actor.authorize?.() ?? Effect.void;
+          const result = yield* attempt();
+          if (Option.isSome(result)) return result.value;
+          yield* store.read;
+        }
       });
       const target = Effect.fn("PluginHost.target")(function* (
         threadId: ThreadId,

@@ -3,7 +3,7 @@ import * as NodeHttp from "node:http";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeSocket from "@effect/platform-node/NodeSocket";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { expect, it } from "@effect/vitest";
+import { expect, it, vi } from "@effect/vitest";
 import {
   AuthSessionId,
   WS_METHODS,
@@ -62,6 +62,7 @@ import * as Store from "./PluginStore.ts";
 import * as Service from "./PluginService.ts";
 import * as Host from "./PluginHost.ts";
 import * as Supervisor from "./PluginSupervisor.ts";
+import * as Source from "./pluginSource.ts";
 import * as Git from "./PluginGitSource.ts";
 import * as Delivery from "./PluginEventDelivery.ts";
 import type * as RpcGroup from "effect/rpc/RpcGroup";
@@ -180,6 +181,7 @@ const makeFixture = Effect.fn("PluginServiceTest.fixture")(function* (realWorker
   const shellReads: Array<string> = [];
   const metadataReads: Array<ThreadId> = [];
   let metadataReadFailure: ThreadId | undefined;
+  let beforeMetadata: (() => Effect.Effect<void>) | undefined;
   const threadShells = new Map<ThreadId, OrchestrationV2ThreadShell | null>();
   let gitCheckout: Git.PluginGitSource["Service"]["checkout"] = (source) =>
     Effect.succeed({ directory, source: { ...source, ref: source.ref ?? "a".repeat(40) } });
@@ -215,16 +217,17 @@ const makeFixture = Effect.fn("PluginServiceTest.fixture")(function* (realWorker
   });
   const domainLayer = Layer.mock(Threads.ThreadManagementService)({
     getThreadMetadata: (id) =>
-      Effect.suspend(() => {
+      Effect.gen(function* () {
+        const before = beforeMetadata;
+        beforeMetadata = undefined;
+        yield* before?.() ?? Effect.void;
         metadataReads.push(id);
         if (metadataReadFailure === id) {
           metadataReadFailure = undefined;
-          return Effect.fail(new OrchestratorProjectionError({ threadId: id }));
+          return yield* new OrchestratorProjectionError({ threadId: id });
         }
         const thread = threadShells.has(id) ? (threadShells.get(id) ?? null) : shell;
-        return Effect.succeed(
-          thread === null ? null : { lineage: thread.lineage, deletedAt: thread.deletedAt },
-        );
+        return thread === null ? null : { lineage: thread.lineage, deletedAt: thread.deletedAt };
       }),
     getThreadShell: (id) =>
       Effect.sync(() => {
@@ -279,6 +282,17 @@ const makeFixture = Effect.fn("PluginServiceTest.fixture")(function* (realWorker
               beforeRead = undefined;
               return (before?.() ?? Effect.void).pipe(Effect.andThen(store.read));
             }),
+            tryUpdate: (f) =>
+              Effect.suspend(() => {
+                const before = beforeUpdate;
+                beforeUpdate = undefined;
+                return (before?.() ?? Effect.void).pipe(
+                  Effect.andThen(store.tryUpdate(f)),
+                  Effect.tap((result) =>
+                    Option.isSome(result) ? (afterUpdate?.() ?? Effect.void) : Effect.void,
+                  ),
+                );
+              }),
             update: (f) =>
               Effect.suspend(() => {
                 const before = beforeUpdate;
@@ -293,7 +307,7 @@ const makeFixture = Effect.fn("PluginServiceTest.fixture")(function* (realWorker
       ).pipe(Layer.provide(Store.layer)),
     ),
     Layer.provideMerge(Receipts.layer),
-    Layer.provide(
+    Layer.provideMerge(
       realWorker
         ? Supervisor.layer.pipe(
             Layer.provide(
@@ -312,11 +326,14 @@ const makeFixture = Effect.fn("PluginServiceTest.fixture")(function* (realWorker
             ),
           )
         : Layer.succeed(Supervisor.PluginSupervisor, {
-            invoke: (input, host) => {
-              calls.push(input);
-              hostOperation = host;
-              return handler(input, host);
-            },
+            invoke: (input, host, admission = Effect.void) =>
+              admission.pipe(
+                Effect.andThen(() => {
+                  calls.push(input);
+                  hostOperation = host;
+                  return handler(input, host);
+                }),
+              ),
             stop: (id) =>
               Effect.gen(function* () {
                 stopped.push(id);
@@ -412,6 +429,10 @@ const makeFixture = Effect.fn("PluginServiceTest.fixture")(function* (realWorker
     reads,
     shellReads,
     metadataReads,
+    supervisor: Context.get(context, Supervisor.PluginSupervisor),
+    beforeMetadata: (hook: () => Effect.Effect<void>) => {
+      beforeMetadata = hook;
+    },
     failMetadataReadOnce: (id: ThreadId) => {
       metadataReadFailure = id;
     },
@@ -716,6 +737,409 @@ it.live.each(["disable", "revoke", "generation"] as const)(
       expect(f.commands).toEqual([]);
       expect((yield* f.store.read).installations[0]?.storage.entered).toBe(true);
       expect((yield* f.plugins.list()).installations[0]?.generation).toBe(current.generation);
+    }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.live.each(
+  (["lineage", "snapshot"] as const).flatMap((preflight) =>
+    (["healthy", "disable", "re-enable", "generation", "update", "remove", "session"] as const).map(
+      (change) => ({ preflight, change }),
+    ),
+  ),
+)(
+  "does not start a worker revoked during $preflight preflight ($change)",
+  ({ preflight, change }) =>
+    Effect.gen(function* () {
+      const f = yield* makeFixture(true);
+      yield* f.fs.writeFileString(
+        f.path.join(f.directory, "plugin.mjs"),
+        `
+      import { writeFile } from "node:fs/promises";
+      import { join } from "node:path";
+      export async function activate(ctx) {
+        await writeFile(join(ctx.dataDirectory, "activated"), "started");
+        ctx.handle("action:review", () => ({message: "healthy"}));
+      }
+    `,
+      );
+      const enabled = yield* f.enable();
+      const marker = f.path.join(f.store.directory, "data", enabled.installationId, "activated");
+      const entered = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const pause = Deferred.succeed(entered, undefined).pipe(
+        Effect.andThen(Deferred.await(release)),
+      );
+      using spies = new DisposableStack();
+      if (preflight === "lineage") f.beforeMetadata(() => pause);
+      else {
+        const verify = Source.verifyPluginSnapshot;
+        spies.use(
+          vi
+            .spyOn(Source, "verifyPluginSnapshot")
+            .mockImplementationOnce((input) => verify(input).pipe(Effect.tap(() => pause))),
+        );
+      }
+      let revoked = false;
+      const invocation = {
+        installationId: enabled.installationId,
+        generation: enabled.generation,
+        handler: "action:review",
+        operationId: "preflight",
+      };
+      const pending = yield* f.plugins
+        .invoke(invocation, {
+          ...actor,
+          source: "agent",
+          threadId,
+          authorize: () =>
+            Effect.suspend(() =>
+              revoked
+                ? Effect.fail(
+                    new PluginError({ reason: "permission_denied", message: "Caller revoked." }),
+                  )
+                : Effect.void,
+            ),
+        })
+        .pipe(Effect.result, Effect.forkScoped);
+      yield* Deferred.await(entered);
+      let current = enabled;
+      if (change === "disable" || change === "re-enable") {
+        current = yield* f.plugins.setEnabled({
+          installationId: enabled.installationId,
+          enabled: false,
+        });
+        if (change === "re-enable")
+          current = yield* f.plugins.setEnabled({
+            installationId: enabled.installationId,
+            enabled: true,
+          });
+      } else if (change === "generation" || change === "update") {
+        let digest = enabled.digest;
+        if (change === "update") {
+          yield* f.fs.writeFileString(
+            f.path.join(f.directory, "plugin.mjs"),
+            (yield* f.fs.readFileString(f.path.join(f.directory, "plugin.mjs"))) +
+              "\n// New revision.\n",
+          );
+          digest = (yield* f.plugins.refresh({ installationId: enabled.installationId }))
+            .pendingUpdate!.digest;
+        }
+        current = yield* f.plugins.consent({
+          installationId: enabled.installationId,
+          digest,
+          grants: enabled.grants,
+        });
+      } else if (change === "remove")
+        yield* f.plugins.remove({ installationId: enabled.installationId });
+      else if (change === "session") revoked = true;
+      yield* Deferred.succeed(release, undefined);
+      const result = yield* Fiber.join(pending);
+      if (change === "healthy") {
+        expect(result).toMatchObject({ _tag: "Success", success: { message: "healthy" } });
+        expect(yield* f.fs.exists(marker)).toBe(true);
+      } else {
+        expect(result).toMatchObject({ _tag: "Failure" });
+        expect(yield* f.fs.exists(marker)).toBe(false);
+      }
+      // A fresh generation remains usable after revoking the older preflight invocation.
+      if (["re-enable", "generation", "update"].includes(change)) {
+        expect(
+          (yield* f.plugins.invoke(
+            { ...invocation, generation: current.generation, operationId: "current" },
+            actor,
+          )).message,
+        ).toBe("healthy");
+        expect(yield* f.fs.exists(marker)).toBe(true);
+      }
+    }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.live.each(["disable", "consent", "remove", "snapshot"] as const)(
+  "interruption after the %s revocation commit still stops its real worker",
+  (change) =>
+    Effect.gen(function* () {
+      const f = yield* makeFixture(true);
+      yield* f.fs.writeFileString(
+        f.path.join(f.directory, "plugin.mjs"),
+        `
+      export function activate(ctx) {ctx.handle("action:review", () => ({data: process.pid}));}
+    `,
+      );
+      const enabled = yield* f.enable();
+      const record = (yield* f.store.read).installations[0]!;
+      yield* f.supervisor.invoke(
+        {
+          installationId: enabled.installationId,
+          generation: enabled.generation,
+          directory: f.path.resolve(f.store.directory, record.directory),
+          entry: "plugin.mjs",
+          dataDirectory: f.directory,
+          handler: "action:review",
+          operationId: "running",
+          caller: { kind: "client" },
+        },
+        () => Effect.void,
+      );
+      if (change === "snapshot") {
+        const entry = f.path.resolve(f.store.directory, record.directory, "plugin.mjs");
+        yield* f.fs.chmod(entry, 0o600);
+        yield* f.fs.writeFileString(entry, "export function activate() {}\n");
+      }
+      const committed = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const stopped = yield* Deferred.make<void>();
+      const stop = f.supervisor.stop;
+      using _stop = vi
+        .spyOn(f.supervisor, "stop")
+        .mockImplementation((id) =>
+          stop(id).pipe(Effect.tap(() => Deferred.succeed(stopped, undefined))),
+        );
+      f.afterUpdate(() =>
+        Deferred.succeed(committed, undefined).pipe(Effect.andThen(Deferred.await(release))),
+      );
+      const transition =
+        change === "disable"
+          ? f.plugins.setEnabled({ installationId: enabled.installationId, enabled: false })
+          : change === "consent"
+            ? f.plugins.consent({
+                installationId: enabled.installationId,
+                digest: enabled.digest,
+                grants: enabled.grants,
+              })
+            : change === "remove"
+              ? f.plugins.remove({ installationId: enabled.installationId })
+              : f.plugins.readView({
+                  installationId: enabled.installationId,
+                  generation: enabled.generation,
+                  viewId: "board",
+                });
+      const pending = yield* transition.pipe(Effect.forkScoped);
+      yield* Deferred.await(committed);
+      const interrupting = yield* Fiber.interrupt(pending).pipe(Effect.forkScoped);
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(interrupting);
+      f.afterUpdate(undefined);
+      expect(yield* Deferred.isDone(stopped)).toBe(true);
+      expect((yield* f.store.read).installations[0]?.installation.generation).not.toBe(
+        enabled.generation,
+      );
+    }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.live("ordinary repeated catalogue contention does not pause a real run observer", () =>
+  Effect.gen(function* () {
+    const f = yield* makeFixture(true);
+    yield* f.fs.writeFileString(
+      f.path.join(f.directory, "plugin.mjs"),
+      `
+      export function activate(ctx) {
+        ctx.events.onRunFinalized(async event => {await ctx.storage.set("completed-event", event.deliveryId);});
+      }
+    `,
+    );
+    const enabled = yield* f.enable();
+    const attempts = yield* Queue.unbounded<Deferred.Deferred<void>>();
+    const tried = yield* Queue.unbounded<void>();
+    const tryUpdate = f.store.tryUpdate;
+    let count = 0;
+    using _try = vi.spyOn(f.store, "tryUpdate").mockImplementation(function <A, E, R>(
+      callback: (state: Store.PluginState) => Effect.Effect<readonly [A, Store.PluginState], E, R>,
+    ) {
+      return Effect.gen(function* () {
+        if (++count <= 2) {
+          const release = yield* Deferred.make<void>();
+          yield* Queue.offer(attempts, release);
+          yield* Deferred.await(release);
+        }
+        const result = yield* tryUpdate(callback);
+        if (count <= 2) yield* Queue.offer(tried, undefined);
+        return result;
+      });
+    });
+    const pending = yield* f.plugins
+      .deliver({
+        installationId: enabled.installationId,
+        generation: enabled.generation,
+        sequence: 41,
+        event: {
+          deliveryId: "contended-event",
+          threadId,
+          projectId,
+          runId: run.id,
+          outcome: "completed",
+        },
+      })
+      .pipe(Effect.result, Effect.forkScoped);
+    for (const _round of [1, 2]) {
+      const releaseAttempt = yield* Queue.take(attempts);
+      const entered = yield* Deferred.make<void>();
+      const releaseLock = yield* Deferred.make<void>();
+      const owner = yield* f.store
+        .update((state) =>
+          Deferred.succeed(entered, undefined).pipe(
+            Effect.andThen(Deferred.await(releaseLock)),
+            Effect.as([
+              undefined,
+              {
+                ...state,
+                installations: state.installations.map((record) => ({
+                  ...record,
+                  eventCursor: record.eventCursor + 1,
+                })),
+              },
+            ] as const),
+          ),
+        )
+        .pipe(Effect.forkScoped);
+      yield* Deferred.await(entered);
+      yield* Deferred.succeed(releaseAttempt, undefined);
+      yield* Queue.take(tried);
+      yield* Deferred.succeed(releaseLock, undefined);
+      yield* Fiber.join(owner);
+    }
+    const result = yield* Fiber.join(pending);
+    const record = (yield* f.store.read).installations[0]!;
+    expect({
+      result,
+      observerError: record.deliveryError,
+      value: record.storage["completed-event"],
+    }).toMatchObject({
+      result: { _tag: "Success" },
+      observerError: undefined,
+      value: "contended-event",
+    });
+  }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.live("two observing installations retain writes across an unrelated cursor commit", () =>
+  Effect.gen(function* () {
+    const f = yield* makeFixture(true);
+    yield* f.fs.writeFileString(
+      f.path.join(f.directory, "plugin.mjs"),
+      `
+      export function activate(ctx) {
+        ctx.events.onRunFinalized(async event => {await ctx.storage.set("completed-event", event.deliveryId);});
+      }
+    `,
+    );
+    const first = yield* f.enable();
+    yield* f.fs.writeFileString(
+      f.path.join(f.directory, "t3-plugin.json"),
+      yield* encodeJson({ ...manifest, id: "test.peer", name: "Peer" }),
+    );
+    const peer = yield* f.install();
+    const second = yield* f.plugins.consent({
+      installationId: peer.installationId,
+      digest: peer.digest,
+      grants: first.grants,
+    });
+    const entered = yield* Deferred.make<void>();
+    const releaseAttempt = yield* Deferred.make<void>();
+    const missed = yield* Deferred.make<void>();
+    const tryUpdate = f.store.tryUpdate;
+    let gated = false;
+    using _try = vi.spyOn(f.store, "tryUpdate").mockImplementation(function <A, E, R>(
+      callback: (state: Store.PluginState) => Effect.Effect<readonly [A, Store.PluginState], E, R>,
+    ) {
+      if (gated) return tryUpdate(callback);
+      gated = true;
+      return Deferred.succeed(entered, undefined).pipe(
+        Effect.andThen(Deferred.await(releaseAttempt)),
+        Effect.andThen(tryUpdate(callback)),
+        Effect.tap((result) =>
+          Option.isNone(result) ? Deferred.succeed(missed, undefined) : Effect.void,
+        ),
+      );
+    });
+    const deliver = (installation: typeof first, deliveryId: string, sequence: number) =>
+      f.plugins.deliver({
+        installationId: installation.installationId,
+        generation: installation.generation,
+        sequence,
+        event: { deliveryId, threadId, projectId, runId: run.id, outcome: "completed" },
+      });
+    const one = yield* deliver(first, "one", 41).pipe(Effect.forkScoped);
+    yield* Deferred.await(entered);
+    const cursorEntered = yield* Deferred.make<void>();
+    const releaseCursor = yield* Deferred.make<void>();
+    const cursor = yield* f.store
+      .update((state) =>
+        Deferred.succeed(cursorEntered, undefined).pipe(
+          Effect.andThen(Deferred.await(releaseCursor)),
+          Effect.as([
+            undefined,
+            {
+              ...state,
+              installations: state.installations.map((record) =>
+                record.installation.installationId === second.installationId
+                  ? { ...record, eventCursor: record.eventCursor + 1 }
+                  : record,
+              ),
+            },
+          ] as const),
+        ),
+      )
+      .pipe(Effect.forkScoped);
+    yield* Deferred.await(cursorEntered);
+    const two = yield* deliver(second, "two", 42).pipe(Effect.forkScoped);
+    yield* Deferred.succeed(releaseAttempt, undefined);
+    yield* Deferred.await(missed);
+    yield* Deferred.succeed(releaseCursor, undefined);
+    yield* Fiber.join(cursor);
+    yield* Fiber.join(one);
+    yield* Fiber.join(two);
+    const records = (yield* f.store.read).installations;
+    expect(records.map((record) => record.storage["completed-event"])).toEqual(["one", "two"]);
+    expect(records.map((record) => record.deliveryError)).toEqual([undefined, undefined]);
+  }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect.each([1, 2])(
+  "execution admission tolerates one catalogue change and fails closed after %s changes",
+  (changes) =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      const enabled = yield* f.enable();
+      let checks = 0;
+      let remaining = changes;
+      const result = yield* f.plugins
+        .invoke(
+          {
+            installationId: enabled.installationId,
+            generation: enabled.generation,
+            handler: "action:review",
+            operationId: "catalogue-admission",
+          },
+          {
+            ...actor,
+            authorize: () =>
+              Effect.gen(function* () {
+                if (++checks < 3 || remaining === 0) return;
+                remaining--;
+                yield* f.store
+                  .update((state) =>
+                    Effect.succeed([
+                      undefined,
+                      {
+                        ...state,
+                        installations: state.installations.map((record) => ({
+                          ...record,
+                          eventCursor: record.eventCursor + 1,
+                        })),
+                      },
+                    ] as const),
+                  )
+                  .pipe(Effect.orDie);
+              }),
+          },
+        )
+        .pipe(Effect.result);
+      expect(result).toMatchObject(
+        changes === 1
+          ? { _tag: "Success", success: { message: "done" } }
+          : { _tag: "Failure", failure: { reason: "permission_denied" } },
+      );
+      expect(f.calls).toHaveLength(changes === 1 ? 1 : 0);
     }).pipe(Effect.provide(base()), Effect.scoped),
 );
 
@@ -1149,6 +1573,81 @@ it.effect.each(
       });
       expect((yield* f.store.read).installations[0]?.storage.board).toBe("before");
     }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect.each(
+  (["storage.set", "storage.delete"] as const).flatMap((method) =>
+    (["session", "healthy"] as const).map((change) => ({ method, change })),
+  ),
+)("rechecks $method caller admission after a catalogue lock wait ($change)", ({ method, change }) =>
+  Effect.gen(function* () {
+    const f = yield* fixture;
+    const enabled = yield* f.enable();
+    const invocation = {
+      installationId: enabled.installationId,
+      generation: enabled.generation,
+      operationId: "storage-admission",
+      callId: 1,
+      actor,
+    };
+    yield* f.host.call(invocation, "storage.set", { key: "board", value: "before" });
+    const beforeMutation = yield* Deferred.make<void>();
+    const releaseAuthorization = yield* Deferred.make<void>();
+    const lockEntered = yield* Deferred.make<void>();
+    const releaseLock = yield* Deferred.make<void>();
+    const mutationEntered = yield* Deferred.make<void>();
+    let checks = 0;
+    let revoked = false;
+    const pending = yield* f.host
+      .call(
+        {
+          ...invocation,
+          actor: {
+            ...actor,
+            authorize: () =>
+              Effect.gen(function* () {
+                if (++checks === 3) {
+                  yield* Deferred.succeed(beforeMutation, undefined);
+                  yield* Deferred.await(releaseAuthorization);
+                }
+                if (revoked)
+                  return yield* new PluginError({
+                    reason: "permission_denied",
+                    message: "Caller revoked.",
+                  });
+              }),
+          },
+        },
+        method,
+        { key: "board", ...(method === "storage.set" ? { value: "after" } : {}) },
+      )
+      .pipe(Effect.result, Effect.forkScoped);
+    yield* Deferred.await(beforeMutation);
+    const lock = yield* f.store
+      .update((state) =>
+        Deferred.succeed(lockEntered, undefined).pipe(
+          Effect.andThen(Deferred.await(releaseLock)),
+          Effect.as([undefined, state] as const),
+        ),
+      )
+      .pipe(Effect.forkScoped);
+    yield* Deferred.await(lockEntered);
+    f.beforeUpdate(() => Deferred.succeed(mutationEntered, undefined));
+    yield* Deferred.succeed(releaseAuthorization, undefined);
+    yield* Deferred.await(mutationEntered);
+    if (change === "session") revoked = true;
+    yield* Deferred.succeed(releaseLock, undefined);
+    yield* Fiber.join(lock);
+    const result = yield* Fiber.join(pending);
+    const value = (yield* f.store.read).installations[0]?.storage.board;
+    if (change === "session") {
+      expect(result).toMatchObject({ _tag: "Failure", failure: { reason: "permission_denied" } });
+      expect(value).toBe("before");
+    } else {
+      expect(result).toMatchObject({ _tag: "Success" });
+      expect(value).toBe(method === "storage.set" ? "after" : undefined);
+    }
+  }).pipe(Effect.provide(base()), Effect.scoped),
 );
 
 it.effect.each(["settings.get", "storage.get"] as const)(

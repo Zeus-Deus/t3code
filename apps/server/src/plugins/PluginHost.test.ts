@@ -24,6 +24,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Queue from "effect/Queue";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import * as CoreReceipts from "../persistence/OrchestrationCommandReceipts.ts";
 import * as Config from "../config.ts";
@@ -2354,5 +2355,227 @@ it.effect(
       });
       yield* f.host.call(f.invocation, "threads.create", { ...f.request, creationSource: "mcp" });
       expect(f.launchInputs[0]?.creationSource).toBe("server");
+    }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect.each(["storage.set", "storage.delete"] as const)(
+  "%s authorizers can reenter the catalogue before committing",
+  (method) =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      yield* f.store.update((state) =>
+        Effect.succeed([
+          undefined,
+          {
+            ...state,
+            installations: state.installations.map((record) => ({
+              ...record,
+              storage: { board: "before" },
+              installation: {
+                ...record.installation,
+                manifest: {
+                  ...record.installation.manifest,
+                  capabilities: [...record.installation.manifest.capabilities, "storage"],
+                },
+                grants: {
+                  ...record.installation.grants,
+                  capabilities: [...record.installation.grants.capabilities, "storage"],
+                },
+              },
+            })),
+          },
+        ] as const),
+      );
+      const result = yield* f.host.call(
+        {
+          ...f.invocation,
+          actor: {
+            ...actor,
+            authorize: () =>
+              f.store.read.pipe(
+                Effect.andThen(() =>
+                  f.store.update((state) => Effect.succeed([undefined, state] as const)),
+                ),
+                Effect.asVoid,
+                Effect.orDie,
+              ),
+          },
+        },
+        method,
+        { key: "board", ...(method === "storage.set" ? { value: "after" } : {}) },
+      );
+      expect(result).toBeNull();
+      expect((yield* f.store.read).installations[0]?.storage.board).toBe(
+        method === "storage.set" ? "after" : undefined,
+      );
+    }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect.each(["storage.set", "storage.delete"] as const)(
+  "%s waits and reauthorizes through repeated catalogue contention",
+  (method) =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      yield* f.store.update((state) =>
+        Effect.succeed([
+          undefined,
+          {
+            ...state,
+            installations: state.installations.map((record) => ({
+              ...record,
+              storage: { board: "before" },
+              installation: {
+                ...record.installation,
+                manifest: {
+                  ...record.installation.manifest,
+                  capabilities: [...record.installation.manifest.capabilities, "storage"],
+                },
+                grants: {
+                  ...record.installation.grants,
+                  capabilities: [...record.installation.grants.capabilities, "storage"],
+                },
+              },
+            })),
+          },
+        ] as const),
+      );
+      const authorizing = yield* Queue.unbounded<Deferred.Deferred<void>>();
+      const attempted = yield* Queue.unbounded<void>();
+      const original = f.store.tryUpdate;
+      using _attempt = vi.spyOn(f.store, "tryUpdate").mockImplementation(function <A, E, R>(
+        callback: (
+          state: Store.PluginState,
+        ) => Effect.Effect<readonly [A, Store.PluginState], E, R>,
+      ) {
+        return original(callback).pipe(Effect.tap(() => Queue.offer(attempted, undefined)));
+      });
+      let checks = 0;
+      const pending = yield* f.host
+        .call(
+          {
+            ...f.invocation,
+            actor: {
+              ...actor,
+              authorize: () =>
+                Effect.gen(function* () {
+                  if (++checks < 3 || checks > 4) return;
+                  const release = yield* Deferred.make<void>();
+                  yield* Queue.offer(authorizing, release);
+                  yield* Deferred.await(release);
+                }),
+            },
+          },
+          method,
+          { key: "board", ...(method === "storage.set" ? { value: "after" } : {}) },
+        )
+        .pipe(Effect.result, Effect.forkScoped);
+      for (const _round of [1, 2]) {
+        const releaseAuthorization = yield* Queue.take(authorizing);
+        const entered = yield* Deferred.make<void>();
+        const releaseLock = yield* Deferred.make<void>();
+        const lock = yield* f.store
+          .update((state) =>
+            Deferred.succeed(entered, undefined).pipe(
+              Effect.andThen(Deferred.await(releaseLock)),
+              Effect.as([undefined, state] as const),
+            ),
+          )
+          .pipe(Effect.forkScoped);
+        yield* Deferred.await(entered);
+        yield* Deferred.succeed(releaseAuthorization, undefined);
+        yield* Queue.take(attempted);
+        yield* Deferred.succeed(releaseLock, undefined);
+        yield* Fiber.join(lock);
+      }
+      expect(yield* Fiber.join(pending)).toMatchObject({ _tag: "Success" });
+      expect((yield* f.store.read).installations[0]?.storage.board).toBe(
+        method === "storage.set" ? "after" : undefined,
+      );
+      expect(checks).toBe(5);
+    }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect.each(["storage.set", "storage.delete"] as const)(
+  "%s stops waiting for catalogue admission when its invocation is cancelled",
+  (method) =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      yield* f.store.update((state) =>
+        Effect.succeed([
+          undefined,
+          {
+            ...state,
+            installations: state.installations.map((record) => ({
+              ...record,
+              storage: { board: "before" },
+              installation: {
+                ...record.installation,
+                manifest: {
+                  ...record.installation.manifest,
+                  capabilities: [...record.installation.manifest.capabilities, "storage"],
+                },
+                grants: {
+                  ...record.installation.grants,
+                  capabilities: [...record.installation.grants.capabilities, "storage"],
+                },
+              },
+            })),
+          },
+        ] as const),
+      );
+      const authorizing = yield* Deferred.make<void>();
+      const releaseAuthorization = yield* Deferred.make<void>();
+      const missed = yield* Deferred.make<void>();
+      const original = f.store.tryUpdate;
+      using _try = vi.spyOn(f.store, "tryUpdate").mockImplementation(function <A, E, R>(
+        callback: (
+          state: Store.PluginState,
+        ) => Effect.Effect<readonly [A, Store.PluginState], E, R>,
+      ) {
+        return original(callback).pipe(
+          Effect.tap((result) =>
+            Option.isNone(result) ? Deferred.succeed(missed, undefined) : Effect.void,
+          ),
+        );
+      });
+      let checks = 0;
+      const pending = yield* f.host
+        .call(
+          {
+            ...f.invocation,
+            actor: {
+              ...actor,
+              authorize: () =>
+                Effect.gen(function* () {
+                  if (++checks === 3) {
+                    yield* Deferred.succeed(authorizing, undefined);
+                    yield* Deferred.await(releaseAuthorization);
+                  }
+                }),
+            },
+          },
+          method,
+          { key: "board", ...(method === "storage.set" ? { value: "after" } : {}) },
+        )
+        .pipe(Effect.forkScoped);
+      yield* Deferred.await(authorizing);
+      const entered = yield* Deferred.make<void>();
+      const releaseLock = yield* Deferred.make<void>();
+      const owner = yield* f.store
+        .update((state) =>
+          Deferred.succeed(entered, undefined).pipe(
+            Effect.andThen(Deferred.await(releaseLock)),
+            Effect.as([undefined, state] as const),
+          ),
+        )
+        .pipe(Effect.forkScoped);
+      yield* Deferred.await(entered);
+      yield* Deferred.succeed(releaseAuthorization, undefined);
+      yield* Deferred.await(missed);
+      yield* Fiber.interrupt(pending);
+      expect(Exit.hasInterrupts(yield* Fiber.await(pending))).toBe(true);
+      yield* Deferred.succeed(releaseLock, undefined);
+      yield* Fiber.join(owner);
+      expect((yield* f.store.read).installations[0]?.storage.board).toBe("before");
     }).pipe(Effect.provide(base()), Effect.scoped),
 );

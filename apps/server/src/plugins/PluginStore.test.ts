@@ -9,6 +9,7 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Sqlite from "../persistence/Sqlite.ts";
@@ -471,5 +472,35 @@ it.effect("validates opaque display fields independently without trusting invali
       version: "0.0.0",
     });
     expect(yield* sql`SELECT record_json FROM plugin_records`).toEqual([{ record_json: raw }]);
+  }).pipe(Effect.provide(testLayer()), Effect.scoped),
+);
+
+it.effect("tryUpdate never queues a commit behind a catalogue owner", () =>
+  Effect.gen(function* () {
+    const store = yield* buildStore;
+    const entered = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    const owner = yield* store
+      .update((state) =>
+        Deferred.succeed(entered, undefined).pipe(
+          Effect.andThen(Deferred.await(release)),
+          Effect.as([undefined, state] as const),
+        ),
+      )
+      .pipe(Effect.forkScoped);
+    yield* Deferred.await(entered);
+    let mutations = 0;
+    const write = (state: Store.PluginState) =>
+      Effect.sync(() => {
+        mutations++;
+        return ["saved", { ...state, installations: [valid] }] as const;
+      });
+    expect(yield* store.tryUpdate(write)).toEqual(Option.none());
+    expect(mutations).toBe(0);
+    yield* Deferred.succeed(release, undefined);
+    yield* Fiber.join(owner);
+    expect(yield* store.tryUpdate(write)).toEqual(Option.some("saved"));
+    expect(mutations).toBe(1);
+    expect((yield* store.read).installations).toEqual([valid]);
   }).pipe(Effect.provide(testLayer()), Effect.scoped),
 );
