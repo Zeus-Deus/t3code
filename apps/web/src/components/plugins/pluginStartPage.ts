@@ -43,12 +43,20 @@ export function resetPluginStartPageForTests(): void {
  */
 export function useStartPageDecided(): boolean {
   const { startPage } = usePluginStartPage();
+  return useAtomValue(startPagePhaseAtom) === "settled" || startPage === null;
+}
+
+/**
+ * Settles the start page when the app shell first mounts away from "/": the app opened on
+ * another page, so a later visit to "/" is not the app opening. Mount it in every app shell,
+ * hosted or not, but not on pairing or connection pages, which hand over to "/" once signed in.
+ */
+export function PluginStartPageLaunchCoordinator(): null {
   const router = useRouter();
   useEffect(() => {
-    // The app opened on another page, so a later visit to "/" is not the app opening.
     if (router.state.location.pathname !== "/") appAtomRegistry.set(startPagePhaseAtom, "settled");
   }, [router]);
-  return useAtomValue(startPagePhaseAtom) === "settled" || startPage === null;
+  return null;
 }
 
 const NO_SESSION_ATOM = Atom.make(AsyncResult.initial<AuthSessionState>());

@@ -100,6 +100,7 @@ vi.mock(import("../../state/query"), async (original) => {
 
 import { useBootstrapThreadNavigation } from "../../hooks/useBootstrapThreadNavigation";
 import {
+  PluginStartPageLaunchCoordinator,
   resetPluginStartPageForTests,
   useHoldLandingForStartPage,
   useStartPageDecided,
@@ -430,7 +431,18 @@ function Startup(props: {
 }) {
   return (
     <>
+      <PluginStartPageLaunchCoordinator />
       <WelcomeHandler welcome={props.welcome} />
+      <IndexRoute onDraft={props.onDraft} />
+    </>
+  );
+}
+
+// The hosted app's shell: no primary environment, so no welcome handler.
+function HostedStartup(props: { readonly onDraft: () => void }) {
+  return (
+    <>
+      <PluginStartPageLaunchCoordinator />
       <IndexRoute onDraft={props.onDraft} />
     </>
   );
@@ -534,4 +546,40 @@ it("does not open the start page on a later visit after the app opened elsewhere
   await expect.element(screen.getByText("landing")).toBeVisible();
   expect(boot.navigate).not.toHaveBeenCalled();
   expect(onDraft).toHaveBeenCalledTimes(1);
+});
+
+it("does not open the start page on a later visit after the hosted app opened elsewhere", async () => {
+  setup();
+  bootReady();
+  const onDraft = vi.fn();
+  await using screen = await render(
+    <AppAtomRegistryProvider>
+      <HostedStartup onDraft={onDraft} />
+    </AppAtomRegistryProvider>,
+    { router: `/${environmentId}/thread-1` },
+  );
+  await expect.element(screen.getByText("elsewhere")).toBeVisible();
+
+  await act(() => screen.router?.navigate({ to: "/" }));
+  await expect.element(screen.getByText("landing")).toBeVisible();
+  expect(boot.navigate).not.toHaveBeenCalled();
+  expect(onDraft).toHaveBeenCalledTimes(1);
+});
+
+it("opens the start page when the hosted app opens on the landing", async () => {
+  setup();
+  const onDraft = vi.fn();
+  await using screen = await render(
+    <AppAtomRegistryProvider>
+      <HostedStartup onDraft={onDraft} />
+    </AppAtomRegistryProvider>,
+  );
+  const router: AnyRouter = screen.router!;
+  boot.navigate.mockImplementation((options) => router.navigate(options));
+  await expect.element(screen.getByText("holding")).toBeVisible();
+  await act(bootReady);
+  await expect.element(screen.getByText("elsewhere")).toBeVisible();
+  expect(router.state.location.pathname).toBe(`/plugins/${environmentId}/inst-board/board`);
+  expect(boot.navigate.mock.calls).toEqual([[pluginRoute]]);
+  expect(onDraft).not.toHaveBeenCalled();
 });
