@@ -5,13 +5,17 @@ import type { ReactNode } from "react";
 import { expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
 
+import "~/index.css";
+
 import { act, render } from "../../../test/render";
 
 const state = vi.hoisted(() => ({
-  installation: null as PluginInstallation | null,
+  /** Each environment's installations, in catalogue order. */
+  catalogues: {} as Record<string, PluginInstallation[]>,
   calls: [] as Array<{ label: string; environmentId: string; input: unknown }>,
-  /** Connected environments in settings order; one environment scopes the page to it. */
+  /** Connected environments; the Settings scope shows `selected`. */
   environmentIds: ["env-1"] as string[],
+  selected: "env-1",
   /** Environments whose session lacks the install scopes. */
   installDenied: [] as string[],
   /** Advertised plugin API per environment; unlisted ones speak the current one. */
@@ -21,7 +25,7 @@ const state = vi.hoisted(() => ({
   /** The server advertises repair, previous-version and missed-event requests. */
   recovery: false,
   executionDisabled: false,
-  /** Results for commands whose label contains the key, instead of the installation. */
+  /** Results for commands whose label contains the key, instead of the first installation. */
   results: {} as Record<string, unknown>,
   catalogueListeners: new Set<() => void>(),
 }));
@@ -43,6 +47,7 @@ vi.mock(import("../../state/plugins"), async (original) => {
     Atom.make(() => environmentId !== null && !state.installDenied.includes(environmentId)),
   );
   const environment = actual.pluginEnvironment;
+  const none: PluginInstallation[] = [];
   return {
     ...actual,
     pluginEnvironment: {
@@ -53,11 +58,13 @@ vi.mock(import("../../state/plugins"), async (original) => {
       prepareRepair: withPermission(environment.prepareRepair),
       invoke: withPermission(environment.invoke),
     },
-    usePluginCatalogue: () => {
-      const installation = useSyncExternalStore(subscribe, () => state.installation);
+    usePluginCatalogue: (environmentId: string | null) => {
+      const installations = useSyncExternalStore(subscribe, () =>
+        environmentId === null ? none : (state.catalogues[environmentId] ?? none),
+      );
       return {
         availability: "available" as const,
-        installations: installation ? [installation] : [],
+        installations,
         loaded: true,
         error: null,
         recoverySupported: state.recovery,
@@ -79,7 +86,11 @@ vi.mock(import("../../state/use-atom-command"), async (original) => ({
       const result = Object.entries(state.results).find(([fragment]) =>
         command.label.includes(fragment),
       );
-      return AsyncResult.success(result ? result[1] : (state.installResult ?? state.installation));
+      return AsyncResult.success(
+        result
+          ? result[1]
+          : (state.installResult ?? state.catalogues[request.environmentId]?.[0] ?? null),
+      );
     }) as never,
 }));
 vi.mock(import("../../state/entities"), async (original) => ({
@@ -93,6 +104,7 @@ vi.mock(import("../../state/entities"), async (original) => ({
     } as never,
   ],
 }));
+// The route resolves Settings scope to one environment for this page, as it does for Providers.
 vi.mock(import("./SettingsScopeContext"), async (original) => ({
   ...(await original()),
   useSettingsScope: (() => {
@@ -109,33 +121,44 @@ vi.mock(import("./SettingsScopeContext"), async (original) => ({
         },
       },
     }));
+    const selected = environments.filter((entry) => entry.environmentId === state.selected);
     return {
-      scope: { kind: environments.length === 1 ? "environment" : "all" },
-      environment: environments.length === 1 ? environments[0] : null,
-      environments,
-      connectedEnvironments: environments,
+      scope: { kind: "environment" },
+      environment: selected[0] ?? null,
+      environments: selected,
+      connectedEnvironments: selected,
     };
   }) as never,
 }));
 // The real layout reads settings scope overrides and search targets; this suite is about plugins.
 vi.mock(import("./settingsLayout"), async (original) => ({
   ...(await original()),
-  SettingsPageContainer: (({ children }: { children: ReactNode }) => children) as never,
+  SettingsPageContainer: (({
+    children,
+    className,
+  }: {
+    children: ReactNode;
+    className?: string;
+  }) => <div className={className}>{children}</div>) as never,
   SettingsSection: (({
+    title,
     children,
     headerAction,
   }: {
+    title: string;
     children: ReactNode;
     headerAction?: ReactNode;
   }) => (
     <section>
+      <h2>{title}</h2>
       {headerAction}
       {children}
     </section>
   )) as never,
-  SettingsRow: (({ title, status, control, children }: Record<string, ReactNode>) => (
+  SettingsRow: (({ title, description, status, control, children }: Record<string, ReactNode>) => (
     <div>
       <h3>{title}</h3>
+      {description ? <p>{description}</p> : null}
       {status}
       {control}
       {children}
@@ -177,9 +200,11 @@ function installationFixture(overrides: Partial<PluginInstallation>): PluginInst
 }
 
 function setup(
-  installation: PluginInstallation | null,
+  installations: PluginInstallation | PluginInstallation[] | null,
   options: {
     environmentIds?: string[];
+    selected?: string;
+    catalogues?: Record<string, PluginInstallation[]>;
     installDenied?: string[];
     apiVersions?: Record<string, number | undefined>;
     installResult?: PluginInstallation;
@@ -188,9 +213,14 @@ function setup(
     results?: Record<string, unknown>;
   } = {},
 ) {
-  state.installation = installation;
-  state.calls = [];
   state.environmentIds = options.environmentIds ?? ["env-1"];
+  state.selected = options.selected ?? state.environmentIds[0]!;
+  state.catalogues = {
+    ...options.catalogues,
+    [state.selected]:
+      installations === null ? [] : Array.isArray(installations) ? installations : [installations],
+  };
+  state.calls = [];
   state.installDenied = options.installDenied ?? [];
   state.apiVersions = options.apiVersions ?? {};
   state.installResult = options.installResult ?? null;
@@ -201,27 +231,58 @@ function setup(
 }
 
 /** A catalogue push from the environment, such as another device installing or removing. */
-const pushCatalogue = (installation: PluginInstallation | null) =>
+const pushCatalogue = (
+  installations: PluginInstallation | PluginInstallation[] | null,
+  environmentId = state.selected,
+) =>
   act(() => {
-    state.installation = installation;
+    state.catalogues = {
+      ...state.catalogues,
+      [environmentId]:
+        installations === null
+          ? []
+          : Array.isArray(installations)
+            ? installations
+            : [installations],
+    };
     for (const listener of state.catalogueListeners) listener();
   });
 
-const settings = () => (
+const settings = (target?: { environmentId?: EnvironmentId; installationId?: string }) => (
   <RegistryProvider>
-    <PluginsSettings />
+    <PluginsSettings {...(target ? { target } : {})} />
   </RegistryProvider>
 );
+/** The page lays out by its own width: list beside the plugin when wide, one at a time when narrow. */
+function sized(width: number) {
+  const container = document.createElement("div");
+  container.style.width = `${width}px`;
+  return container;
+}
+const renderWide = (ui = settings()) =>
+  render(ui, { router: "/settings/plugins", container: sized(1100) });
+const renderNarrow = (ui = settings()) =>
+  render(ui, { router: "/settings/plugins", container: sized(400) });
 // Base UI dialogs mark the page behind them inert, which blocks pointer clicks in tests; the
 // locator still finds each control by its accessible role and name.
 const press = (locator: ReturnType<typeof page.getByRole>) =>
   act(() => (locator.element() as HTMLElement).click());
 const callsTo = (fragment: string) =>
   state.calls.filter((call) => call.label.includes(fragment)).map((call) => call.input);
+const callsWithEnvironment = (fragment: string) =>
+  state.calls
+    .filter((call) => call.label.includes(fragment))
+    .map((call) => ({ environmentId: call.environmentId, input: call.input }));
+const pluginHeading = (name: string) => page.getByRole("heading", { name, exact: true, level: 2 });
+const rowNames = () =>
+  page
+    .getByRole("button", { name: /^Select / })
+    .elements()
+    .map((element) => element.getAttribute("aria-label"));
 
 it("approves the reviewed digest with exactly the permissions and projects left on", async () => {
   setup(installationFixture({}));
-  await using _screen = await render(settings(), { router: "/settings/plugins" });
+  await using _screen = await renderWide();
 
   await press(page.getByRole("button", { name: "Review", exact: true }));
   const sendMessages = page.getByRole("checkbox", { name: "Send messages" });
@@ -264,7 +325,7 @@ function stagedUpdate() {
 
 it("approves a staged update without widening grants or re-enabling", async () => {
   setup(stagedUpdate());
-  await using _screen = await render(settings(), { router: "/settings/plugins" });
+  await using _screen = await renderWide();
 
   await press(page.getByRole("button", { name: "Review update" }));
   // New in the update, so it starts off; the running version never had it.
@@ -283,7 +344,7 @@ it("approves a staged update without widening grants or re-enabling", async () =
 
 it("keeps the running version when an update is discarded", async () => {
   setup(stagedUpdate());
-  await using _screen = await render(settings(), { router: "/settings/plugins" });
+  await using _screen = await renderWide();
 
   await press(page.getByRole("button", { name: "Review update" }));
   await press(page.getByRole("button", { name: "Discard update" }));
@@ -294,37 +355,39 @@ it("keeps the running version when an update is discarded", async () => {
   expect(callsTo(":consent")).toEqual([]);
 });
 
-it("names setting switches and sends only the settings the user changed", async () => {
-  setup(
-    installationFixture({
-      enabled: true,
-      consentedDigest: DIGEST,
-      status: "idle",
-      grants: { capabilities: ["ui", "threads.send"], projectIds: [] },
-      settings: { label: "Board" },
-      manifest: {
-        ...installationFixture({}).manifest,
-        settings: [
-          { key: "label", label: "Board label", type: "string" },
-          {
-            key: "autoFollowup",
-            label: "Request a review automatically",
-            description: "Off by default.",
-            type: "boolean",
-            default: false,
-          },
-        ],
-      },
-    }),
-  );
-  await using _screen = await render(settings(), { router: "/settings/plugins" });
+const configurable = (overrides: Partial<PluginInstallation> = {}) =>
+  installationFixture({
+    enabled: true,
+    consentedDigest: DIGEST,
+    status: "idle",
+    grants: { capabilities: ["ui", "threads.send"], projectIds: [] },
+    settings: { label: "Board" },
+    manifest: {
+      ...installationFixture({}).manifest,
+      settings: [
+        { key: "label", label: "Board label", type: "string" },
+        {
+          key: "autoFollowup",
+          label: "Request a review automatically",
+          description: "Off by default.",
+          type: "boolean",
+          default: false,
+        },
+      ],
+    },
+    ...overrides,
+  });
 
-  await press(page.getByRole("button", { name: "Actions for Workflow Board" }));
-  await press(page.getByRole("menuitem", { name: "Settings" }));
+it("names setting switches and saves only the settings the user changed", async () => {
+  setup(configurable());
+  await using _screen = await renderWide();
+
+  const save = page.getByRole("button", { name: "Save" });
+  await expect.element(save).toBeDisabled();
   const autoFollowup = page.getByRole("switch", { name: "Request a review automatically" });
   await expect.element(autoFollowup).not.toBeChecked();
   await press(autoFollowup);
-  await press(page.getByRole("button", { name: "Save" }));
+  await press(save);
 
   await vi.waitFor(() =>
     expect(callsTo(":update-settings")).toEqual([
@@ -333,61 +396,271 @@ it("names setting switches and sends only the settings the user changed", async 
   );
 });
 
-it("installs on an environment that allows it when the first one does not", async () => {
-  setup(installationFixture({}), {
-    environmentIds: ["env-1", "env-2", "env-3"],
-    installDenied: ["env-1"],
+it("keeps an unsaved value through status pushes and asks before another plugin replaces it", async () => {
+  const lens = installationFixture({
+    installationId: "inst-2",
+    manifest: { ...installationFixture({}).manifest, id: "examples.lens", name: "Lens" },
   });
-  await using _screen = await render(settings(), { router: "/settings/plugins" });
+  setup([configurable(), lens]);
+  await using _screen = await renderWide();
+
+  const label = page.getByRole("textbox", { name: "Board label" });
+  await userEvent.fill(label, "Sprint board");
+  // The plugin stops on its host while the user is typing; the form keeps their value.
+  await pushCatalogue([configurable({ status: "error", error: "Crashed" }), lens]);
+  await expect.element(page.getByText("Stopped after a failure")).toBeInTheDocument();
+  await expect.element(label).toHaveValue("Sprint board");
+
+  using confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+  await press(page.getByRole("button", { name: "Select Lens" }));
+  expect(confirm).toHaveBeenCalledWith("Discard unsaved changes to Workflow Board settings?");
+  await expect.element(pluginHeading("Workflow Board")).toBeInTheDocument();
+  await expect.element(label).toHaveValue("Sprint board");
+
+  confirm.mockReturnValue(true);
+  await press(page.getByRole("button", { name: "Select Lens" }));
+  await expect.element(pluginHeading("Lens")).toBeInTheDocument();
+  expect(callsTo(":update-settings")).toEqual([]);
+});
+
+it("shows another device's saved value while nothing is being edited", async () => {
+  setup(configurable());
+  await using _screen = await renderWide();
+
+  const label = page.getByRole("textbox", { name: "Board label" });
+  await expect.element(label).toHaveValue("Board");
+  await pushCatalogue(configurable({ settings: { label: "Renamed elsewhere" } }));
+  await expect.element(label).toHaveValue("Renamed elsewhere");
+  await expect.element(page.getByRole("button", { name: "Save" })).toBeDisabled();
+});
+
+function lineup() {
+  return [
+    installationFixture({
+      installationId: "inst-board",
+      enabled: true,
+      consentedDigest: DIGEST,
+      status: "idle",
+    }),
+    installationFixture({
+      installationId: "inst-lens",
+      enabled: true,
+      consentedDigest: DIGEST,
+      status: "idle",
+      manifest: {
+        ...installationFixture({}).manifest,
+        id: "examples.repository-lens",
+        name: "Repository Lens",
+        description: "Shows a repository overview.",
+      },
+    }),
+    installationFixture({
+      installationId: "inst-notes",
+      enabled: true,
+      consentedDigest: DIGEST,
+      status: "idle",
+      manifest: { ...installationFixture({}).manifest, id: "examples.notes", name: "Notes" },
+    }),
+  ];
+}
+
+it("filters by search and attention without reordering rows when a status changes", async () => {
+  setup(lineup());
+  await using _screen = await renderWide();
+
+  expect(rowNames()).toEqual(["Select Workflow Board", "Select Repository Lens", "Select Notes"]);
+  // Nothing needs attention, so there is nothing to filter by.
+  expect(page.getByRole("button", { name: /Needs attention/ }).query()).toBeNull();
+
+  const [board, lens, notes] = lineup();
+  await pushCatalogue([board!, { ...lens!, status: "error", error: "Crashed" }, notes!]);
+  expect(rowNames()).toEqual(["Select Workflow Board", "Select Repository Lens", "Select Notes"]);
+  await press(page.getByRole("button", { name: "Needs attention (1)" }));
+  expect(rowNames()).toEqual(["Select Repository Lens"]);
+
+  await userEvent.fill(page.getByRole("searchbox", { name: "Search plugins" }), "board");
+  await expect.element(page.getByText("No plugins match.")).toBeInTheDocument();
+  await press(page.getByRole("button", { name: "Clear filters" }));
+  expect(rowNames()).toHaveLength(3);
+  await expect.element(page.getByRole("searchbox", { name: "Search plugins" })).toHaveValue("");
+
+  await userEvent.fill(page.getByRole("searchbox", { name: "Search plugins" }), "overview");
+  expect(rowNames()).toEqual(["Select Repository Lens"]);
+});
+
+it("selects a plugin without turning it on and keeps the selection through pushes", async () => {
+  const disabled = lineup().map((entry) => ({
+    ...entry,
+    enabled: false,
+    status: "disabled" as const,
+  }));
+  setup(disabled);
+  await using _screen = await renderWide();
+
+  await expect.element(pluginHeading("Workflow Board")).toBeInTheDocument();
+  await press(page.getByRole("button", { name: "Select Notes" }));
+  await expect.element(pluginHeading("Notes")).toBeInTheDocument();
+  await expect
+    .element(page.getByRole("button", { name: "Select Notes" }))
+    .toHaveAttribute("aria-pressed", "true");
+  expect(callsTo(":set-enabled")).toEqual([]);
+
+  // A failure elsewhere in the list, and a fresh record for the selected one.
+  await pushCatalogue([
+    { ...disabled[0]!, status: "error", error: "Crashed" },
+    disabled[1]!,
+    { ...disabled[2]!, updatedAt: "2026-10-23T00:00:00.000Z" },
+  ]);
+  await expect.element(pluginHeading("Notes")).toBeInTheDocument();
+});
+
+it("says so when the selected plugin is removed elsewhere, without showing its old details", async () => {
+  setup(lineup());
+  await using _screen = await renderWide();
+
+  await press(page.getByRole("button", { name: "Select Notes" }));
+  await expect.element(pluginHeading("Notes")).toBeInTheDocument();
+  const [board, lens] = lineup();
+  await pushCatalogue([board!, lens!]);
+
+  await expect
+    .element(page.getByText("This plugin is no longer installed on Workstation."))
+    .toBeInTheDocument();
+  expect(pluginHeading("Notes").query()).toBeNull();
+  expect(callsTo(":set-enabled")).toEqual([]);
+});
+
+it("acts only on the environment Settings selected, and starts fresh on another", async () => {
+  const [board, lens, notes] = lineup();
+  setup([configurable({ installationId: "inst-board-2" }), lens!], {
+    environmentIds: ["env-1", "env-2", "env-3"],
+    selected: "env-2",
+    catalogues: { "env-1": [board!], "env-3": [notes!] },
+  });
+  await using screen = await renderWide();
+
+  expect(rowNames()).toEqual(["Select Workflow Board", "Select Repository Lens"]);
+  await press(page.getByRole("button", { name: "Select Repository Lens" }));
+  await press(page.getByRole("switch", { name: "Enable Repository Lens" }));
+  await vi.waitFor(() =>
+    expect(callsWithEnvironment(":set-enabled")).toEqual([
+      { environmentId: "env-2", input: { installationId: "inst-lens", enabled: false } },
+    ]),
+  );
+
+  await press(page.getByRole("button", { name: "Install plugin" }).first());
+  await expect.element(page.getByText("Install plugin on Machine 2")).toBeInTheDocument();
+  await userEvent.fill(page.getByRole("textbox", { name: "Source" }), "/plugins/board");
+  await press(page.getByRole("button", { name: "Install and review" }));
+  await vi.waitFor(() =>
+    expect(callsWithEnvironment(":install")).toEqual([
+      expect.objectContaining({ environmentId: "env-2" }),
+    ]),
+  );
+  await press(page.getByRole("button", { name: "Not now" }));
+
+  // The Settings scope menu picks another environment.
+  state.selected = "env-3";
+  await screen.rerender(settings());
+  expect(rowNames()).toEqual(["Select Notes"]);
+  await expect.element(pluginHeading("Notes")).toBeInTheDocument();
+  expect(pluginHeading("Repository Lens").query()).toBeNull();
+});
+
+it("opens the plugin a link names, but only on that environment", async () => {
+  setup(lineup(), { environmentIds: ["env-1", "env-2"], selected: "env-1" });
+  await using screen = await renderWide(
+    settings({ environmentId: EnvironmentId.make("env-1"), installationId: "inst-notes" }),
+  );
+  await expect.element(pluginHeading("Notes")).toBeInTheDocument();
+
+  await screen.rerender(
+    settings({ environmentId: EnvironmentId.make("env-2"), installationId: "inst-lens" }),
+  );
+  await expect.element(pluginHeading("Workflow Board")).toBeInTheDocument();
+});
+
+it("drills into one plugin on a narrow screen and returns focus to its row", async () => {
+  setup(lineup());
+  await using _screen = await renderNarrow();
+
+  await expect.element(page.getByRole("button", { name: "Select Notes" })).toBeVisible();
+  expect(pluginHeading("Workflow Board").query()).toBeNull();
+  await press(page.getByRole("button", { name: "Select Notes" }));
+  await expect.element(pluginHeading("Notes")).toHaveFocus();
+  expect(page.getByRole("button", { name: "Select Notes" }).query()).toBeNull();
+
+  await press(page.getByRole("button", { name: "All plugins on Workstation" }));
+  await expect.element(page.getByRole("button", { name: "Select Notes" })).toHaveFocus();
+});
+
+it("lists commands as information, with nothing to run from Settings", async () => {
+  setup(
+    installationFixture({
+      enabled: true,
+      consentedDigest: DIGEST,
+      status: "idle",
+      grants: { capabilities: ["ui"], projectIds: [] },
+      manifest: {
+        ...installationFixture({}).manifest,
+        actions: [
+          {
+            id: "summarize",
+            title: "Summarize thread",
+            placements: ["thread-menu"],
+            agentCallable: true,
+          },
+        ],
+        views: [{ id: "board", title: "Board", entry: "board.html", placement: "page" }],
+      },
+    }),
+  );
+  await using _screen = await renderWide();
+
+  await expect.element(page.getByRole("button", { name: "Open Board" })).toBeEnabled();
+  expect(page.getByRole("button", { name: /^Run/ }).query()).toBeNull();
+  await press(page.getByRole("button", { name: "Commands it adds (1)" }));
+  await expect.element(page.getByText("Thread menu · Agents can call it")).toBeInTheDocument();
+  expect(page.getByRole("button", { name: /^Run/ }).query()).toBeNull();
+});
+
+it("installs on the environment Settings selected and says which one", async () => {
+  setup(null, {
+    environmentIds: ["env-1", "env-2", "env-3"],
+    selected: "env-3",
+    installResult: installationFixture({}),
+  });
+  await using _screen = await renderWide();
 
   await press(page.getByRole("button", { name: "Install plugin" }));
-  await expect
-    .element(page.getByRole("combobox", { name: "Environment" }))
-    .toHaveTextContent("Machine 2");
+  await expect.element(page.getByText("Install plugin on Machine 3")).toBeInTheDocument();
   await userEvent.fill(page.getByRole("textbox", { name: "Source" }), "/plugins/board");
   await press(page.getByRole("button", { name: "Install and review" }));
 
   await vi.waitFor(() =>
-    expect(state.calls.filter((call) => call.label.includes(":install"))).toEqual([
-      expect.objectContaining({ environmentId: "env-2" }),
+    expect(callsWithEnvironment(":install")).toEqual([
+      expect.objectContaining({ environmentId: "env-3" }),
     ]),
   );
 });
 
-it("disables Install when no environment allows it", async () => {
-  setup(null, { environmentIds: ["env-1", "env-2"], installDenied: ["env-1", "env-2"] });
-  await using _screen = await render(settings(), { router: "/settings/plugins" });
+it("disables Install when the selected environment does not allow it", async () => {
+  setup(null, { environmentIds: ["env-1", "env-2"], selected: "env-2", installDenied: ["env-2"] });
+  await using _screen = await renderWide();
 
   await expect.element(page.getByRole("button", { name: "Install plugin" })).toBeDisabled();
 });
 
-it("skips permitted environments whose plugin API this client does not render", async () => {
-  setup(null, {
-    environmentIds: ["env-1", "env-2", "env-3"],
-    // A newer server, then one without plugins.
-    apiVersions: { "env-1": 2, "env-2": undefined },
-  });
-  await using _screen = await render(settings(), { router: "/settings/plugins" });
-
-  await press(page.getByRole("button", { name: "Install plugin" }));
-  await expect
-    .element(page.getByRole("combobox", { name: "Environment" }))
-    .toHaveTextContent("Machine 3");
-});
-
-it("disables Install when no permitted environment supports plugins", async () => {
-  setup(null, {
-    environmentIds: ["env-1", "env-2"],
-    apiVersions: { "env-1": 2, "env-2": undefined },
-  });
-  await using _screen = await render(settings(), { router: "/settings/plugins" });
+it("disables Install when the selected environment's plugin API is not one this client renders", async () => {
+  setup(null, { apiVersions: { "env-1": 2 } });
+  await using _screen = await renderWide();
 
   await expect.element(page.getByRole("button", { name: "Install plugin" })).toBeDisabled();
 });
 
 it("stops standing in the install result once the catalogue has listed and then dropped it", async () => {
   setup(null, { installResult: installationFixture({}) });
-  await using _screen = await render(settings(), { router: "/settings/plugins" });
+  await using _screen = await renderWide();
 
   await press(page.getByRole("button", { name: "Install plugin" }));
   await userEvent.fill(page.getByRole("textbox", { name: "Source" }), "/plugins/board");
@@ -422,7 +695,7 @@ it("asks before delivering runs missed while disabled, and passes the choice on"
       ":backlog": { count: 3, afterSequence: 10, throughSequence: 42, requiresChoice: true },
     },
   });
-  await using _screen = await render(settings(), { router: "/settings/plugins" });
+  await using _screen = await renderWide();
 
   await press(page.getByRole("switch", { name: "Enable Workflow Board" }));
   await expect.element(page.getByText("Workflow Board missed 3 runs")).toBeInTheDocument();
@@ -447,10 +720,9 @@ it("asks about missed runs before re-approving a disabled plugin turns it on", a
       ":backlog": { count: 2, afterSequence: 10, throughSequence: 42, requiresChoice: true },
     },
   });
-  await using _screen = await render(settings(), { router: "/settings/plugins" });
+  await using _screen = await renderWide();
 
-  await press(page.getByRole("button", { name: "Actions for Workflow Board" }));
-  await press(page.getByRole("menuitem", { name: "Review permissions" }));
+  await press(page.getByRole("button", { name: "Review permissions" }));
   await press(page.getByRole("button", { name: "Approve and enable" }));
   await expect.element(page.getByText("Workflow Board missed 2 runs")).toBeInTheDocument();
   expect(callsTo(":consent")).toEqual([]);
@@ -473,26 +745,33 @@ it("asks about missed runs before re-approving a disabled plugin turns it on", a
 
 it("offers no restart while plugin code is off, but keeps repair and management", async () => {
   setup(ready({ status: "quarantined" }), { recovery: true, executionDisabled: true });
-  await using _screen = await render(settings(), { router: "/settings/plugins" });
+  await using _screen = await renderWide();
 
-  await expect.element(page.getByText("Paused · plugin code off")).toBeInTheDocument();
+  await expect.element(page.getByText("Paused · plugin code off").first()).toBeInTheDocument();
   expect(page.getByRole("button", { name: "Restart" }).query()).toBeNull();
-  await press(page.getByRole("button", { name: "Actions for Workflow Board" }));
-  await expect.element(page.getByRole("menuitem", { name: "Repair with agent" })).toBeEnabled();
-  await expect.element(page.getByRole("menuitem", { name: "Remove" })).toBeEnabled();
+  await expect.element(page.getByRole("button", { name: "Repair with agent" })).toBeEnabled();
+  await expect.element(page.getByRole("button", { name: "Remove…" })).toBeEnabled();
+});
+
+it("restarts a stopped plugin from its problem, not from a menu", async () => {
+  setup(ready({ status: "error", error: "The worker exited." }));
+  await using _screen = await renderWide();
+
+  await expect.element(page.getByText("The worker exited.")).toBeInTheDocument();
+  await press(page.getByRole("button", { name: "Restart" }));
+  await vi.waitFor(() => expect(callsTo(":resume")).toEqual([{ installationId: "inst-1" }]));
 });
 
 it("sends nothing new to a server without recovery support", async () => {
   setup(ready({ enabled: false, status: "disabled" }));
-  await using _screen = await render(settings(), { router: "/settings/plugins" });
+  await using _screen = await renderWide();
 
   await press(page.getByRole("switch", { name: "Enable Workflow Board" }));
   await vi.waitFor(() =>
     expect(callsTo(":set-enabled")).toEqual([{ installationId: "inst-1", enabled: true }]),
   );
   expect(callsTo(":backlog")).toEqual([]);
-  await press(page.getByRole("button", { name: "Actions for Workflow Board" }));
-  expect(page.getByRole("menuitem", { name: "Repair with agent" }).query()).toBeNull();
+  expect(page.getByRole("button", { name: "Repair with agent" }).query()).toBeNull();
 });
 
 it("keeps the user's choice visible when this host cannot run the plugin, and lets them turn it off", async () => {
@@ -500,7 +779,7 @@ it("keeps the user's choice visible when this host cannot run the plugin, and le
     ready({ compatibility: { available: false, missingCapabilities: ["experimental.boards"] } }),
     { recovery: true },
   );
-  await using _screen = await render(settings(), { router: "/settings/plugins" });
+  await using _screen = await renderWide();
 
   const toggle = page.getByRole("switch", { name: "Enable Workflow Board" });
   await expect.element(toggle).toBeChecked();
@@ -513,17 +792,17 @@ it("keeps the user's choice visible when this host cannot run the plugin, and le
 
 it("shows a record saved by a newer T3 Code as read-only, without reinstall or remove", async () => {
   setup(ready({ recordIssue: "newer", status: "error" }), { recovery: true });
-  await using _screen = await render(settings(), { router: "/settings/plugins" });
+  await using _screen = await renderWide();
 
   await expect.element(page.getByRole("switch", { name: "Enable Workflow Board" })).toBeDisabled();
-  await expect.element(page.getByText(/Update T3 Code on this environment/)).toBeInTheDocument();
+  await expect
+    .element(page.getByText(/Update T3 Code on this environment/).first())
+    .toBeInTheDocument();
   expect(page.getByText(/reinstall/i).query()).toBeNull();
-  await press(page.getByRole("button", { name: "Actions for Workflow Board" }));
-  await expect.element(page.getByRole("menuitem", { name: "Details" })).toBeInTheDocument();
-  expect(page.getByRole("menuitem", { name: "Remove" }).query()).toBeNull();
+  expect(page.getByRole("button", { name: "Remove…" }).query()).toBeNull();
 
   // The server wraps such a record in a placeholder source and fingerprint; they are not facts.
-  await press(page.getByRole("menuitem", { name: "Details" }));
+  await press(page.getByRole("button", { name: "View details" }));
   const details = page.getByRole("dialog");
   await expect.element(details.getByText("Version", { exact: true })).toBeInTheDocument();
   expect(details.getByText("Fingerprint", { exact: true }).query()).toBeNull();
@@ -551,7 +830,7 @@ it("approves a local fix as an update: grants unchanged, a disabled plugin stays
     },
     { recovery: true },
   );
-  await using _screen = await render(settings(), { router: "/settings/plugins" });
+  await using _screen = await renderWide();
 
   await press(page.getByRole("button", { name: "Review local fix" }));
   await expect.element(page.getByText("Channel setting added")).toBeInTheDocument();
@@ -584,10 +863,9 @@ it("stages the kept previous version only after the current-data warning", async
     }),
     { recovery: true },
   );
-  await using _screen = await render(settings(), { router: "/settings/plugins" });
+  await using _screen = await renderWide();
 
-  await press(page.getByRole("button", { name: "Actions for Workflow Board" }));
-  await press(page.getByRole("menuitem", { name: "Use previous version (v0.9.0)…" }));
+  await press(page.getByRole("button", { name: "Use previous version (v0.9.0)…" }));
   await expect
     .element(page.getByText(/T3 Code can.t undo that or anything either version did/))
     .toBeInTheDocument();
@@ -599,4 +877,20 @@ it("stages the kept previous version only after the current-data warning", async
       { installationId: "inst-1", expectedDigest: PREVIOUS_DIGEST, acknowledgeCurrentData: true },
     ]),
   );
+});
+
+it("removes the selected plugin with its data only when asked, then shows the next one", async () => {
+  const [board, lens] = lineup();
+  setup([board!, lens!]);
+  await using _screen = await renderWide();
+
+  await press(page.getByRole("button", { name: "Select Repository Lens" }));
+  await press(page.getByRole("button", { name: "Remove…" }));
+  await press(page.getByRole("checkbox", { name: "Also delete its settings and stored data" }));
+  await press(page.getByRole("button", { name: "Remove", exact: true }));
+  await vi.waitFor(() =>
+    expect(callsTo(":remove")).toEqual([{ installationId: "inst-lens", deleteData: true }]),
+  );
+  await pushCatalogue([board!]);
+  await expect.element(pluginHeading("Workflow Board")).toBeInTheDocument();
 });

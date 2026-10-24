@@ -39,6 +39,7 @@ function PluginAttentionPill(props: {
   });
   // A dismissed notice returns as soon as anything in it changes, such as a new failure.
   if (notice === null || dismissed[props.environmentId] === notice.key) return null;
+  const only = notice.entries.length === 1 ? notice.entries[0] : undefined;
   return (
     <div
       className={`group/plugin-attention relative flex min-h-7 w-full shrink-0 items-center overflow-hidden rounded-lg text-2xs leading-4 font-medium ${PILL_STYLES[notice.tone]}`}
@@ -51,7 +52,16 @@ function PluginAttentionPill(props: {
               data-plugin-attention-main
               aria-label={`${notice.title}. ${notice.description} Open plugin settings.`}
               className="relative z-[1] flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left"
-              onClick={() => void navigate({ to: "/settings/plugins" })}
+              onClick={() =>
+                void navigate({
+                  to: "/settings/plugins",
+                  search: {
+                    environmentId: props.environmentId,
+                    // One plugin's notice opens it; several land on the list.
+                    ...(only ? { installationId: only.installationId } : {}),
+                  },
+                })
+              }
             >
               <PuzzleIcon className="size-3.5 shrink-0" />
               <span className="min-w-0 wrap-break-word">{notice.title}</span>

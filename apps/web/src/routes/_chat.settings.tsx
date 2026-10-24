@@ -27,6 +27,12 @@ import {
   movedSettingsPath,
 } from "../components/settings/settingsSearch";
 
+// Pages whose settings live on one environment at a time; the scope menu picks which.
+const SINGLE_ENVIRONMENT_PATHS: ReadonlySet<string> = new Set([
+  "/settings/providers",
+  "/settings/plugins",
+]);
+
 function RestoreDeviceDefaultsButton({ onRestored }: { onRestored: () => void }) {
   const { changedSettingLabels, restoreDefaults } = useSettingsRestore(onRestored);
   return (
@@ -111,7 +117,7 @@ function SettingsContentLayout() {
   const location = useLocation();
   const { search, environment } = useSettingsScope();
   const contentScopeKey =
-    location.pathname === "/settings/diagnostics" || location.pathname === "/settings/providers"
+    location.pathname === "/settings/diagnostics" || SINGLE_ENVIRONMENT_PATHS.has(location.pathname)
       ? environment?.environmentId
       : JSON.stringify(search);
   const [restoreSignal, setRestoreSignal] = useState(0);
@@ -150,7 +156,7 @@ function SettingsRouteLayout() {
   return (
     <SettingsScopeProvider
       search={rawSearch}
-      singleEnvironment={pathname === "/settings/providers"}
+      singleEnvironment={SINGLE_ENVIRONMENT_PATHS.has(pathname)}
       onChange={(next) => {
         // Send every axis so retain middleware recognizes "all" as an explicit target.
         void navigate({

@@ -13,6 +13,7 @@ import {
   pluginCurrentRevisionNote,
   pluginDisplayVersion,
   pluginHasUnsupportedRequirement,
+  pluginInactiveReason,
   pluginNeedsProjects,
   pluginRecoveryActions,
   pluginRemovalNote,
@@ -30,53 +31,46 @@ import {
   type AtomCommandResult,
 } from "@t3tools/client-runtime/state/runtime";
 import {
-  EnvironmentId,
-  resolveEnvironmentMachineKind,
+  type EnvironmentId,
   type PluginAction,
   type PluginCapability,
   type PluginInstallation,
   type ProjectId,
 } from "@t3tools/contracts";
-import { useLocation } from "@tanstack/react-router";
-import { Atom } from "effect/reactivity";
+import { useBlocker, useLocation } from "@tanstack/react-router";
 import {
   BotIcon,
+  ChevronLeftIcon,
   FileSearchIcon,
   HistoryIcon,
   HouseIcon,
   InfoIcon,
-  MoreHorizontalIcon,
-  PlayIcon,
   PlusIcon,
   PuzzleIcon,
   RefreshCwIcon,
   RotateCcwIcon,
-  Settings2Icon,
   ShieldCheckIcon,
   SquareArrowOutUpRightIcon,
   Trash2Icon,
   TriangleAlertIcon,
 } from "lucide-react";
-import { useId, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode, type Ref } from "react";
+import { flushSync } from "react-dom";
 
+import { requestConfirmDialog } from "../../confirmDialog";
+import { cn } from "../../lib/utils";
 import { useProjects } from "../../state/entities";
 import type { EnvironmentPresentation } from "../../state/environments";
 import { pluginEnvironment, usePluginCatalogue } from "../../state/plugins";
 import { useAtomCommand } from "../../state/use-atom-command";
-import { EnvironmentMachineIcon } from "../EnvironmentMachineIcon";
 import { PluginDetailsDialog, UsePreviousPluginDialog } from "../plugins/PluginRecoveryDialogs";
-import {
-  pluginFailureMessage,
-  usePluginActionRunner,
-  usePluginIntentApplier,
-} from "../plugins/usePluginActions";
+import { pluginFailureMessage, usePluginIntentApplier } from "../plugins/usePluginActions";
 import { usePluginEventBacklog } from "../plugins/usePluginEventBacklog";
 import { usePluginStartPage } from "../plugins/pluginStartPage";
 import { usePluginRepair } from "../plugins/usePluginRepair";
-import { Alert, AlertDescription } from "../ui/alert";
+import { Alert, AlertAction, AlertDescription, AlertTitle } from "../ui/alert";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { Checkbox } from "../ui/checkbox";
 import {
   Dialog,
@@ -91,38 +85,29 @@ import {
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "../ui/empty";
 import { Input } from "../ui/input";
 import { Label } from "../ui/label";
-import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from "../ui/menu";
-import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
+import { ScrollArea } from "../ui/scroll-area";
 import { Switch } from "../ui/switch";
 import { toastManager } from "../ui/toast";
+import { Toggle } from "../ui/toggle";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { ExpandableText } from "./ExpandableText";
+import { FoldedSettingsSection } from "./FoldedSettingsSection";
 import { SecretInput } from "./SecretInput";
+import { SettingsGroup } from "./SettingsGroup";
 import { useSettingsScope } from "./SettingsScopeContext";
 import { SettingsPageContainer, SettingsRow, SettingsSection } from "./settingsLayout";
 
+/** Dialogs act on the environment the page shows; switching it remounts the page. */
 type PluginDialog =
-  | { readonly kind: "install"; readonly environmentId: EnvironmentId }
+  | { readonly kind: "install" }
   | {
       readonly kind: "review";
-      readonly environmentId: EnvironmentId;
       readonly installationId: string;
       /** The install result, shown until the catalogue push includes it. */
       readonly installed?: PluginInstallation;
     }
-  | {
-      readonly kind: "settings";
-      readonly environmentId: EnvironmentId;
-      readonly installationId: string;
-    }
-  | {
-      readonly kind: "remove";
-      readonly environmentId: EnvironmentId;
-      readonly installation: PluginInstallation;
-    }
-  | {
-      readonly kind: "details" | "use-previous";
-      readonly environmentId: EnvironmentId;
-      readonly installationId: string;
-    };
+  | { readonly kind: "remove"; readonly installation: PluginInstallation }
+  | { readonly kind: "details" | "use-previous"; readonly installationId: string };
 
 const TONE_BADGE: Record<PluginStatusTone, "success" | "warning" | "error" | "outline"> = {
   success: "success",
@@ -131,11 +116,31 @@ const TONE_BADGE: Record<PluginStatusTone, "success" | "warning" | "error" | "ou
   muted: "outline",
 };
 
+const TONE_DOT: Record<PluginStatusTone, string> = {
+  success: "bg-success",
+  warning: "bg-warning",
+  error: "bg-destructive",
+  muted: "bg-muted-foreground/50",
+};
+
 const PLACEMENT_LABELS: Record<PluginAction["placements"][number], string> = {
   palette: "Command palette",
   "thread-menu": "Thread menu",
   "message-selection": "Text selection",
 };
+
+const REVIEW_LABELS: Record<PluginReviewRevision, string> = {
+  install: "Review",
+  update: "Review update",
+  "local-repair": "Review local fix",
+  previous: "Review previous version",
+};
+
+// Matches Providers so both list/editor cards scroll the same way.
+const PLUGIN_CARD_HEIGHT =
+  "@min-[48rem]/plugins:h-[min(44rem,calc(100dvh-11rem))] @min-[48rem]/plugins:min-h-[32rem]";
+
+type PluginStatusPresentation = ReturnType<typeof pluginStatusPresentation>;
 
 function reportFailure(title: string, result: AtomCommandResult<unknown, unknown>) {
   if (result._tag !== "Failure" || isAtomCommandInterrupted(result)) return;
@@ -146,30 +151,173 @@ function reportFailure(title: string, result: AtomCommandResult<unknown, unknown
   });
 }
 
-/** The first of these environments (keyed by comma-joined ids) this connection may install on. */
-const installableEnvironmentAtom = Atom.family((environmentIds: string) =>
-  Atom.make(
-    (get) =>
-      environmentIds
-        .split(",")
-        .filter(Boolean)
-        .map((id) => EnvironmentId.make(id))
-        .find((id) => get(pluginEnvironment.install.permissionAtom(id))) ?? null,
-  ),
-);
-
-export function PluginsSettings() {
-  const { scope, environments, connectedEnvironments, environment } = useSettingsScope();
-  const [dialog, setDialog] = useState<PluginDialog | null>(null);
-  // Permission is scope-based, so an environment without this client's plugin API can grant it.
-  const candidates = (environment ? [environment] : connectedEnvironments).filter((entry) =>
-    environmentSupportsPlugins(entry.serverConfig?.environment.capabilities),
-  );
-  const installTarget = useAtomValue(
-    installableEnvironmentAtom(candidates.map((entry) => entry.environmentId).join(",")),
-  );
+async function confirmDiscardSettings(name: string): Promise<boolean> {
+  const message = `Discard unsaved changes to ${name} settings?`;
   return (
-    <SettingsPageContainer>
+    (await requestConfirmDialog(message, { variant: "destructive" })) ?? window.confirm(message)
+  );
+}
+
+/** Needs review, an update waiting, a failure, or anything else the user should look at. */
+function pluginNeedsAttention(installation: PluginInstallation, status: PluginStatusPresentation) {
+  return (
+    status.primary !== "none" ||
+    installation.pendingUpdate !== undefined ||
+    pluginAttention(installation) !== null
+  );
+}
+
+function pluginMatchesQuery(installation: PluginInstallation, query: string) {
+  if (query === "") return true;
+  const { name, id, description } = installation.manifest;
+  return `${name}\n${id}\n${description ?? ""}`.toLowerCase().includes(query);
+}
+
+/** The visible element is the one the user can reach; the other is hidden by a container query. */
+const isRendered = (element: HTMLElement | null) =>
+  element !== null && element.getClientRects().length > 0;
+
+export function PluginsSettings(props: {
+  /** A deep link to one plugin, honoured only on the environment it names. */
+  readonly target?: { readonly environmentId?: EnvironmentId; readonly installationId?: string };
+}) {
+  const { scope, environments, environment } = useSettingsScope();
+  // Installs belong to one environment, so the page shows the one the Settings scope selects.
+  const selected = environment ?? environments[0] ?? null;
+  const target = props.target;
+  const targetInstallationId =
+    target?.installationId !== undefined &&
+    (target.environmentId === undefined || target.environmentId === selected?.environmentId)
+      ? target.installationId
+      : undefined;
+  return (
+    <SettingsPageContainer className="@container/plugins">
+      {scope.kind === "unavailable" ? (
+        <p className="px-3 text-sm text-muted-foreground sm:px-4">{scope.message}</p>
+      ) : selected === null ? (
+        <Empty>
+          <EmptyHeader>
+            <EmptyMedia variant="icon">
+              <PuzzleIcon />
+            </EmptyMedia>
+            <EmptyTitle>No environments available</EmptyTitle>
+            <EmptyDescription>Connect an environment to manage its plugins.</EmptyDescription>
+          </EmptyHeader>
+        </Empty>
+      ) : (
+        <EnvironmentPlugins
+          // A new link to a plugin selects it, as a fresh visit would.
+          key={`${selected.environmentId}:${targetInstallationId ?? ""}`}
+          environment={selected}
+          targetInstallationId={targetInstallationId}
+        />
+      )}
+    </SettingsPageContainer>
+  );
+}
+
+function EnvironmentPlugins(props: {
+  readonly environment: EnvironmentPresentation;
+  readonly targetInstallationId: string | undefined;
+}) {
+  const { environmentId, label } = props.environment;
+  const catalogue = usePluginCatalogue(environmentId);
+  const canInstall = useAtomValue(pluginEnvironment.install.permissionAtom(environmentId));
+  const [dialog, setDialog] = useState<PluginDialog | null>(null);
+  // Set when the user picks a plugin, or by a deep link; until then the first one is shown.
+  const [selectedId, setSelectedId] = useState<string | null>(props.targetInstallationId ?? null);
+  // On a narrow screen the list and the selected plugin take turns.
+  const [detailOpen, setDetailOpen] = useState(props.targetInstallationId !== undefined);
+  const supported = environmentSupportsPlugins(
+    props.environment.serverConfig?.environment.capabilities,
+  );
+  const select = (installationId: string) => {
+    setSelectedId(installationId);
+    setDetailOpen(true);
+  };
+  const body = (() => {
+    switch (catalogue.availability) {
+      case "unknown":
+      case "disconnected":
+        return (
+          <PluginsMessage
+            title="Environment disconnected"
+            description={`Reconnect ${label} to manage its plugins.`}
+          />
+        );
+      case "unsupported":
+        return (
+          <PluginsMessage
+            title="Plugins unavailable"
+            description={`Update the T3 Code server on ${label} to use plugins.`}
+          />
+        );
+      case "client-outdated":
+        return (
+          <PluginsMessage
+            title="Plugins unavailable"
+            description={`${label} uses a newer plugin version. Update T3 Code on this device to manage its plugins.`}
+          />
+        );
+      case "forbidden":
+        return (
+          <PluginsMessage
+            title="No access"
+            description="This connection cannot read the environment's plugins."
+          />
+        );
+      case "available":
+        if (catalogue.error !== null) {
+          return <PluginsMessage title="Could not load plugins" description={catalogue.error} />;
+        }
+        if (!catalogue.loaded) return <PluginsMessage title="Loading plugins…" status />;
+        return (
+          <>
+            {catalogue.unavailableMessage ? (
+              <Alert variant="error" controlAlignment="first-line">
+                <TriangleAlertIcon aria-hidden />
+                <AlertDescription>
+                  Plugins on {label} are off: {catalogue.unavailableMessage} Your plugins and their
+                  data were left untouched.
+                </AlertDescription>
+              </Alert>
+            ) : null}
+            {catalogue.executionDisabled === true ? (
+              <Alert variant="warning" controlAlignment="first-line">
+                <TriangleAlertIcon aria-hidden />
+                <AlertDescription>
+                  Plugin code is turned off on {label}. Nothing runs until T3 Code starts with
+                  plugins on, but you can still review, disable, or remove plugins here.
+                </AlertDescription>
+              </Alert>
+            ) : null}
+            {catalogue.installations.length === 0 ? (
+              catalogue.unavailableMessage ? null : (
+                <PluginsMessage
+                  title="No plugins installed"
+                  description={`Install one from a folder on ${label} or an https Git repository.`}
+                />
+              )
+            ) : (
+              <PluginBrowser
+                environment={props.environment}
+                installations={catalogue.installations}
+                recoverySupported={catalogue.recoverySupported === true}
+                executionDisabled={catalogue.executionDisabled === true}
+                selectedId={selectedId}
+                detailOpen={detailOpen}
+                canInstall={canInstall && supported}
+                onSelect={select}
+                onBack={() => setDetailOpen(false)}
+                onDialog={setDialog}
+              />
+            )}
+          </>
+        );
+    }
+  })();
+  return (
+    <>
       <SettingsSection
         id="plugins"
         title="Plugins"
@@ -178,10 +326,8 @@ export function PluginsSettings() {
           <Button
             size="xs"
             variant="ghost-muted"
-            disabled={installTarget === null}
-            onClick={() =>
-              installTarget && setDialog({ kind: "install", environmentId: installTarget })
-            }
+            disabled={!canInstall || !supported}
+            onClick={() => setDialog({ kind: "install" })}
           >
             <PlusIcon className="size-3" />
             Install plugin
@@ -189,214 +335,693 @@ export function PluginsSettings() {
         }
       >
         <p className="px-3 text-xs text-muted-foreground sm:px-4">
-          Plugins run as separate processes on the environment you install them on, with that
-          machine user&apos;s access. T3 Code does not sandbox plugin code; install plugins you
-          trust.
+          Plugins run as separate processes on {label}, with that machine user&apos;s access. T3
+          Code does not sandbox plugin code; install plugins you trust.
         </p>
-        {scope.kind === "unavailable" ? (
-          <SettingsRow title={scope.message} />
-        ) : environments.length === 0 ? (
-          <Empty>
-            <EmptyHeader>
-              <EmptyMedia variant="icon">
-                <PuzzleIcon />
-              </EmptyMedia>
-              <EmptyTitle>No environments available</EmptyTitle>
-              <EmptyDescription>Connect an environment to manage its plugins.</EmptyDescription>
-            </EmptyHeader>
-          </Empty>
-        ) : (
-          <div className="space-y-8">
-            {environments.map((entry) => (
-              <PluginEnvironmentSection
-                key={entry.environmentId}
-                environment={entry}
-                showHeading={environments.length > 1}
-                onDialog={setDialog}
-              />
-            ))}
-          </div>
-        )}
+        {body}
       </SettingsSection>
       {dialog?.kind === "install" ? (
         <InstallPluginDialog
-          initialEnvironmentId={dialog.environmentId}
+          environment={props.environment}
           onClose={() => setDialog(null)}
-          onInstalled={(environmentId, installation) =>
+          onInstalled={(installation) => {
+            select(installation.installationId);
             setDialog({
               kind: "review",
-              environmentId,
               installationId: installation.installationId,
               installed: installation,
-            })
-          }
+            });
+          }}
         />
       ) : null}
       {dialog?.kind === "review" ? (
         <ReviewPluginDialog
-          key={`${dialog.environmentId}:${dialog.installationId}`}
-          environmentId={dialog.environmentId}
+          key={dialog.installationId}
+          environmentId={environmentId}
           installationId={dialog.installationId}
           installed={dialog.installed}
           onClose={() => setDialog(null)}
         />
       ) : null}
-      {dialog?.kind === "settings" ? (
-        <PluginSettingsDialog
-          environmentId={dialog.environmentId}
-          installationId={dialog.installationId}
-          onClose={() => setDialog(null)}
-        />
-      ) : null}
       {dialog?.kind === "remove" ? (
         <RemovePluginDialog
-          environmentId={dialog.environmentId}
+          environmentId={environmentId}
           installation={dialog.installation}
           onClose={() => setDialog(null)}
+          onRemoved={() => {
+            setDialog(null);
+            setSelectedId(null);
+            setDetailOpen(false);
+          }}
         />
       ) : null}
       {dialog?.kind === "details" || dialog?.kind === "use-previous" ? (
         <PluginRecoveryDialog
           kind={dialog.kind}
-          environmentId={dialog.environmentId}
+          environmentId={environmentId}
           installationId={dialog.installationId}
           onDialog={setDialog}
         />
       ) : null}
-    </SettingsPageContainer>
+    </>
   );
 }
 
-function PluginEnvironmentSection(props: {
+function PluginsMessage(props: {
+  readonly title: string;
+  readonly description?: string;
+  readonly status?: boolean;
+}) {
+  return (
+    <SettingsGroup>
+      <SettingsRow
+        title={props.title}
+        description={props.description}
+        {...(props.status ? { role: "status" } : {})}
+      />
+    </SettingsGroup>
+  );
+}
+
+/** Turning a plugin on asks about missed runs first; one prompt serves the whole list. */
+function usePluginEnabledToggle(props: {
+  readonly environmentId: EnvironmentId;
+  readonly recoverySupported: boolean;
+  readonly onReview: (installationId: string) => void;
+}) {
+  const { environmentId, recoverySupported } = props;
+  const setEnabled = useAtomCommand(pluginEnvironment.setEnabled, { reportFailure: false });
+  const { resolveBacklog, backlogDialog } = usePluginEventBacklog();
+  const [busy, setBusy] = useState<ReadonlySet<string>>(() => new Set());
+  const mark = (installationId: string, on: boolean) =>
+    setBusy((current) => {
+      const next = new Set(current);
+      if (on) next.add(installationId);
+      else next.delete(installationId);
+      return next;
+    });
+  const toggle = (installation: PluginInstallation, enabled: boolean) => {
+    const { installationId } = installation;
+    if (enabled && pluginStatusPresentation(installation).primary === "review") {
+      props.onReview(installationId);
+      return;
+    }
+    mark(installationId, true);
+    // Promise#finally because React Compiler cannot compile a try/finally without a catch.
+    void new Promise<void>((resolve) =>
+      resolve(
+        (async () => {
+          const backlog = enabled
+            ? await resolveBacklog(environmentId, installation, recoverySupported)
+            : ({ proceed: true } as const);
+          if (!backlog.proceed) return;
+          const result = await setEnabled({
+            environmentId,
+            input: {
+              installationId,
+              enabled,
+              ...(backlog.eventBacklog ? { eventBacklog: backlog.eventBacklog } : {}),
+            },
+          });
+          reportFailure(
+            `Could not ${enabled ? "enable" : "disable"} ${installation.manifest.name}`,
+            result,
+          );
+        })(),
+      ),
+    ).finally(() => mark(installationId, false));
+  };
+  return { toggle, busy, backlogDialog };
+}
+
+function PluginBrowser(props: {
   readonly environment: EnvironmentPresentation;
-  readonly showHeading: boolean;
+  readonly installations: ReadonlyArray<PluginInstallation>;
+  readonly recoverySupported: boolean;
+  readonly executionDisabled: boolean;
+  readonly selectedId: string | null;
+  readonly detailOpen: boolean;
+  readonly canInstall: boolean;
+  readonly onSelect: (installationId: string) => void;
+  readonly onBack: () => void;
   readonly onDialog: (dialog: PluginDialog) => void;
 }) {
-  const { environment } = props;
-  const catalogue = usePluginCatalogue(environment.environmentId);
-  const body = (() => {
-    switch (catalogue.availability) {
-      case "unknown":
-      case "disconnected":
-        return (
-          <SettingsRow
-            title="Environment disconnected"
-            description={`Reconnect ${environment.label} to manage its plugins.`}
-          />
-        );
-      case "unsupported":
-        return (
-          <SettingsRow
-            title="Plugins unavailable"
-            description={`Update the T3 Code server on ${environment.label} to use plugins.`}
-          />
-        );
-      case "client-outdated":
-        return (
-          <SettingsRow
-            title="Plugins unavailable"
-            description={`${environment.label} uses a newer plugin version. Update T3 Code on this device to manage its plugins.`}
-          />
-        );
-      case "forbidden":
-        return (
-          <SettingsRow
-            title="No access"
-            description="This connection cannot read the environment's plugins."
-          />
-        );
-      case "available":
-        if (catalogue.error !== null) {
-          return <SettingsRow title="Could not load plugins" description={catalogue.error} />;
-        }
-        if (!catalogue.loaded) return <SettingsRow title="Loading plugins…" role="status" />;
-        return (
-          <>
-            {catalogue.unavailableMessage ? (
-              <Alert variant="error" controlAlignment="first-line">
-                <TriangleAlertIcon aria-hidden />
-                <AlertDescription>
-                  Plugins on {environment.label} are off: {catalogue.unavailableMessage} Your
-                  plugins and their data were left untouched.
-                </AlertDescription>
-              </Alert>
-            ) : null}
-            {catalogue.executionDisabled === true ? (
-              <Alert variant="warning" controlAlignment="first-line">
-                <TriangleAlertIcon aria-hidden />
-                <AlertDescription>
-                  Plugin code is turned off on {environment.label}. Nothing runs until T3 Code
-                  starts with plugins on, but you can still review, disable, or remove plugins here.
-                </AlertDescription>
-              </Alert>
-            ) : null}
-            {catalogue.installations.length === 0 ? (
-              !catalogue.unavailableMessage ? (
-                <SettingsRow
-                  title="No plugins installed"
-                  description="Install one from a folder on this environment or an https Git repository."
-                />
-              ) : null
-            ) : (
-              catalogue.installations.map((installation) => (
-                <PluginRow
-                  key={installation.installationId}
-                  environmentId={environment.environmentId}
-                  installation={installation}
-                  recoverySupported={catalogue.recoverySupported === true}
-                  executionDisabled={catalogue.executionDisabled === true}
-                  onDialog={props.onDialog}
-                />
-              ))
-            )}
-          </>
-        );
-    }
-  })();
-  return (
-    <SettingsSection
-      title={environment.label}
-      hideTitle={!props.showHeading}
-      icon={
-        <EnvironmentMachineIcon
-          kind={resolveEnvironmentMachineKind(environment.serverConfig)}
-          className="size-3.5"
-        />
+  const { environment, installations, executionDisabled, detailOpen } = props;
+  const { environmentId } = environment;
+  const idPrefix = useId();
+  const listRef = useRef<HTMLDivElement>(null);
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  const [query, setQuery] = useState("");
+  const [attentionOnly, setAttentionOnly] = useState(false);
+  // The installation whose settings form has unsaved values, if any.
+  const [dirtyId, setDirtyId] = useState<string | null>(null);
+  const canManage = useAtomValue(pluginEnvironment.setEnabled.permissionAtom(environmentId));
+  const { toggle, busy, backlogDialog } = usePluginEnabledToggle({
+    environmentId,
+    recoverySupported: props.recoverySupported,
+    onReview: (installationId) => props.onDialog({ kind: "review", installationId }),
+  });
+
+  const entries = installations.map((installation) => {
+    const status = pluginStatusPresentation(installation, { executionDisabled });
+    return { installation, status, attention: pluginNeedsAttention(installation, status) };
+  });
+  const attentionCount = entries.filter((entry) => entry.attention).length;
+  const filterAttention = attentionOnly && attentionCount > 0;
+  const needle = query.trim().toLowerCase();
+  const visible = entries.filter(
+    (entry) =>
+      (!filterAttention || entry.attention) && pluginMatchesQuery(entry.installation, needle),
+  );
+  const filtering = needle !== "" || filterAttention;
+  const selected =
+    props.selectedId === null
+      ? (installations[0] ?? null)
+      : (installations.find((entry) => entry.installationId === props.selectedId) ?? null);
+  const dirtyName =
+    dirtyId === null
+      ? null
+      : (installations.find((entry) => entry.installationId === dirtyId)?.manifest.name ??
+        "this plugin");
+  const rowId = (installationId: string) => `${idPrefix}-plugin-${installationId}`;
+  const reportDirty = (installationId: string, dirty: boolean) =>
+    setDirtyId((current) => (dirty ? installationId : current === installationId ? null : current));
+
+  // Leaving the page or switching environment would drop the unsaved values.
+  useBlocker({
+    disabled: dirtyName === null,
+    enableBeforeUnload: dirtyName !== null,
+    shouldBlockFn: async ({ current, next }) => {
+      if (
+        current.pathname === next.pathname &&
+        JSON.stringify(current.search) === JSON.stringify(next.search)
+      ) {
+        return false;
       }
+      return !(await confirmDiscardSettings(dirtyName ?? "this plugin"));
+    },
+  });
+
+  const select = async (installationId: string) => {
+    if (dirtyName !== null && dirtyId !== installationId) {
+      if (!(await confirmDiscardSettings(dirtyName))) return;
+    }
+    flushSync(() => props.onSelect(installationId));
+    // On a narrow screen the list just went away; take focus to what replaced it.
+    if (!isRendered(listRef.current)) headingRef.current?.focus();
+  };
+  const back = () => {
+    flushSync(props.onBack);
+    if (selected !== null) document.getElementById(rowId(selected.installationId))?.focus();
+  };
+  const clearFilters = () => {
+    setQuery("");
+    setAttentionOnly(false);
+  };
+
+  return (
+    <SettingsGroup
+      divided={false}
+      className={cn(
+        PLUGIN_CARD_HEIGHT,
+        "overflow-hidden @min-[48rem]/plugins:grid @min-[48rem]/plugins:grid-cols-[17rem_minmax(0,1fr)]",
+      )}
     >
-      {body}
-    </SettingsSection>
+      <div
+        ref={listRef}
+        className={cn(
+          "min-w-0 bg-muted/10 @min-[48rem]/plugins:flex @min-[48rem]/plugins:min-h-0 @min-[48rem]/plugins:flex-col @min-[48rem]/plugins:border-r @min-[48rem]/plugins:border-border/60",
+          detailOpen && "@max-[48rem]/plugins:hidden",
+        )}
+      >
+        <div className="space-y-2 border-b border-border/50 px-3 py-3 sm:px-4">
+          <Input
+            type="search"
+            size="sm"
+            aria-label="Search plugins"
+            placeholder="Search plugins"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+          />
+          <div className="flex min-h-7 items-center justify-between gap-2">
+            <span className="text-xs text-muted-foreground" aria-live="polite">
+              {filtering
+                ? `${visible.length} of ${installations.length} plugins`
+                : `${installations.length} ${installations.length === 1 ? "plugin" : "plugins"}`}
+            </span>
+            {attentionCount > 0 ? (
+              <Toggle
+                size="sm"
+                variant="outline"
+                pressed={filterAttention}
+                onPressedChange={setAttentionOnly}
+              >
+                <TriangleAlertIcon aria-hidden />
+                Needs attention ({attentionCount})
+              </Toggle>
+            ) : null}
+          </div>
+        </div>
+        <ScrollArea
+          scrollFade
+          chainVerticalScroll
+          className="@min-[48rem]/plugins:min-h-0 @min-[48rem]/plugins:flex-1"
+        >
+          <ul aria-label={`Plugins on ${environment.label}`} className="divide-y divide-border/50">
+            {visible.map((entry) => (
+              <PluginListRow
+                key={entry.installation.installationId}
+                id={rowId(entry.installation.installationId)}
+                installation={entry.installation}
+                status={entry.status}
+                selected={entry.installation.installationId === selected?.installationId}
+                busy={busy.has(entry.installation.installationId)}
+                canManage={canManage}
+                onSelect={(installationId) => void select(installationId)}
+                onToggle={toggle}
+              />
+            ))}
+            {visible.length === 0 ? (
+              <li className="flex flex-wrap items-center gap-x-3 gap-y-2 px-3 py-4 text-sm text-muted-foreground sm:px-4">
+                <span>No plugins match.</span>
+                <Button size="sm" variant="outline" onClick={clearFilters}>
+                  Clear filters
+                </Button>
+              </li>
+            ) : null}
+            <li>
+              <button
+                type="button"
+                disabled={!props.canInstall}
+                className="flex w-full cursor-pointer items-center gap-3 px-3 py-3 text-left text-sm text-muted-foreground transition-colors outline-none hover:bg-muted/25 hover:text-foreground focus-visible:bg-muted/25 focus-visible:text-foreground disabled:pointer-events-none disabled:opacity-64 sm:px-4"
+                onClick={() => props.onDialog({ kind: "install" })}
+              >
+                <PlusIcon className="size-4 shrink-0" />
+                Install plugin
+              </button>
+            </li>
+          </ul>
+        </ScrollArea>
+      </div>
+
+      <div
+        className={cn(
+          "min-w-0 @min-[48rem]/plugins:min-h-0",
+          !detailOpen && "@max-[48rem]/plugins:hidden",
+        )}
+      >
+        <ScrollArea scrollFade chainVerticalScroll className="@min-[48rem]/plugins:h-full">
+          <div className="space-y-6 p-4">
+            <Button
+              size="sm"
+              variant="ghost"
+              className="-ms-2 @min-[48rem]/plugins:hidden"
+              onClick={back}
+            >
+              <ChevronLeftIcon aria-hidden />
+              All plugins on {environment.label}
+            </Button>
+            {selected ? (
+              <PluginEditor
+                key={selected.installationId}
+                headingRef={headingRef}
+                environment={environment}
+                installation={selected}
+                recoverySupported={props.recoverySupported}
+                executionDisabled={executionDisabled}
+                busy={busy.has(selected.installationId)}
+                canManage={canManage}
+                onToggle={toggle}
+                onDialog={props.onDialog}
+                onDirtyChange={reportDirty}
+              />
+            ) : (
+              <h2
+                ref={headingRef}
+                tabIndex={-1}
+                className="px-3 text-sm font-normal text-muted-foreground outline-none sm:px-4"
+              >
+                This plugin is no longer installed on {environment.label}.
+              </h2>
+            )}
+          </div>
+        </ScrollArea>
+      </div>
+      {backlogDialog}
+    </SettingsGroup>
   );
 }
 
-const REVIEW_LABELS: Record<PluginReviewRevision, string> = {
-  install: "Review",
-  update: "Review update",
-  "local-repair": "Review local fix",
-  previous: "Review previous version",
-};
+/** Selecting a row only shows its plugin; the switch beside it is the one control that acts. */
+function PluginListRow(props: {
+  readonly id: string;
+  readonly installation: PluginInstallation;
+  readonly status: PluginStatusPresentation;
+  readonly selected: boolean;
+  readonly busy: boolean;
+  readonly canManage: boolean;
+  readonly onSelect: (installationId: string) => void;
+  readonly onToggle: (installation: PluginInstallation, enabled: boolean) => void;
+}) {
+  const { installation, status, selected } = props;
+  const { manifest } = installation;
+  const statusId = `${props.id}-status`;
+  const version = pluginDisplayVersion(installation);
+  const attention = pluginAttention(installation);
+  const pending = installation.pendingUpdate
+    ? pluginReviewSubject(installation).revision === "update"
+      ? `Update ${installation.pendingUpdate.manifest.version} available`
+      : REVIEW_LABELS[pluginReviewSubject(installation).revision]
+    : null;
+  const unavailable = isPluginUnavailable(installation);
+  const readOnly = isPluginRecordReadOnly(installation);
+  return (
+    <li
+      className={cn(
+        "group flex min-h-18 items-center gap-3 px-3 py-3 transition-colors sm:px-4",
+        selected ? "bg-muted/45" : "hover:bg-muted/25",
+      )}
+    >
+      <div
+        className={cn(
+          "pointer-events-none relative min-w-0 flex-1 rounded-md transition-opacity",
+          !installation.enabled && !selected && "opacity-60 group-hover:opacity-100",
+        )}
+      >
+        <button
+          id={props.id}
+          type="button"
+          className="pointer-events-auto absolute inset-0 cursor-pointer rounded-md outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+          aria-label={`Select ${manifest.name}`}
+          aria-describedby={statusId}
+          aria-pressed={selected}
+          onClick={() => props.onSelect(installation.installationId)}
+        />
+        <span className="flex min-w-0 items-center gap-2">
+          <span className="truncate text-sm font-medium text-foreground">{manifest.name}</span>
+          {version === null ? null : (
+            <code className="max-w-24 shrink-0 truncate text-xs text-muted-foreground">
+              v{version}
+            </code>
+          )}
+        </span>
+        <span
+          id={statusId}
+          className="mt-0.5 flex items-start gap-1.5 text-xs leading-normal text-muted-foreground"
+        >
+          <span className="flex h-[1.45em] shrink-0 items-center">
+            <span aria-hidden className={cn("size-1.5 rounded-full", TONE_DOT[status.tone])} />
+          </span>
+          <span className="line-clamp-2 [overflow-wrap:anywhere]">
+            {[
+              status.label,
+              pending,
+              attention && attention.kind !== "read-only" ? attention.title : null,
+            ]
+              .filter(Boolean)
+              .join(" · ")}
+          </span>
+        </span>
+      </div>
+      <Switch
+        checked={installation.enabled}
+        // Turning a plugin off always works; turning it on needs a host that can run it.
+        disabled={
+          props.busy || !props.canManage || readOnly || (!installation.enabled && unavailable)
+        }
+        aria-label={`Enable ${manifest.name}`}
+        onCheckedChange={(enabled) => props.onToggle(installation, enabled)}
+      />
+    </li>
+  );
+}
 
-function PluginRow(props: {
-  readonly environmentId: EnvironmentId;
+/** The selected plugin: what needs doing first, then its settings, then everything else. */
+function PluginEditor(props: {
+  readonly headingRef: Ref<HTMLHeadingElement>;
+  readonly environment: EnvironmentPresentation;
   readonly installation: PluginInstallation;
   readonly recoverySupported: boolean;
   readonly executionDisabled: boolean;
+  readonly busy: boolean;
+  readonly canManage: boolean;
+  readonly onToggle: (installation: PluginInstallation, enabled: boolean) => void;
   readonly onDialog: (dialog: PluginDialog) => void;
+  readonly onDirtyChange: (installationId: string, dirty: boolean) => void;
 }) {
-  const { environmentId, installation, recoverySupported, executionDisabled } = props;
-  const { manifest } = installation;
+  const { environment, installation, recoverySupported, executionDisabled, canManage } = props;
+  const { headingRef, onDialog, onToggle } = props;
+  const { environmentId } = environment;
+  const { manifest, installationId } = installation;
+  const sectionId = useId();
   const status = pluginStatusPresentation(installation, { executionDisabled });
-  const attention = pluginAttention(installation);
   const readOnly = isPluginRecordReadOnly(installation);
-  const displayVersion = pluginDisplayVersion(installation);
   const unavailable = isPluginUnavailable(installation);
+  const version = pluginDisplayVersion(installation);
   const recovery = pluginRecoveryActions(installation, recoverySupported);
-  const pendingRevision = installation.pendingUpdate
-    ? pluginReviewSubject(installation).revision
-    : null;
-  const canManage = useAtomValue(pluginEnvironment.setEnabled.permissionAtom(environmentId));
   const canRepair = useAtomValue(pluginEnvironment.prepareRepair.permissionAtom(environmentId));
-  const setEnabled = useAtomCommand(pluginEnvironment.setEnabled, { reportFailure: false });
+  const lifecycle = usePluginLifecycle({
+    environmentId,
+    installation,
+    recoverySupported,
+    onReview: () => onDialog({ kind: "review", installationId }),
+  });
+  const working = props.busy || lifecycle.busy;
+  const sidebarViews = manifest.sidebarViews ?? [];
+  return (
+    <>
+      <div className="space-y-2 px-3 sm:px-4">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
+          <h2
+            ref={headingRef}
+            tabIndex={-1}
+            className="min-w-0 text-base font-medium [overflow-wrap:anywhere] outline-none"
+          >
+            {manifest.name}
+          </h2>
+          {version === null ? null : (
+            <code className="text-xs text-muted-foreground">v{version}</code>
+          )}
+          <Badge variant={TONE_BADGE[status.tone]}>{status.label}</Badge>
+          {recovery.runningLocalFix ? <Badge variant="outline">Local fix</Badge> : null}
+          {/* The list's switch is beside this on wide screens; narrow screens show one at a time. */}
+          <span className="ms-auto flex items-center @min-[48rem]/plugins:hidden">
+            <Switch
+              checked={installation.enabled}
+              disabled={working || !canManage || readOnly || (!installation.enabled && unavailable)}
+              aria-label={`Enable ${manifest.name}`}
+              onCheckedChange={(enabled) => onToggle(installation, enabled)}
+            />
+          </span>
+        </div>
+        {manifest.description ? (
+          <p className="line-clamp-3 text-sm text-muted-foreground">{manifest.description}</p>
+        ) : null}
+      </div>
+
+      <PluginAttentionBanner
+        installation={installation}
+        status={status}
+        executionDisabled={executionDisabled}
+        recoverySupported={recoverySupported}
+        disabled={working}
+        canManage={canManage}
+        canRepair={canRepair}
+        onResume={() => void lifecycle.resume()}
+        onRepair={() => void lifecycle.repair()}
+        onDialog={onDialog}
+      />
+
+      {manifest.settings.length > 0 && !readOnly ? (
+        <PluginSettingsForm
+          key={installation.generation}
+          environmentId={environmentId}
+          installation={installation}
+          canManage={canManage}
+          onDirtyChange={props.onDirtyChange}
+        />
+      ) : null}
+
+      {manifest.views.length > 0 || sidebarViews.length > 0 ? (
+        <PluginViews
+          environmentId={environmentId}
+          installation={installation}
+          executionDisabled={executionDisabled}
+        />
+      ) : null}
+
+      {readOnly ? null : (
+        <PluginPermissions
+          environmentId={environmentId}
+          installation={installation}
+          canManage={canManage}
+          onReview={() => onDialog({ kind: "review", installationId })}
+        />
+      )}
+
+      {readOnly ? null : (
+        <SettingsSection title="Source">
+          <SettingsRow
+            title={installation.source.kind === "local" ? "Local folder" : "Git repository"}
+            description={
+              <span className="font-mono text-xs [overflow-wrap:anywhere]">
+                {pluginSourceLabel(installation.source)}
+              </span>
+            }
+            control={
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={working || !canManage}
+                onClick={() => void lifecycle.checkForChanges()}
+              >
+                <RefreshCwIcon aria-hidden />
+                {recovery.runningLocalFix
+                  ? "Check publisher for updates"
+                  : "Check source for changes"}
+              </Button>
+            }
+          />
+        </SettingsSection>
+      )}
+
+      {readOnly ? null : (
+        <SettingsSection title="Manage">
+          {recovery.repair !== null ? (
+            <SettingsRow
+              title={recovery.repair === "open" ? "Repair draft" : "Repair with an agent"}
+              description="Copies the plugin's files into a folder an agent can fix. Nothing changes until you review the fix."
+              control={
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={working || !canRepair}
+                  onClick={() => void lifecycle.repair()}
+                >
+                  <BotIcon aria-hidden />
+                  {recovery.repair === "open" ? "Open repair draft" : "Repair with agent"}
+                </Button>
+              }
+            />
+          ) : null}
+          {recovery.stageRepair ? (
+            <SettingsRow
+              title="Local fix"
+              description="Review the repair folder's current files before they run."
+              control={
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={working || !canManage}
+                  onClick={() => void lifecycle.stageRepair()}
+                >
+                  <FileSearchIcon aria-hidden />
+                  Review local fix
+                </Button>
+              }
+            />
+          ) : null}
+          {recovery.usePrevious !== null ? (
+            <SettingsRow
+              title="Previous version"
+              description={`Version ${recovery.usePrevious.version} is kept. It would run with today's settings and data.`}
+              control={
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={working || !canManage}
+                  onClick={() => onDialog({ kind: "use-previous", installationId })}
+                >
+                  <HistoryIcon aria-hidden />
+                  Use previous version (v{recovery.usePrevious.version})…
+                </Button>
+              }
+            />
+          ) : null}
+          <SettingsRow
+            title="Remove plugin"
+            description={`Removes it from ${environment.label}. You choose whether to keep its settings and data.`}
+            control={
+              <Button
+                size="sm"
+                variant="destructive-outline"
+                disabled={working || !canManage}
+                onClick={() => onDialog({ kind: "remove", installation })}
+              >
+                <Trash2Icon aria-hidden />
+                Remove…
+              </Button>
+            }
+          />
+        </SettingsSection>
+      )}
+
+      {manifest.actions.length > 0 ? (
+        <FoldedSettingsSection
+          id={`${sectionId}-commands`}
+          title={`Commands it adds (${manifest.actions.length})`}
+          headerPlacement="outside"
+        >
+          {manifest.actions.map((action) => (
+            <SettingsRow
+              key={action.id}
+              title={action.title}
+              description={[
+                action.description,
+                action.placements.map((placement) => PLACEMENT_LABELS[placement]).join(", "),
+                action.agentCallable ? "Agents can call it" : undefined,
+              ]
+                .filter(Boolean)
+                .join(" · ")}
+            />
+          ))}
+        </FoldedSettingsSection>
+      ) : null}
+
+      <FoldedSettingsSection id={`${sectionId}-details`} title="Details" headerPlacement="outside">
+        {readOnly ? null : (
+          <>
+            <SettingsRow
+              title="Identifier"
+              description={<span className="font-mono text-xs">{manifest.id}</span>}
+            />
+            <SettingsRow
+              title="Fingerprint"
+              description={
+                <span className="font-mono text-xs break-all">{installation.digest}</span>
+              }
+            />
+          </>
+        )}
+        <SettingsRow
+          title="History and diagnostics"
+          description="What T3 Code recorded about this plugin's versions and failures."
+          control={
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => onDialog({ kind: "details", installationId })}
+            >
+              <InfoIcon aria-hidden />
+              View details
+            </Button>
+          }
+        />
+      </FoldedSettingsSection>
+      {lifecycle.backlogDialog}
+    </>
+  );
+}
+
+/** Refresh, restart and repair for one plugin, with the outcome toasts the old menu showed. */
+function usePluginLifecycle(props: {
+  readonly environmentId: EnvironmentId;
+  readonly installation: PluginInstallation;
+  readonly recoverySupported: boolean;
+  readonly onReview: () => void;
+}) {
+  const { environmentId, installation, recoverySupported } = props;
+  const { manifest } = installation;
   const refresh = useAtomCommand(pluginEnvironment.refresh, { reportFailure: false });
   const resume = useAtomCommand(pluginEnvironment.resume, { reportFailure: false });
   const stageRepair = useAtomCommand(pluginEnvironment.stageRepair, { reportFailure: false });
@@ -404,277 +1029,557 @@ function PluginRow(props: {
   const { resolveBacklog, backlogDialog } = usePluginEventBacklog();
   const [busy, setBusy] = useState(false);
   const target = { installationId: installation.installationId };
-  const review = () =>
-    props.onDialog({ kind: "review", environmentId, installationId: installation.installationId });
-  const details = () =>
-    props.onDialog({ kind: "details", environmentId, installationId: installation.installationId });
   // Promise#finally because React Compiler cannot compile a try/finally without a catch. The
   // executor turns a synchronous throw into a rejection; failures still reach the caller.
   const withBusy = (run: () => Promise<void>) => {
     setBusy(true);
     return new Promise<void>((resolve) => resolve(run())).finally(() => setBusy(false));
   };
+  return {
+    busy,
+    backlogDialog,
+    checkForChanges: () =>
+      withBusy(async () => {
+        const result = await refresh({ environmentId, input: target });
+        if (result._tag === "Failure") {
+          reportFailure(`Could not refresh ${manifest.name}`, result);
+          return;
+        }
+        const pending = result.value.pendingUpdate;
+        if (pending === undefined && result.value.digest === installation.digest) {
+          toastManager.add({ type: "info", title: `${manifest.name} is up to date` });
+          return;
+        }
+        const id = toastManager.add({
+          type: "info",
+          title: pending
+            ? `${manifest.name} ${pending.manifest.version} is available`
+            : `${manifest.name} changed`,
+          description: pending
+            ? pluginCurrentRevisionNote(result.value)
+            : "Review the new files before they can run.",
+          actionProps: {
+            children: "Review",
+            onClick: () => {
+              toastManager.close(id);
+              props.onReview();
+            },
+          },
+        });
+      }),
+    resume: () =>
+      withBusy(async () => {
+        const backlog = await resolveBacklog(environmentId, installation, recoverySupported);
+        if (!backlog.proceed) return;
+        const result = await resume({
+          environmentId,
+          input: {
+            ...target,
+            ...(backlog.eventBacklog ? { eventBacklog: backlog.eventBacklog } : {}),
+          },
+        });
+        reportFailure(`Could not restart ${manifest.name}`, result);
+      }),
+    repair: () => withBusy(() => repair(environmentId, installation)),
+    stageRepair: () =>
+      withBusy(async () => {
+        const workspace = installation.recovery?.repair;
+        if (workspace === undefined) return;
+        const result = await stageRepair({
+          environmentId,
+          input: {
+            ...target,
+            workspaceId: workspace.workspaceId,
+            baseDigest: workspace.baseDigest,
+          },
+        });
+        if (result._tag === "Failure") {
+          reportFailure(`Could not stage the ${manifest.name} fix`, result);
+          return;
+        }
+        props.onReview();
+      }),
+  };
+}
 
-  const toggle = (enabled: boolean) => {
-    if (enabled && status.primary === "review") {
-      review();
+/** The one thing to do next, with the problem in full so it is never only in a menu. */
+function PluginAttentionBanner(props: {
+  readonly installation: PluginInstallation;
+  readonly status: PluginStatusPresentation;
+  readonly executionDisabled: boolean;
+  readonly recoverySupported: boolean;
+  readonly disabled: boolean;
+  readonly canManage: boolean;
+  readonly canRepair: boolean;
+  readonly onResume: () => void;
+  readonly onRepair: () => void;
+  readonly onDialog: (dialog: PluginDialog) => void;
+}) {
+  const { installation, status } = props;
+  const { installationId } = installation;
+  const readOnly = isPluginRecordReadOnly(installation);
+  const attention = pluginAttention(installation);
+  const recovery = pluginRecoveryActions(installation, props.recoverySupported);
+  const review = () => props.onDialog({ kind: "review", installationId });
+  const details = () => props.onDialog({ kind: "details", installationId });
+  const actionButton = (label: string, icon: ReactNode, onClick: () => void, allowed = true) => (
+    <Button size="sm" variant="outline" disabled={props.disabled || !allowed} onClick={onClick}>
+      {icon}
+      {label}
+    </Button>
+  );
+
+  if (readOnly) {
+    return (
+      <Alert variant="info" controlAlignment="first-line">
+        <InfoIcon aria-hidden />
+        <AlertTitle>{attention?.title ?? "Read-only record"}</AlertTitle>
+        {attention ? <AlertDescription>{attention.message}</AlertDescription> : null}
+        <AlertAction>{actionButton("View details", <InfoIcon aria-hidden />, details)}</AlertAction>
+      </Alert>
+    );
+  }
+  if (status.primary === "review") {
+    const changed = installation.consentedDigest !== null;
+    return (
+      <Alert variant="warning" controlAlignment="first-line">
+        <ShieldCheckIcon aria-hidden />
+        <AlertTitle>{status.label}</AlertTitle>
+        <AlertDescription>
+          {changed
+            ? "Its files changed since you approved them. It stays stopped until you approve this version."
+            : "Nothing from this plugin runs until you choose what it may do."}
+        </AlertDescription>
+        <AlertAction>
+          {actionButton("Review", <ShieldCheckIcon aria-hidden />, review, props.canManage)}
+        </AlertAction>
+      </Alert>
+    );
+  }
+  if (installation.pendingUpdate) {
+    const revision = pluginReviewSubject(installation).revision;
+    return (
+      <Alert variant="info" controlAlignment="first-line">
+        <InfoIcon aria-hidden />
+        <AlertTitle>
+          {revision === "update"
+            ? `Update ${installation.pendingUpdate.manifest.version} available`
+            : revision === "local-repair"
+              ? "Local fix ready for review"
+              : `Version ${installation.pendingUpdate.manifest.version} ready for review`}
+        </AlertTitle>
+        <AlertDescription>{pluginCurrentRevisionNote(installation)}</AlertDescription>
+        <AlertAction>
+          {actionButton(
+            REVIEW_LABELS[revision],
+            <ShieldCheckIcon aria-hidden />,
+            review,
+            props.canManage,
+          )}
+        </AlertAction>
+      </Alert>
+    );
+  }
+  if (attention === null) return null;
+  const primary =
+    status.primary === "resume"
+      ? actionButton("Restart", <RotateCcwIcon aria-hidden />, props.onResume, props.canManage)
+      : attention.kind === "events-paused" && installation.enabled && !props.executionDisabled
+        ? actionButton(
+            "Resume events",
+            <RotateCcwIcon aria-hidden />,
+            props.onResume,
+            props.canManage,
+          )
+        : isPluginUnavailable(installation) && recovery.repair !== null
+          ? actionButton(
+              "Repair with agent",
+              <BotIcon aria-hidden />,
+              props.onRepair,
+              props.canRepair,
+            )
+          : null;
+  return (
+    <Alert
+      variant={attention.kind === "events-paused" ? "warning" : "error"}
+      controlAlignment="first-line"
+    >
+      <TriangleAlertIcon aria-hidden />
+      <AlertTitle>{attention.title}</AlertTitle>
+      <AlertDescription>
+        <ExpandableText text={attention.message} />
+      </AlertDescription>
+      <AlertAction>
+        {primary}
+        {actionButton("View details", <InfoIcon aria-hidden />, details)}
+      </AlertAction>
+    </Alert>
+  );
+}
+
+function PluginViews(props: {
+  readonly environmentId: EnvironmentId;
+  readonly installation: PluginInstallation;
+  readonly executionDisabled: boolean;
+}) {
+  const { environmentId, installation } = props;
+  const { manifest } = installation;
+  const applyIntents = usePluginIntentApplier();
+  const pathname = useLocation({ select: (location) => location.pathname });
+  const { startPage, setStartPage } = usePluginStartPage();
+  const active = isPluginActive(installation) && !props.executionDisabled;
+  const uiGranted = installation.grants.capabilities.includes("ui");
+  const blocked = props.executionDisabled
+    ? "Plugin code is turned off on this environment, so its views cannot open."
+    : !active
+      ? (pluginInactiveReason(installation) ?? "The plugin is not running.")
+      : !uiGranted
+        ? "Showing views is not allowed. Change this in Permissions."
+        : null;
+  const target = {
+    environmentId,
+    installation,
+    threadRef: null,
+    composerTarget: null,
+    locationKey: pathname,
+  };
+  return (
+    <SettingsSection title="Views">
+      {blocked ? <SettingsRow title={blocked} /> : null}
+      {manifest.views.map((view) => (
+        <SettingsRow
+          key={`view:${view.id}`}
+          title={view.title}
+          description={
+            view.placement === "page"
+              ? "Page"
+              : view.placement === "conversation"
+                ? "Card in chat. It appears in a conversation when an agent uses it."
+                : "Side panel beside a thread"
+          }
+          control={
+            view.placement === "conversation" ? null : (
+              <div className="flex items-center gap-2">
+                {view.placement === "page" ? (
+                  <PluginStartPageToggle
+                    viewTitle={view.title}
+                    chosen={
+                      startPage?.environmentId === environmentId &&
+                      startPage.pluginId === manifest.id &&
+                      startPage.viewId === view.id
+                    }
+                    onChange={(chosen) =>
+                      setStartPage(
+                        chosen ? { environmentId, pluginId: manifest.id, viewId: view.id } : null,
+                      )
+                    }
+                  />
+                ) : null}
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={blocked !== null}
+                  aria-label={`Open ${view.title}`}
+                  onClick={() => applyIntents(target, [{ type: "view.open", viewId: view.id }])}
+                >
+                  <SquareArrowOutUpRightIcon aria-hidden />
+                  Open
+                </Button>
+              </div>
+            )
+          }
+        />
+      ))}
+      {(manifest.sidebarViews ?? []).map((view) => (
+        <SettingsRow
+          key={`sidebar:${view.id}`}
+          title={view.title}
+          description="Sidebar layout. Not selected on install; choose it from the sidebar's view control or the command palette."
+        />
+      ))}
+    </SettingsSection>
+  );
+}
+
+/** This device opens the page when the app starts; it falls back at once if the page can't open. */
+function PluginStartPageToggle(props: {
+  readonly viewTitle: string;
+  readonly chosen: boolean;
+  readonly onChange: (chosen: boolean) => void;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <Button
+            size="sm"
+            variant="ghost"
+            aria-pressed={props.chosen}
+            aria-label={
+              props.chosen
+                ? `Stop starting on ${props.viewTitle}`
+                : `Start on ${props.viewTitle} on this device`
+            }
+            onClick={() => props.onChange(!props.chosen)}
+          />
+        }
+      >
+        <HouseIcon aria-hidden />
+        {props.chosen ? "Start page" : "Start here"}
+      </TooltipTrigger>
+      <TooltipPopup side="top">
+        {props.chosen
+          ? "This device opens this page when T3 Code starts"
+          : "Open this page when T3 Code starts on this device"}
+      </TooltipPopup>
+    </Tooltip>
+  );
+}
+
+function PluginPermissions(props: {
+  readonly environmentId: EnvironmentId;
+  readonly installation: PluginInstallation;
+  readonly canManage: boolean;
+  readonly onReview: () => void;
+}) {
+  const { installation } = props;
+  const { manifest, grants } = installation;
+  const granted = describePluginCapabilities(manifest).filter(
+    (entry) => entry.known && grants.capabilities.includes(entry.capability),
+  );
+  const projects = useProjects().filter(
+    (project) =>
+      project.environmentId === props.environmentId && grants.projectIds.includes(project.id),
+  );
+  return (
+    <SettingsSection title="Permissions">
+      <SettingsRow
+        title={granted.length === 0 ? "No permissions granted" : "Allowed to"}
+        description={
+          granted.length === 0 ? undefined : granted.map((entry) => entry.title).join(" · ")
+        }
+        control={
+          <Button size="sm" variant="outline" disabled={!props.canManage} onClick={props.onReview}>
+            <ShieldCheckIcon aria-hidden />
+            Review permissions
+          </Button>
+        }
+      />
+      {pluginNeedsProjects(manifest) ? (
+        <SettingsRow
+          title="Projects"
+          description={
+            projects.length === 0
+              ? "No projects chosen. Thread and background permissions apply only to the projects you pick."
+              : projects.map((project) => project.title).join(", ")
+          }
+        />
+      ) : null}
+    </SettingsSection>
+  );
+}
+
+/**
+ * Edits apply only on Save, and only the values the user changed. While nothing is edited the
+ * form follows the environment, so another device's change shows up instead of a stale value.
+ */
+function PluginSettingsForm(props: {
+  readonly environmentId: EnvironmentId;
+  readonly installation: PluginInstallation;
+  readonly canManage: boolean;
+  readonly onDirtyChange: (installationId: string, dirty: boolean) => void;
+}) {
+  const { installation, onDirtyChange } = props;
+  const { installationId } = installation;
+  const { manifest } = installation;
+  const idPrefix = useId();
+  // The values the draft was taken from; a save diffs against these.
+  const [base, setBase] = useState(() => installation.settings);
+  const [seen, setSeen] = useState(() => installation.settings);
+  const [draft, setDraft] = useState<PluginSettingDraft>(() => pluginSettingsDraft(installation));
+  const [clearedSecrets, setClearedSecrets] = useState<ReadonlySet<string>>(() => new Set());
+  const [errors, setErrors] = useState<Readonly<Record<string, string>>>({});
+  const [saving, setSaving] = useState(false);
+  const update = useAtomCommand(pluginEnvironment.updateSettings, { reportFailure: false });
+  const patch = buildPluginSettingsPatch(manifest.settings, base, draft, clearedSecrets);
+  const dirty = !patch.ok || Object.keys(patch.values).length > 0;
+  const adopt = (from: PluginInstallation) => {
+    setBase(from.settings);
+    setDraft(pluginSettingsDraft(from));
+    setClearedSecrets(new Set());
+    setErrors({});
+  };
+  if (installation.settings !== seen) {
+    setSeen(installation.settings);
+    if (!dirty && !saving) adopt(installation);
+  }
+  useEffect(() => {
+    onDirtyChange(installationId, dirty);
+  }, [installationId, dirty, onDirtyChange]);
+  useEffect(() => () => onDirtyChange(installationId, false), [installationId, onDirtyChange]);
+
+  const save = async () => {
+    if (!patch.ok) {
+      setErrors(patch.errors);
       return;
     }
-    void withBusy(async () => {
-      const backlog = enabled
-        ? await resolveBacklog(environmentId, installation, recoverySupported)
-        : ({ proceed: true } as const);
-      if (!backlog.proceed) return;
-      const result = await setEnabled({
-        environmentId,
-        input: {
-          ...target,
-          enabled,
-          ...(backlog.eventBacklog ? { eventBacklog: backlog.eventBacklog } : {}),
-        },
-      });
-      reportFailure(`Could not ${enabled ? "enable" : "disable"} ${manifest.name}`, result);
+    if (Object.keys(patch.values).length === 0) return;
+    setSaving(true);
+    const result = await update({
+      environmentId: props.environmentId,
+      input: { installationId: installation.installationId, values: patch.values },
     });
+    setSaving(false);
+    if (result._tag === "Failure") {
+      reportFailure(`Could not save ${manifest.name} settings`, result);
+      return;
+    }
+    adopt(result.value);
   };
-  const runRefresh = () =>
-    withBusy(async () => {
-      const result = await refresh({ environmentId, input: target });
-      if (result._tag === "Failure") {
-        reportFailure(`Could not refresh ${manifest.name}`, result);
-        return;
-      }
-      const pending = result.value.pendingUpdate;
-      if (pending === undefined && result.value.digest === installation.digest) {
-        toastManager.add({ type: "info", title: `${manifest.name} is up to date` });
-        return;
-      }
-      const id = toastManager.add({
-        type: "info",
-        title: pending
-          ? `${manifest.name} ${pending.manifest.version} is available`
-          : `${manifest.name} changed`,
-        description: pending
-          ? pluginCurrentRevisionNote(result.value)
-          : "Review the new files before they can run.",
-        actionProps: {
-          children: "Review",
-          onClick: () => {
-            toastManager.close(id);
-            review();
-          },
-        },
-      });
-    });
-  const runResume = () =>
-    withBusy(async () => {
-      const backlog = await resolveBacklog(environmentId, installation, recoverySupported);
-      if (!backlog.proceed) return;
-      const result = await resume({
-        environmentId,
-        input: {
-          ...target,
-          ...(backlog.eventBacklog ? { eventBacklog: backlog.eventBacklog } : {}),
-        },
-      });
-      reportFailure(`Could not restart ${manifest.name}`, result);
-    });
-  const runRepair = () => withBusy(() => repair(environmentId, installation));
-  const runStageRepair = () =>
-    withBusy(async () => {
-      const workspace = installation.recovery?.repair;
-      if (workspace === undefined) return;
-      const result = await stageRepair({
-        environmentId,
-        input: {
-          ...target,
-          workspaceId: workspace.workspaceId,
-          baseDigest: workspace.baseDigest,
-        },
-      });
-      if (result._tag === "Failure") {
-        reportFailure(`Could not stage the ${manifest.name} fix`, result);
-        return;
-      }
-      review();
-    });
-
-  const primary = (() => {
-    if (readOnly) return null;
-    if (status.primary === "review") {
-      return { icon: <ShieldCheckIcon />, label: "Review", onClick: review };
-    }
-    if (pendingRevision !== null) {
-      return { icon: <ShieldCheckIcon />, label: REVIEW_LABELS[pendingRevision], onClick: review };
-    }
-    if (status.primary === "resume") {
-      return { icon: <RotateCcwIcon />, label: "Restart", onClick: () => void runResume() };
-    }
-    if (attention?.kind === "events-paused" && installation.enabled && !executionDisabled) {
-      return { icon: <RotateCcwIcon />, label: "Resume events", onClick: () => void runResume() };
-    }
-    if (unavailable && recovery.repair !== null && canRepair) {
-      return { icon: <BotIcon />, label: "Repair with agent", onClick: () => void runRepair() };
-    }
-    return null;
-  })();
-
+  const disabled = saving || !props.canManage;
   return (
-    <SettingsRow
-      title={
-        <span className="flex min-w-0 items-center gap-2">
-          <span className="truncate">{manifest.name}</span>
-          {displayVersion === null ? null : (
-            <span className="shrink-0 font-normal text-muted-foreground text-xs">
-              v{displayVersion}
-            </span>
-          )}
-          {recovery.runningLocalFix ? (
-            <Badge variant="outline" className="shrink-0">
-              Local fix
-            </Badge>
-          ) : null}
-        </span>
-      }
-      description={
-        manifest.description ? <span className="line-clamp-2">{manifest.description}</span> : null
-      }
-      status={
-        <div className="flex min-w-0 flex-wrap items-center gap-2">
-          <Badge variant={TONE_BADGE[status.tone]}>{status.label}</Badge>
-          {installation.pendingUpdate && pendingRevision === "update" ? (
-            <Badge variant="info">
-              Update {installation.pendingUpdate.manifest.version} available
-            </Badge>
-          ) : null}
-          {readOnly ? null : (
-            <span className="min-w-0 truncate">{pluginSourceLabel(installation.source)}</span>
-          )}
-          {attention ? (
-            <span
-              className={`min-w-0 ${attention.kind === "events-paused" ? "text-warning-foreground" : attention.kind === "read-only" ? "text-muted-foreground" : "text-destructive-foreground"}`}
-            >
-              {attention.title}: {attention.message}
-            </span>
-          ) : null}
-        </div>
-      }
-      control={
-        <div className="flex items-center gap-2">
-          {primary ? (
-            <Button
-              size="xs"
-              variant="outline"
-              disabled={busy || !canManage}
-              onClick={primary.onClick}
-            >
-              {primary.icon}
-              {primary.label}
-            </Button>
-          ) : null}
-          <Switch
-            checked={installation.enabled}
-            // Turning a plugin off always works; turning it on needs a host that can run it.
-            disabled={busy || !canManage || readOnly || (!installation.enabled && unavailable)}
-            aria-label={`Enable ${manifest.name}`}
-            onCheckedChange={toggle}
-          />
-          <Menu>
-            <MenuTrigger
-              render={
-                <Button
-                  size="icon-sm"
-                  variant="ghost"
-                  disabled={busy}
-                  aria-label={`Actions for ${manifest.name}`}
+    <form
+      onSubmit={(event) => {
+        event.preventDefault();
+        void save();
+      }}
+    >
+      <SettingsSection
+        title="Settings"
+        headerAction={
+          <span className="text-xs text-muted-foreground">Stored on this environment</span>
+        }
+      >
+        {manifest.settings.map((setting) => {
+          const id = `${idPrefix}-${setting.key}`;
+          const value = draft[setting.key];
+          const error = errors[setting.key];
+          const set = (next: string | boolean) => {
+            setDraft((current) => ({ ...current, [setting.key]: next }));
+            setErrors((current) => {
+              const remaining = { ...current };
+              delete remaining[setting.key];
+              return remaining;
+            });
+          };
+          if (setting.type === "boolean") {
+            return (
+              <SettingsRow
+                key={setting.key}
+                title={<span id={`${id}-label`}>{setting.label}</span>}
+                description={
+                  setting.description ? (
+                    <span id={`${id}-description`}>{setting.description}</span>
+                  ) : undefined
+                }
+                control={
+                  // The switch is a span, which a label cannot name, so it names itself.
+                  <Switch
+                    id={id}
+                    aria-labelledby={`${id}-label`}
+                    aria-describedby={setting.description ? `${id}-description` : undefined}
+                    disabled={disabled}
+                    checked={value === true}
+                    onCheckedChange={(checked) => set(checked)}
+                  />
+                }
+              />
+            );
+          }
+          if (setting.type === "secret") {
+            const cleared = clearedSecrets.has(setting.key);
+            return (
+              <SettingsRow
+                key={setting.key}
+                title={<Label htmlFor={id}>{setting.label}</Label>}
+                description={
+                  cleared
+                    ? "The stored value will be deleted when you save."
+                    : (setting.description ?? "Leave empty to keep the stored value.")
+                }
+                control={
+                  <div className="flex w-full min-w-0 items-center gap-2 @min-[32rem]/settings-row:w-72">
+                    <SecretInput
+                      id={id}
+                      size="sm"
+                      className="min-w-0 flex-1"
+                      disabled={disabled}
+                      placeholder="Enter a new value to replace it"
+                      value={typeof value === "string" ? value : ""}
+                      onChange={(event) => {
+                        set(event.target.value);
+                        setClearedSecrets((current) => {
+                          const next = new Set(current);
+                          next.delete(setting.key);
+                          return next;
+                        });
+                      }}
+                    />
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      type="button"
+                      disabled={disabled || cleared}
+                      onClick={() => {
+                        set("");
+                        setClearedSecrets((current) => new Set(current).add(setting.key));
+                      }}
+                    >
+                      Clear
+                    </Button>
+                  </div>
+                }
+              />
+            );
+          }
+          return (
+            <SettingsRow
+              key={setting.key}
+              title={<Label htmlFor={id}>{setting.label}</Label>}
+              description={setting.description}
+              status={
+                error ? (
+                  <span className="text-destructive-foreground" role="alert">
+                    {error}
+                  </span>
+                ) : undefined
+              }
+              control={
+                <Input
+                  id={id}
+                  size="sm"
+                  className="w-full @min-[32rem]/settings-row:w-72"
+                  disabled={disabled}
+                  aria-invalid={error ? true : undefined}
+                  inputMode={setting.type === "number" ? "decimal" : undefined}
+                  value={typeof value === "string" ? value : ""}
+                  onChange={(event) => set(event.target.value)}
                 />
               }
-            >
-              <MoreHorizontalIcon className="size-4" />
-            </MenuTrigger>
-            <MenuPopup align="end">
-              <MenuItem onClick={details}>
-                <InfoIcon />
-                Details
-              </MenuItem>
-              {readOnly ? null : (
-                <>
-                  <MenuItem onClick={review} disabled={!canManage}>
-                    <ShieldCheckIcon />
-                    Review permissions
-                  </MenuItem>
-                  {manifest.settings.length > 0 ? (
-                    <MenuItem
-                      disabled={!canManage}
-                      onClick={() =>
-                        props.onDialog({
-                          kind: "settings",
-                          environmentId,
-                          installationId: installation.installationId,
-                        })
-                      }
-                    >
-                      <Settings2Icon />
-                      Settings
-                    </MenuItem>
-                  ) : null}
-                  <MenuItem disabled={!canManage} onClick={() => void runRefresh()}>
-                    <RefreshCwIcon />
-                    {recovery.runningLocalFix
-                      ? "Check publisher for updates"
-                      : "Check source for changes"}
-                  </MenuItem>
-                  {recovery.repair !== null ? (
-                    <>
-                      <MenuSeparator />
-                      <MenuItem disabled={!canRepair} onClick={() => void runRepair()}>
-                        <BotIcon />
-                        {recovery.repair === "open" ? "Open repair draft" : "Repair with agent"}
-                      </MenuItem>
-                      {recovery.stageRepair ? (
-                        <MenuItem disabled={!canManage} onClick={() => void runStageRepair()}>
-                          <FileSearchIcon />
-                          Review local fix
-                        </MenuItem>
-                      ) : null}
-                      {recovery.usePrevious !== null ? (
-                        <MenuItem
-                          disabled={!canManage}
-                          onClick={() =>
-                            props.onDialog({
-                              kind: "use-previous",
-                              environmentId,
-                              installationId: installation.installationId,
-                            })
-                          }
-                        >
-                          <HistoryIcon />
-                          Use previous version (v{recovery.usePrevious.version})…
-                        </MenuItem>
-                      ) : null}
-                    </>
-                  ) : null}
-                  <MenuSeparator />
-                  <MenuItem
-                    disabled={!canManage}
-                    onClick={() => props.onDialog({ kind: "remove", environmentId, installation })}
-                  >
-                    <Trash2Icon />
-                    Remove
-                  </MenuItem>
-                </>
-              )}
-            </MenuPopup>
-          </Menu>
+            />
+          );
+        })}
+        <div className="flex items-center justify-end gap-2 px-3 py-3 sm:px-4">
+          {dirty ? (
+            <span className="me-auto text-xs text-muted-foreground" role="status">
+              Unsaved changes
+            </span>
+          ) : null}
+          <Button
+            size="sm"
+            variant="ghost"
+            type="button"
+            disabled={!dirty || saving}
+            onClick={() => adopt(installation)}
+          >
+            Revert
+          </Button>
+          <Button size="sm" type="submit" disabled={!dirty || disabled}>
+            {saving ? "Saving…" : "Save"}
+          </Button>
         </div>
-      }
-    >
-      <PluginContributions
-        environmentId={environmentId}
-        installation={installation}
-        executionDisabled={props.executionDisabled}
-      />
-      {backlogDialog}
-    </SettingsRow>
+      </SettingsSection>
+    </form>
   );
 }
 
@@ -715,148 +1620,9 @@ function PluginRecoveryDialog(props: {
           );
           return;
         }
-        props.onDialog({ kind: "review", environmentId, installationId });
+        props.onDialog({ kind: "review", installationId });
       }}
     />
-  );
-}
-
-/** What the plugin adds, with a way to run each action and open each view from here. */
-function PluginContributions(props: {
-  readonly environmentId: EnvironmentId;
-  readonly installation: PluginInstallation;
-  readonly executionDisabled: boolean;
-}) {
-  const { environmentId, installation } = props;
-  const { actions, views } = installation.manifest;
-  const active = isPluginActive(installation) && !props.executionDisabled;
-  const canInvoke = useAtomValue(pluginEnvironment.invoke.permissionAtom(environmentId));
-  const runAction = usePluginActionRunner();
-  const applyIntents = usePluginIntentApplier();
-  const pathname = useLocation({ select: (location) => location.pathname });
-  const [running, setRunning] = useState<string | null>(null);
-  const { startPage, setStartPage } = usePluginStartPage();
-  if (actions.length === 0 && views.length === 0) return null;
-  const target = {
-    environmentId,
-    installation,
-    threadRef: null,
-    composerTarget: null,
-    locationKey: pathname,
-  };
-  const viewsAllowed = active && installation.grants.capabilities.includes("ui");
-  return (
-    <ul className="mt-2 divide-y divide-border/50 rounded-md border border-border/60">
-      {actions.map((action) => (
-        <li key={`action:${action.id}`} className="flex items-center gap-3 px-3 py-2">
-          <div className="min-w-0 flex-1">
-            <p className="truncate text-sm">{action.title}</p>
-            <p className="truncate text-xs text-muted-foreground">
-              {[
-                action.description,
-                action.placements.map((placement) => PLACEMENT_LABELS[placement]).join(", "),
-                action.agentCallable ? "Agents can call it" : undefined,
-              ]
-                .filter(Boolean)
-                .join(" · ")}
-            </p>
-          </div>
-          <Button
-            size="xs"
-            variant="ghost"
-            disabled={!active || !canInvoke || running !== null}
-            aria-label={`Run ${action.title}`}
-            onClick={async () => {
-              setRunning(action.id);
-              await runAction(target, action, {});
-              setRunning(null);
-            }}
-          >
-            <PlayIcon />
-            Run
-          </Button>
-        </li>
-      ))}
-      {views.map((view) => (
-        <li key={`view:${view.id}`} className="flex items-center gap-3 px-3 py-2">
-          <div className="min-w-0 flex-1">
-            <p className="truncate text-sm">{view.title}</p>
-            <p className="truncate text-xs text-muted-foreground">
-              {view.placement === "page"
-                ? "Page"
-                : view.placement === "conversation"
-                  ? "Card in chat"
-                  : "Side panel beside a thread"}
-            </p>
-          </div>
-          {view.placement === "page" ? (
-            <PluginStartPageToggle
-              viewTitle={view.title}
-              chosen={
-                startPage?.environmentId === environmentId &&
-                startPage.pluginId === installation.manifest.id &&
-                startPage.viewId === view.id
-              }
-              onChange={(chosen) =>
-                setStartPage(
-                  chosen
-                    ? { environmentId, pluginId: installation.manifest.id, viewId: view.id }
-                    : null,
-                )
-              }
-            />
-          ) : null}
-          {/* A card's view only opens from its card. */}
-          {view.placement === "conversation" ? null : (
-            <Button
-              size="xs"
-              variant="ghost"
-              disabled={!viewsAllowed}
-              aria-label={`Open ${view.title}`}
-              onClick={() => applyIntents(target, [{ type: "view.open", viewId: view.id }])}
-            >
-              <SquareArrowOutUpRightIcon />
-              Open
-            </Button>
-          )}
-        </li>
-      ))}
-    </ul>
-  );
-}
-
-/** This device opens the page when the app starts; it falls back at once if the page can't open. */
-function PluginStartPageToggle(props: {
-  readonly viewTitle: string;
-  readonly chosen: boolean;
-  readonly onChange: (chosen: boolean) => void;
-}) {
-  return (
-    <Tooltip>
-      <TooltipTrigger
-        render={
-          <Button
-            size="xs"
-            variant="ghost"
-            aria-pressed={props.chosen}
-            aria-label={
-              props.chosen
-                ? `Stop starting on ${props.viewTitle}`
-                : `Start on ${props.viewTitle} on this device`
-            }
-            onClick={() => props.onChange(!props.chosen)}
-          />
-        }
-      >
-        <HouseIcon />
-        {props.chosen ? "Start page" : "Start here"}
-      </TooltipTrigger>
-      <TooltipPopup side="top">
-        {props.chosen
-          ? "This device opens this page when T3 Code starts"
-          : "Open this page when T3 Code starts on this device"}
-      </TooltipPopup>
-    </Tooltip>
   );
 }
 
@@ -882,20 +1648,19 @@ function Field(props: {
   );
 }
 
+/** Installs on the environment the page shows; the Settings scope is where to pick another. */
 function InstallPluginDialog(props: {
-  readonly initialEnvironmentId: EnvironmentId;
+  readonly environment: EnvironmentPresentation;
   readonly onClose: () => void;
-  readonly onInstalled: (environmentId: EnvironmentId, installation: PluginInstallation) => void;
+  readonly onInstalled: (installation: PluginInstallation) => void;
 }) {
-  const { connectedEnvironments } = useSettingsScope();
-  const [environmentId, setEnvironmentId] = useState(props.initialEnvironmentId);
+  const { environmentId, label } = props.environment;
   const [source, setSource] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [installing, setInstalling] = useState(false);
   const install = useAtomCommand(pluginEnvironment.install, { reportFailure: false });
   const canInstall = useAtomValue(pluginEnvironment.install.permissionAtom(environmentId));
   const catalogue = usePluginCatalogue(environmentId);
-  const selected = connectedEnvironments.find((entry) => entry.environmentId === environmentId);
   const submit = async () => {
     const parsed = parsePluginSourceInput(source);
     if (!parsed.ok) {
@@ -912,7 +1677,7 @@ function InstallPluginDialog(props: {
       }
       return;
     }
-    props.onInstalled(environmentId, result.value);
+    props.onInstalled(result.value);
   };
   const unavailable =
     catalogue.availability === "unsupported"
@@ -940,37 +1705,18 @@ function InstallPluginDialog(props: {
           }}
         >
           <DialogHeader>
-            <DialogTitle>Install plugin</DialogTitle>
+            <DialogTitle>Install plugin on {label}</DialogTitle>
             <DialogDescription>
-              T3 Code copies the plugin and reads its manifest. Nothing runs until you review and
-              enable it.
+              T3 Code copies the plugin to {label} and reads its manifest. Nothing runs until you
+              review and enable it.
             </DialogDescription>
           </DialogHeader>
           <DialogPanel>
             <div className="space-y-4">
-              {connectedEnvironments.length > 1 ? (
-                <Field label="Environment" htmlFor="plugin-install-environment">
-                  <Select
-                    value={environmentId}
-                    onValueChange={(value) => value && setEnvironmentId(value as EnvironmentId)}
-                  >
-                    <SelectTrigger size="sm" id="plugin-install-environment">
-                      <SelectValue>{selected?.label ?? environmentId}</SelectValue>
-                    </SelectTrigger>
-                    <SelectPopup>
-                      {connectedEnvironments.map((entry) => (
-                        <SelectItem key={entry.environmentId} value={entry.environmentId}>
-                          {entry.label}
-                        </SelectItem>
-                      ))}
-                    </SelectPopup>
-                  </Select>
-                </Field>
-              ) : null}
               <Field
                 label="Source"
                 htmlFor="plugin-install-source"
-                hint={`A folder on ${selected?.label ?? "the environment"}, or an https Git URL. Add #tag or #commit to pin a version.`}
+                hint={`A folder on ${label}, or an https Git URL. Add #tag or #commit to pin a version.`}
                 error={error ?? undefined}
               >
                 <Input
@@ -1432,211 +2178,11 @@ function ReviewPluginForm(props: {
   );
 }
 
-function PluginSettingsDialog(props: {
-  readonly environmentId: EnvironmentId;
-  readonly installationId: string;
-  readonly onClose: () => void;
-}) {
-  const catalogue = usePluginCatalogue(props.environmentId);
-  const installation = catalogue.installations.find(
-    (entry) => entry.installationId === props.installationId,
-  );
-  return (
-    <Dialog
-      open
-      onOpenChange={(open) => {
-        if (!open) props.onClose();
-      }}
-    >
-      <DialogPopup className="max-w-lg">
-        {installation ? (
-          <PluginSettingsForm
-            environmentId={props.environmentId}
-            installation={installation}
-            onClose={props.onClose}
-          />
-        ) : (
-          <DialogHeader>
-            <DialogTitle>Plugin settings</DialogTitle>
-            <DialogDescription>This plugin is no longer installed.</DialogDescription>
-          </DialogHeader>
-        )}
-      </DialogPopup>
-    </Dialog>
-  );
-}
-
-function PluginSettingsForm(props: {
-  readonly environmentId: EnvironmentId;
-  readonly installation: PluginInstallation;
-  readonly onClose: () => void;
-}) {
-  const { installation } = props;
-  // Changes are diffed against what the form opened with, so a value another device changed
-  // meanwhile is not sent back just because this form still shows the old one.
-  const [base] = useState(() => installation.settings);
-  const [draft, setDraft] = useState<PluginSettingDraft>(() => pluginSettingsDraft(installation));
-  const [clearedSecrets, setClearedSecrets] = useState<ReadonlySet<string>>(new Set());
-  const [errors, setErrors] = useState<Readonly<Record<string, string>>>({});
-  const [saving, setSaving] = useState(false);
-  const update = useAtomCommand(pluginEnvironment.updateSettings, { reportFailure: false });
-  const save = async () => {
-    const patch = buildPluginSettingsPatch(
-      installation.manifest.settings,
-      base,
-      draft,
-      clearedSecrets,
-    );
-    if (!patch.ok) {
-      setErrors(patch.errors);
-      return;
-    }
-    if (Object.keys(patch.values).length === 0) {
-      props.onClose();
-      return;
-    }
-    setSaving(true);
-    const result = await update({
-      environmentId: props.environmentId,
-      input: { installationId: installation.installationId, values: patch.values },
-    });
-    setSaving(false);
-    if (result._tag === "Failure") {
-      reportFailure(`Could not save ${installation.manifest.name} settings`, result);
-      return;
-    }
-    props.onClose();
-  };
-  return (
-    <form
-      className="flex min-h-0 flex-col"
-      onSubmit={(event) => {
-        event.preventDefault();
-        void save();
-      }}
-    >
-      <DialogHeader>
-        <DialogTitle>{installation.manifest.name} settings</DialogTitle>
-        <DialogDescription>
-          Stored on this environment. Secrets are write-only: T3 Code never shows them again.
-        </DialogDescription>
-      </DialogHeader>
-      <DialogPanel>
-        <div className="space-y-4">
-          {installation.manifest.settings.map((setting) => {
-            const id = `plugin-setting-${setting.key}`;
-            const value = draft[setting.key];
-            const set = (next: string | boolean) => {
-              setDraft((current) => ({ ...current, [setting.key]: next }));
-              setErrors((current) => {
-                const next = { ...current };
-                delete next[setting.key];
-                return next;
-              });
-            };
-            if (setting.type === "boolean") {
-              return (
-                <div key={setting.key} className="flex items-start justify-between gap-4">
-                  <div className="min-w-0 space-y-0.5">
-                    <Label id={`${id}-label`} htmlFor={id}>
-                      {setting.label}
-                    </Label>
-                    {setting.description ? (
-                      <p id={`${id}-description`} className="text-xs text-muted-foreground">
-                        {setting.description}
-                      </p>
-                    ) : null}
-                  </div>
-                  {/* The switch is a span, which a label cannot name, so it names itself. */}
-                  <Switch
-                    id={id}
-                    aria-labelledby={`${id}-label`}
-                    aria-describedby={setting.description ? `${id}-description` : undefined}
-                    checked={value === true}
-                    onCheckedChange={(checked) => set(checked)}
-                  />
-                </div>
-              );
-            }
-            if (setting.type === "secret") {
-              const cleared = clearedSecrets.has(setting.key);
-              return (
-                <Field
-                  key={setting.key}
-                  label={setting.label}
-                  htmlFor={id}
-                  hint={
-                    cleared
-                      ? "The stored value will be deleted when you save."
-                      : (setting.description ?? "Leave empty to keep the stored value.")
-                  }
-                >
-                  <div className="flex items-center gap-2">
-                    <SecretInput
-                      id={id}
-                      className="min-w-0 flex-1"
-                      placeholder="Enter a new value to replace it"
-                      value={typeof value === "string" ? value : ""}
-                      onChange={(event) => {
-                        set(event.target.value);
-                        setClearedSecrets((current) => {
-                          const next = new Set(current);
-                          next.delete(setting.key);
-                          return next;
-                        });
-                      }}
-                    />
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      type="button"
-                      disabled={cleared}
-                      onClick={() => {
-                        set("");
-                        setClearedSecrets((current) => new Set(current).add(setting.key));
-                      }}
-                    >
-                      Clear
-                    </Button>
-                  </div>
-                </Field>
-              );
-            }
-            return (
-              <Field
-                key={setting.key}
-                label={setting.label}
-                htmlFor={id}
-                hint={setting.description}
-                error={errors[setting.key]}
-              >
-                <Input
-                  id={id}
-                  inputMode={setting.type === "number" ? "decimal" : undefined}
-                  value={typeof value === "string" ? value : ""}
-                  onChange={(event) => set(event.target.value)}
-                />
-              </Field>
-            );
-          })}
-        </div>
-      </DialogPanel>
-      <DialogFooter>
-        <DialogClose render={<Button variant="ghost" size="sm" disabled={saving} />}>
-          Cancel
-        </DialogClose>
-        <Button size="sm" type="submit" disabled={saving}>
-          {saving ? "Saving…" : "Save"}
-        </Button>
-      </DialogFooter>
-    </form>
-  );
-}
-
 function RemovePluginDialog(props: {
   readonly environmentId: EnvironmentId;
   readonly installation: PluginInstallation;
   readonly onClose: () => void;
+  readonly onRemoved: () => void;
 }) {
   const { installation } = props;
   const [deleteData, setDeleteData] = useState(false);
@@ -1653,7 +2199,7 @@ function RemovePluginDialog(props: {
       reportFailure(`Could not remove ${installation.manifest.name}`, result);
       return;
     }
-    props.onClose();
+    props.onRemoved();
   };
   return (
     <Dialog

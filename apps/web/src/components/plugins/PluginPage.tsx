@@ -29,7 +29,13 @@ export function PluginPage(props: {
         <WorkspacePageHeader electron={isElectron}>
           <WorkspaceBreadcrumb ariaLabel="Plugin breadcrumb">
             <WorkspaceBreadcrumbItem>
-              <Link to="/settings/plugins">
+              <Link
+                to="/settings/plugins"
+                search={{
+                  environmentId: props.environmentId,
+                  installationId: props.installationId,
+                }}
+              >
                 <WorkspaceBreadcrumbText>Plugins</WorkspaceBreadcrumbText>
               </Link>
             </WorkspaceBreadcrumbItem>

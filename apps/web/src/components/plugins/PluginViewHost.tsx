@@ -444,7 +444,19 @@ function PluginViewResolver(props: {
         title="View unavailable"
         description={reason}
         action={
-          <Button size="sm" variant="outline" render={<Link to="/settings/plugins" />}>
+          <Button
+            size="sm"
+            variant="outline"
+            render={
+              <Link
+                to="/settings/plugins"
+                search={{
+                  environmentId: props.environmentId,
+                  installationId: props.installationId,
+                }}
+              />
+            }
+          >
             Open plugin settings
           </Button>
         }

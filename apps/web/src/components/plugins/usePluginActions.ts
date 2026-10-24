@@ -279,7 +279,13 @@ export function usePluginActionRunner() {
                 children: "Details",
                 onClick: () => {
                   toastManager.close(id);
-                  void navigate({ to: "/settings/plugins" });
+                  void navigate({
+                    to: "/settings/plugins",
+                    search: {
+                      environmentId: target.environmentId,
+                      installationId: target.installation.installationId,
+                    },
+                  });
                 },
               },
             }
