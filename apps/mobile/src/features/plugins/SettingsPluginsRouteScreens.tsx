@@ -662,17 +662,28 @@ function PluginDetail(props: {
 
       {manifest.views.length > 0 ? (
         <SettingsSection title="Views">
-          {manifest.views.map((view) => (
-            <SettingsActionRow
-              key={view.id}
-              icon="square.on.square"
-              label={view.title}
-              disabled={!active || !installation.grants.capabilities.includes("ui")}
-              onPress={() =>
-                applyIntents(pluginTarget, [{ type: "view.open", viewId: view.id }], true)
-              }
-            />
-          ))}
+          {manifest.views.map((view) =>
+            // A card's view only opens from its card in a conversation.
+            view.placement === "conversation" ? (
+              <SettingsRow
+                key={view.id}
+                icon="square.on.square"
+                label={view.title}
+                value="Card in chat"
+                disabled
+              />
+            ) : (
+              <SettingsActionRow
+                key={view.id}
+                icon="square.on.square"
+                label={view.title}
+                disabled={!active || !installation.grants.capabilities.includes("ui")}
+                onPress={() =>
+                  applyIntents(pluginTarget, [{ type: "view.open", viewId: view.id }], true)
+                }
+              />
+            ),
+          )}
         </SettingsSection>
       ) : null}
 
