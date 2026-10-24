@@ -7,7 +7,6 @@ import {
   createRootRoute,
   type ErrorComponentProps,
   useLocation,
-  useNavigate,
   useRouter,
 } from "@tanstack/react-router";
 import { Check, Copy } from "lucide";
@@ -22,7 +21,6 @@ import { AddProjectToMachineDialogHost } from "../components/AddProjectToMachine
 import { ConfirmDialogHost } from "../components/ConfirmDialogHost";
 import { DevReplayHost } from "../components/DevReplayHost";
 import { FirstRunGate } from "../components/onboarding/FirstRunGate";
-import { useStartPageDecided } from "../components/plugins/pluginStartPage";
 import { ConnectOnboardingDialog } from "../components/cloud/ConnectOnboardingDialog";
 import { RelayClientInstallDialog } from "../components/cloud/RelayClientInstallDialog";
 import { SshPasswordPromptDialog } from "../components/desktop/SshPasswordPromptDialog";
@@ -34,6 +32,7 @@ import { ReopenClosedViewShortcut } from "../components/ReopenClosedViewShortcut
 import { ProjectCloneToastCoordinator } from "../components/ProjectCloneToastCoordinator";
 import { ChatGptWelcomeCoordinator } from "../components/settings/ChatGptWelcomeCoordinator";
 import { ThemeEditorHost } from "../components/settings/ThemeEditorHost";
+import { useBootstrapThreadNavigation } from "../hooks/useBootstrapThreadNavigation";
 import { useCopyToClipboard } from "../hooks/useCopyToClipboard";
 import { Button } from "../components/ui/button";
 import { MorphIcon } from "~/components/MorphIcon";
@@ -319,44 +318,10 @@ function EventRouter({
 }: {
   readonly skipInitialBootstrapNavigation: boolean;
 }) {
-  const navigate = useNavigate();
-  const pathname = useLocation({ select: (loc) => loc.pathname });
   const projectGroupingSettings = useClientSettings(selectProjectGroupingSettings);
   const serverConfig = useAtomValue(primaryServerConfigAtom);
   const serverWelcome = useAtomValue(primaryServerWelcomeAtom);
-  const readPathname = useEffectEvent(() => pathname);
-  const startPageDecided = useStartPageDecided();
-  const handledBootstrapThreadIdRef = useRef<string | null>(null);
-  const deferredBootstrapRef = useRef<ServerLifecycleWelcomePayload | null>(null);
-  const skipInitialBootstrapNavigationRef = useRef(skipInitialBootstrapNavigation);
-
-  const openBootstrapThread = useEffectEvent(async (payload: ServerLifecycleWelcomePayload) => {
-    if (!payload.bootstrapThreadId || readPathname() !== "/") {
-      return;
-    }
-    if (skipInitialBootstrapNavigationRef.current) {
-      skipInitialBootstrapNavigationRef.current = false;
-      handledBootstrapThreadIdRef.current = payload.bootstrapThreadId;
-      return;
-    }
-    if (handledBootstrapThreadIdRef.current === payload.bootstrapThreadId) {
-      return;
-    }
-    // A plugin start page may still replace "/"; this thread is only its usual fallback.
-    if (!startPageDecided) {
-      deferredBootstrapRef.current = payload;
-      return;
-    }
-    await navigate({
-      to: "/$environmentId/$threadId",
-      params: {
-        environmentId: payload.environment.environmentId,
-        threadId: payload.bootstrapThreadId,
-      },
-      replace: true,
-    });
-    handledBootstrapThreadIdRef.current = payload.bootstrapThreadId;
-  });
+  const openBootstrapThread = useBootstrapThreadNavigation(skipInitialBootstrapNavigation);
 
   const handleWelcome = useEffectEvent((payload: ServerLifecycleWelcomePayload | null) => {
     if (!payload) return;
@@ -388,12 +353,6 @@ function EventRouter({
     handleWelcome(serverWelcome);
   }, [serverWelcome]);
 
-  useEffect(() => {
-    const deferred = deferredBootstrapRef.current;
-    if (!startPageDecided || deferred === null) return;
-    deferredBootstrapRef.current = null;
-    void openBootstrapThread(deferred).catch(() => undefined);
-  }, [startPageDecided]);
 
   return null;
 }

@@ -11,8 +11,11 @@ import {
   PLUGIN_API_VERSION,
   type PluginInstallation,
   type ServerConfig,
+  type ServerLifecycleWelcomePayload,
 } from "@t3tools/contracts";
+import { useLocation, useRouter, type AnyRouter } from "@tanstack/react-router";
 import { AsyncResult } from "effect/reactivity";
+import { useEffect, useEffectEvent } from "react";
 import { expect, it, vi } from "vite-plus/test";
 
 import { act, render } from "../../../test/render";
@@ -95,6 +98,7 @@ vi.mock(import("../../state/query"), async (original) => {
   };
 });
 
+import { useBootstrapThreadNavigation } from "../../hooks/useBootstrapThreadNavigation";
 import {
   resetPluginStartPageForTests,
   useHoldLandingForStartPage,
@@ -382,5 +386,133 @@ it("leaves a page the person opened while the start page was loading", async () 
     </AppAtomRegistryProvider>,
   );
   await expect.element(screen.getByText("landing")).toBeVisible();
+  expect(boot.navigate).not.toHaveBeenCalled();
+});
+
+const welcome = {
+  environment: { environmentId },
+  bootstrapProjectId: "project-boot",
+  bootstrapThreadId: "thread-boot",
+} as unknown as ServerLifecycleWelcomePayload;
+
+// The landing's own guard before it starts a draft: hold released and still on "/".
+function DraftGuard(props: { readonly onDraft: () => void }) {
+  const holding = useHoldLandingForStartPage();
+  const router = useRouter();
+  const onDraft = useEffectEvent(() => props.onDraft());
+  useEffect(() => {
+    if (!holding && router.state.location.pathname === "/") onDraft();
+  }, [holding, router]);
+  return <p>{holding ? "holding" : "landing"}</p>;
+}
+
+function WelcomeHandler(props: { readonly welcome: ServerLifecycleWelcomePayload | null }) {
+  const openBootstrapThread = useBootstrapThreadNavigation(false);
+  const handleWelcome = useEffectEvent((welcome: ServerLifecycleWelcomePayload | null) => {
+    if (welcome !== null) void openBootstrapThread(welcome);
+  });
+  useEffect(() => {
+    handleWelcome(props.welcome);
+  }, [props.welcome]);
+  return null;
+}
+
+function IndexRoute(props: { readonly onDraft: () => void }) {
+  const onIndex = useLocation({ select: (location) => location.pathname === "/" });
+  return onIndex ? <DraftGuard onDraft={props.onDraft} /> : <p>elsewhere</p>;
+}
+
+// Startup as the app arranges it: the welcome handler is a sibling ahead of the routed landing,
+// so its effects run first in a commit.
+function Startup(props: {
+  readonly welcome: ServerLifecycleWelcomePayload | null;
+  readonly onDraft: () => void;
+}) {
+  return (
+    <>
+      <WelcomeHandler welcome={props.welcome} />
+      <IndexRoute onDraft={props.onDraft} />
+    </>
+  );
+}
+
+async function renderStartup(onDraft: () => void) {
+  const screen = await render(
+    <AppAtomRegistryProvider>
+      <Startup welcome={null} onDraft={onDraft} />
+    </AppAtomRegistryProvider>,
+  );
+  const router: AnyRouter = screen.router!;
+  // Both startup navigations go through the real router, so later effects see where it went.
+  boot.navigate.mockImplementation((options) => router.navigate(options));
+  const welcomeArrives = () =>
+    screen.rerender(
+      <AppAtomRegistryProvider>
+        <Startup welcome={welcome} onDraft={onDraft} />
+      </AppAtomRegistryProvider>,
+    );
+  return { screen, router, welcomeArrives };
+}
+
+const bootstrapRoute = {
+  to: "/$environmentId/$threadId",
+  params: { environmentId, threadId: "thread-boot" },
+  replace: true,
+};
+
+it("opens the start page, not the bootstrap thread, when the welcome arrives first", async () => {
+  setup();
+  const onDraft = vi.fn();
+  const { screen, router, welcomeArrives } = await renderStartup(onDraft);
+  await using _screen = screen;
+  await welcomeArrives();
+  await expect.element(screen.getByText("holding")).toBeVisible();
+  expect(boot.navigate).not.toHaveBeenCalled();
+
+  await act(bootReady);
+  await expect.element(screen.getByText("elsewhere")).toBeVisible();
+  expect(router.state.location.pathname).toBe(`/plugins/${environmentId}/inst-board/board`);
+  expect(boot.navigate.mock.calls).toEqual([[pluginRoute]]);
+  expect(onDraft).not.toHaveBeenCalled();
+});
+
+it("hands the landing to the bootstrap thread, not a draft, when the start page cannot open", async () => {
+  setup();
+  const onDraft = vi.fn();
+  const { screen, router, welcomeArrives } = await renderStartup(onDraft);
+  await using _screen = screen;
+  await welcomeArrives();
+  expect(boot.navigate).not.toHaveBeenCalled();
+
+  await act(() => {
+    bootReady();
+    appAtomRegistry.set(boot.catalogue, AsyncResult.success({ installations: [] }));
+  });
+  await expect.element(screen.getByText("elsewhere")).toBeVisible();
+  expect(router.state.location.pathname).toBe(`/${environmentId}/thread-boot`);
+  expect(boot.navigate.mock.calls).toEqual([[bootstrapRoute]]);
+  expect(onDraft).not.toHaveBeenCalled();
+});
+
+it("opens the bootstrap thread at once without a start page", async () => {
+  setup();
+  localStorage.removeItem("t3code:plugins:start-page");
+  const { screen, router, welcomeArrives } = await renderStartup(vi.fn());
+  await using _screen = screen;
+  await welcomeArrives();
+  await expect.element(screen.getByText("elsewhere")).toBeVisible();
+  expect(router.state.location.pathname).toBe(`/${environmentId}/thread-boot`);
+  expect(boot.navigate.mock.calls).toEqual([[bootstrapRoute]]);
+});
+
+it("leaves a page the person opened while the welcome waited", async () => {
+  setup();
+  const { screen, router, welcomeArrives } = await renderStartup(vi.fn());
+  await using _screen = screen;
+  await welcomeArrives();
+  await act(() => router.navigate({ to: "/settings" }));
+  await act(bootReady);
+  await expect.element(screen.getByText("elsewhere")).toBeVisible();
+  expect(router.state.location.pathname).toBe("/settings");
   expect(boot.navigate).not.toHaveBeenCalled();
 });
