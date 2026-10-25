@@ -4111,6 +4111,126 @@ it.effect("keeps a private data directory across reinstall and deletes it with t
   }).pipe(Effect.provide(base()), Effect.scoped),
 );
 
+const withPrivateFile = Effect.fn("test.withPrivateFile")(function* (
+  f: Effect.Success<typeof fixture>,
+) {
+  const item = yield* f.enable();
+  yield* f.plugins.invoke(
+    {
+      installationId: item.installationId,
+      generation: item.generation,
+      handler: "action:review",
+      operationId: "private-file",
+    },
+    actor,
+  );
+  const directory = f.calls.at(-1)!.dataDirectory;
+  const file = f.path.join(directory, "private.json");
+  yield* f.fs.writeFileString(file, "private fixture");
+  return { item, directory, file };
+});
+
+it.effect("keeps a failed private data purge visible until a retry finishes it", () =>
+  Effect.gen(function* () {
+    const f = yield* fixture;
+    const { item, directory, file } = yield* withPrivateFile(f);
+    const remove = f.fs.remove;
+    let fail = true;
+    using _remove = vi
+      .spyOn(f.fs, "remove")
+      .mockImplementation((target, options) =>
+        fail && target === directory
+          ? remove(f.path.join(directory, "missing-fault-fixture"))
+          : remove(target, options),
+      );
+    const first = yield* f.plugins
+      .remove({ installationId: item.installationId, deleteData: true })
+      .pipe(Effect.flip);
+    expect(first.reason).toBe("storage_failed");
+    expect(yield* f.fs.exists(file)).toBe(true);
+    expect((yield* f.plugins.list()).installations).toMatchObject([
+      { installationId: item.installationId, enabled: false, status: "disabled" },
+    ]);
+    // The pending purge still owns the data, so neither reinstall nor re-enable can reach it.
+    expect((yield* f.install().pipe(Effect.flip)).message).toBe(
+      "This plugin is already installed. Refresh its existing installation.",
+    );
+    expect(
+      (yield* f.plugins
+        .setEnabled({ installationId: item.installationId, enabled: true })
+        .pipe(Effect.flip)).message,
+    ).toBe("Could not read the plugin package.");
+
+    fail = false;
+    yield* f.plugins.remove({ installationId: item.installationId, deleteData: true });
+    expect(yield* f.fs.exists(directory)).toBe(false);
+    expect((yield* f.plugins.list()).installations).toEqual([]);
+    expect(
+      (yield* f.plugins
+        .remove({ installationId: item.installationId, deleteData: true })
+        .pipe(Effect.flip)).reason,
+    ).toBe("not_found");
+    const again = yield* f.enable();
+    expect(again.dataOwner).not.toBe(item.dataOwner);
+  }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect("keeps an interrupted private data purge visible until a retry finishes it", () =>
+  Effect.gen(function* () {
+    const f = yield* fixture;
+    const { item, directory, file } = yield* withPrivateFile(f);
+    const remove = f.fs.remove;
+    const entered = yield* Deferred.make<void>();
+    let block = true;
+    using _remove = vi
+      .spyOn(f.fs, "remove")
+      .mockImplementation((target, options) =>
+        block && target === directory
+          ? Deferred.succeed(entered, undefined).pipe(Effect.andThen(Effect.never))
+          : remove(target, options),
+      );
+    const removing = yield* f.plugins
+      .remove({ installationId: item.installationId, deleteData: true })
+      .pipe(Effect.forkChild);
+    yield* Deferred.await(entered);
+    yield* Fiber.interrupt(removing);
+    expect(yield* f.fs.exists(file)).toBe(true);
+    expect((yield* f.plugins.list()).installations).toMatchObject([
+      { installationId: item.installationId, enabled: false, status: "disabled" },
+    ]);
+
+    block = false;
+    yield* f.plugins.remove({ installationId: item.installationId, deleteData: true });
+    expect(yield* f.fs.exists(directory)).toBe(false);
+    expect((yield* f.plugins.list()).installations).toEqual([]);
+  }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect("has already purged private data when the catalogue removal commits", () =>
+  Effect.gen(function* () {
+    const f = yield* fixture;
+    const { item, directory } = yield* withPrivateFile(f);
+    const committed = yield* Deferred.make<boolean>();
+    f.afterUpdate(() =>
+      Effect.gen(function* () {
+        const records = (yield* f.store.read).installations;
+        if (records.some((entry) => entry.installation.installationId === item.installationId))
+          return;
+        f.afterUpdate(undefined);
+        yield* Deferred.succeed(committed, yield* f.fs.exists(directory));
+        return yield* Effect.never;
+      }).pipe(Effect.orDie),
+    );
+    const removing = yield* f.plugins
+      .remove({ installationId: item.installationId, deleteData: true })
+      .pipe(Effect.forkChild);
+    expect(yield* Deferred.await(committed)).toBe(false);
+    yield* Fiber.interrupt(removing);
+    expect(yield* f.fs.exists(directory)).toBe(false);
+    expect((yield* f.plugins.list()).installations).toEqual([]);
+  }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
 it.effect("returns verified image files from the data directory and refuses anything else", () =>
   Effect.gen(function* () {
     const f = yield* fixture;

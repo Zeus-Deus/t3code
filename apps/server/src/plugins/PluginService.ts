@@ -1683,22 +1683,27 @@ const make = Effect.gen(function* () {
       yield* removeSnapshot(input.installationId);
       // Keep a disabled, retryable entry if stopping or removing executable bytes fails.
       if (input.deleteData) {
-        // A reinstall must see the purge, never a removed record with data it can restore.
-        const removedIds = yield* store
-          .update((state) => {
-            const records = state.installations.filter(
-              (record) =>
-                (record.installation.installationId === input.installationId || record.removed) &&
-                (current.rawRecord !== undefined
-                  ? record.installation.installationId === input.installationId
-                  : record.rawRecord === undefined &&
-                    record.installation.manifest.id === current.installation.manifest.id &&
-                    sourceIdentity(record.sourceRequest ?? record.installation.source) ===
-                      sourceIdentity(current.sourceRequest ?? current.installation.source)),
-            );
-            const ids = records.map((record) => record.installation.installationId);
-            return Effect.succeed([
-              { ids, dataKeys: records.map(dataKeyFor) },
+        // Purge while the disabled record still owns the data, then forget it last: a failed or
+        // interrupted purge stays visible and retryable, and a reinstall is refused as a duplicate
+        // until the purge commits, so it never sees a removed record with data it can restore.
+        const records = (yield* read).installations.filter(
+          (record) =>
+            (record.installation.installationId === input.installationId || record.removed) &&
+            (current.rawRecord !== undefined
+              ? record.installation.installationId === input.installationId
+              : record.rawRecord === undefined &&
+                record.installation.manifest.id === current.installation.manifest.id &&
+                sourceIdentity(record.sourceRequest ?? record.installation.source) ===
+                  sourceIdentity(current.sourceRequest ?? current.installation.source)),
+        );
+        const ids = records.map((record) => record.installation.installationId);
+        yield* Effect.forEach(ids, (id) => receipts.prune(id), { discard: true });
+        yield* Effect.forEach(ids, (id) => removeSnapshot(id), { discard: true });
+        yield* Effect.forEach(records.map(dataKeyFor), removeDataDirectory, { discard: true });
+        yield* store
+          .update((state) =>
+            Effect.succeed([
+              undefined,
               {
                 ...state,
                 installations: state.installations.filter(
@@ -1719,12 +1724,9 @@ const make = Effect.gen(function* () {
                   ),
                 ),
               },
-            ] as const);
-          })
+            ] as const),
+          )
           .pipe(Effect.mapError(failure));
-        yield* Effect.forEach(removedIds.ids, (id) => receipts.prune(id), { discard: true });
-        yield* Effect.forEach(removedIds.ids, (id) => removeSnapshot(id), { discard: true });
-        yield* Effect.forEach(removedIds.dataKeys, removeDataDirectory, { discard: true });
       } else {
         yield* update(input.installationId, (record) => ({ ...record, removed: true }));
       }
