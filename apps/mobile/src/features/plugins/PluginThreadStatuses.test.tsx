@@ -85,12 +85,6 @@ async function render() {
       <PluginThreadStatuses environmentId={environmentId} threadId={threadId} projectId={null} />,
     );
   });
-  // Let each status answer land and re-render.
-  for (let index = 0; index < 3; index += 1) {
-    await act(async () => {
-      await Promise.resolve();
-    });
-  }
 }
 
 async function setAppState(state: string) {
