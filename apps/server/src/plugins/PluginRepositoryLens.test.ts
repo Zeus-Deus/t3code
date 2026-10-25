@@ -20,10 +20,7 @@ import type {
 } from "../../../../packages/plugin-sdk/src/index.ts";
 import * as Supervisor from "./PluginSupervisor.ts";
 
-const directory = NodePath.resolve(
-  import.meta.dirname,
-  "../../../../examples/plugins/repository-lens",
-);
+const directory = NodePath.resolve(import.meta.dirname, "fixtures/consumers/repository-lens");
 const Snapshot = Schema.Struct({
   repositoryPath: Schema.String,
   branch: Schema.String,

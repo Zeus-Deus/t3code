@@ -52,8 +52,8 @@
         "scripts/update-test-shard-weights.ts",
         "scripts/verify-background-live.ts",
         "src/provider/testFixtures/*.mjs",
-        // Compatibility tests load the frozen author artifact by filesystem path.
-        "src/plugins/fixtures/*/*.mjs",
+        // Worker tests load plugin artifacts by filesystem path.
+        "src/plugins/fixtures/**/*.mjs",
         // graphqlgen reads its config.
         "graphql.config.ts",
       ],

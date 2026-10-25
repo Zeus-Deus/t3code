@@ -7,7 +7,7 @@ import * as Layer from "effect/Layer";
 
 import * as Supervisor from "./PluginSupervisor.ts";
 
-const examples = NodePath.resolve(import.meta.dirname, "../../../../examples/plugins");
+const examples = NodePath.resolve(import.meta.dirname, "fixtures/consumers");
 const layer = Supervisor.layer.pipe(Layer.provide(NodeServices.layer));
 const configuration = {
   selfInvocation: {

@@ -1,8 +1,8 @@
 # Building a T3 plugin
 
-These packages can be installed directly from their directories. They have no
-build or install scripts. `plugin.mjs` exports `activate(context)`; activation
-registers handlers, while host calls run inside handler invocations.
+Create a separate plugin directory containing a manifest and JavaScript entry.
+`plugin.mjs` exports `activate(context)`; activation registers handlers, while
+host calls run inside handler invocations.
 
 The optional `@t3tools/plugin-sdk` package supplies TypeScript author types.
 Bundle dependencies and compile TypeScript before distributing a plugin. The
@@ -12,8 +12,35 @@ host loads ordinary JavaScript and does not install dependencies for you.
 
 Create `t3-plugin.json` with a stable `publisher.name` identifier, a semantic
 version, `apiVersion: 1`, a relative JavaScript entry, required capabilities, and
-the actions, views, and settings you contribute. Use the example manifests
-as starting points. The host inspects this declaration before evaluating code.
+the actions, views, and settings you contribute. The host inspects this
+declaration before evaluating code.
+
+A minimal `t3-plugin.json`:
+
+```json
+{
+  "id": "yourname.hello",
+  "name": "Hello",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "entry": "plugin.mjs",
+  "capabilities": ["ui"],
+  "actions": [{ "id": "hello", "title": "Say hello", "placements": ["palette"] }],
+  "views": [],
+  "settings": []
+}
+```
+
+Its `plugin.mjs`:
+
+```js
+export function activate(context) {
+  context.handle("action:hello", () => ({ message: "Hello from your plugin." }));
+}
+```
+
+Install that directory through **Settings → Plugins**, review its permissions,
+and enable it. Its action then appears in the command palette.
 
 Use `optionalCapabilities` for features that can be omitted on older hosts,
 and check `ctx.capabilities` before using them. A constraint the host must
@@ -118,8 +145,9 @@ server logs.
 
 Declare a named page or side-panel view, then register its handlers as
 `view:<view-id>:<handler>`. Views use an isolated host bridge to call only their
-own plugin's handlers. See Workflow Board's `view.html` for the bridge handshake
-and error handling. The page has no app stores, native bridge, or bearer token.
+own plugin's handlers. The client injects `window.t3`; await `t3.ready` before
+calling `t3.invoke(name, input)` and use `t3.onContext` to track context changes.
+Handle rejected calls in the view. The page has no app stores, native bridge, or bearer token.
 Use client intents to open links; navigating the frame stops its bridge.
 
 Detect optional bridge features through `t3.features`. With `changes`, register
@@ -226,18 +254,6 @@ Keep your persistent data format versioned and refuse formats you cannot read.
 Retaining an older code revision does not restore storage, files, or external
 effects. The facade API major does not pin the app's Node/Electron runtime;
 avoid assumptions about a particular runtime version.
-
-The examples exercise different boundaries: Quote Helper adds selection actions
-and composer requests; Workflow Board combines storage, events, and thread
-automation; Repository Lens runs read-only Git commands in its Node worker and
-renders the results in a side panel. Repository Lens needs an absolute repository
-path in its settings on the server machine. It does not send messages, modify
-files, or fetch from a remote. Node access comes from trusting the package, not
-from its `ui` or `settings` capabilities.
-Its configured repository is shared across threads in the environment, rather
-than following the current project's path. Git's repository configuration still
-applies, including any clean filters; inspect repositories whose configuration
-you trust.
 
 Within an API major, optional fields can be added. New access to host services
 requires a new capability name; an older host refuses unsupported requirements.

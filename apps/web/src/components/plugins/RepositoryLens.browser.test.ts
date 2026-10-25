@@ -7,7 +7,7 @@ import {
 import type { PluginInvokeResult } from "@t3tools/contracts";
 import { expect, it, vi } from "vite-plus/test";
 
-import viewHtml from "../../../../../examples/plugins/repository-lens/view.html?raw";
+import viewHtml from "../../../../server/src/plugins/fixtures/consumers/repository-lens/view.html?raw";
 
 const TOKEN = "repository-lens-token";
 
@@ -42,7 +42,7 @@ const snapshot = (files: ReadonlyArray<{ path: string; x: string; y: string }>) 
 });
 
 /**
- * Mounts the shipped view behind the real bridge. The frame is left same-origin (production adds
+ * Mounts the consumer fixture behind the real bridge. The frame is left same-origin (production adds
  * `sandbox="allow-scripts"`) only so the test can read and click its DOM.
  */
 function mountView(context: PluginViewContext) {

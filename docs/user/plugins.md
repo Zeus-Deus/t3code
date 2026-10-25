@@ -72,34 +72,6 @@ actions. They use the whole message. Plugin side panels open as full-screen
 views there, and views cannot insert into an off-screen composer; run an
 insertion action from the thread instead.
 
-## Try the examples
-
-The repository's `examples/plugins` directories are complete plugin packages:
-
-- **Quote Helper** inserts a review prompt from selected message text, opens
-  ticket links in the preview, and provides a quote pad beside a thread.
-  Set its ticket URL template for your tracker.
-- **Workflow Board** saves selected text and completed turns in a plugin-owned
-  page. Grant access only to projects it should manage. Automatic review
-  follow-ups are off by default and can be enabled in its settings.
-- **Repository Lens** shows a repository's branch, changed files, diffs, and
-  recent commits beside a thread. Set its repository path to an absolute path
-  on the server machine. It can draft a review request in the composer without
-  sending it, and does not modify the repository or fetch from remotes. On
-  mobile, insert the request from the thread's Plugins menu. The configured
-  repository applies to every thread in that environment; it does not switch
-  automatically with the thread's project.
-- **Projects Tree** groups threads using the public plugin API, including
-  independent launches and related threads. T3 supplies the native rows and
-  keeps unplaced threads reachable.
-- **Task Launcher** lets an agent propose a small task plan as a conversation
-  card. Review the prompts, models, and workspace choices before starting
-  independent threads. A lost launch response is shown as uncertain; inspect
-  your threads before starting that work elsewhere.
-
-Install each example by its absolute directory on the server. The examples stay
-external to the host; editing one requires refreshing its installed snapshot.
-
 ## Updates and compatibility
 
 Plugin packages and data live outside the application bundle. App updates do
@@ -137,5 +109,5 @@ can include large or important resources such as VM disks.
 If you need to start a server without executing plugins, set
 `T3CODE_PLUGINS=0` before launching it. Plugin management remains available.
 
-See the [example author guide](../../examples/plugins/README.md) to build a
-plugin.
+See the [plugin SDK author guide](../../packages/plugin-sdk/README.md) to build
+your own plugin. Plugin packages are distributed separately from T3 Code.

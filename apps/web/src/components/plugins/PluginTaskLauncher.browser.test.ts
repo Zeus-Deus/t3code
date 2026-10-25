@@ -8,7 +8,7 @@ import {
 import type { PluginClientIntent, PluginInvokeResult } from "@t3tools/contracts";
 import { expect, it, vi } from "vite-plus/test";
 
-import viewHtml from "../../../../../examples/plugins/task-launcher/view.html?raw";
+import viewHtml from "../../../../server/src/plugins/fixtures/consumers/task-launcher/view.html?raw";
 
 const TOKEN = "task-launcher-token";
 const CARD_FEATURES: ReadonlyArray<PluginViewBridgeFeature> = [
@@ -94,7 +94,7 @@ const sidePanel: PluginViewContext = {
 };
 
 /**
- * Mounts the shipped view behind the real bridge with the features the context lists. The frame
+ * Mounts the consumer fixture behind the real bridge with the features the context lists. The frame
  * is left same-origin (production adds `sandbox="allow-scripts"`) only so the test can read and
  * drive its DOM.
  */

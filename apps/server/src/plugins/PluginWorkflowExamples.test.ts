@@ -1,4 +1,4 @@
-// @effect-diagnostics nodeBuiltinImport:off -- these fixtures execute the shipped external ESM packages in real Node workers.
+// @effect-diagnostics nodeBuiltinImport:off -- these consumer fixtures execute external ESM packages in real Node workers.
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -26,7 +26,7 @@ import * as Schema from "effect/Schema";
 import * as Supervisor from "./PluginSupervisor.ts";
 import { inspectPluginSource } from "./pluginSource.ts";
 
-const root = NodePath.resolve(import.meta.dirname, "../../../../examples/plugins");
+const root = NodePath.resolve(import.meta.dirname, "fixtures/consumers");
 const source = Schema.decodeUnknownSync(PluginThreadMetadata)({
   id: "source:/one",
   projectId: "project:/one",
