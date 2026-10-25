@@ -31,7 +31,7 @@ settings. Composer and navigation requests affect the client that invoked the
 action. An agent's invocation returns these requests as data and does not change
 another person's interface.
 
-A plugin can also show a short status for the open thread, such as **Realm live**,
+A plugin can also show a short status for the open thread, such as **Realm · Live**,
 in the thread details card (in the thread header while the card is closed, and
 above the composer on mobile); select it to open that plugin's panel for the thread.
 

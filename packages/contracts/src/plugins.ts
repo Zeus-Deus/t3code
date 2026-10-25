@@ -1,6 +1,8 @@
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
+import * as SchemaGetter from "effect/SchemaGetter";
 
 import {
   ForwardCompatibleArray,
@@ -61,13 +63,26 @@ export const PluginView = Schema.Struct({
 });
 export type PluginView = typeof PluginView.Type;
 
+/** Host glyphs a thread status may name; plugins cannot ship their own. */
+export const PLUGIN_THREAD_STATUS_ICONS = [
+  "monitor",
+  "globe",
+  "bot",
+  "terminal",
+  "box",
+  "activity",
+] as const;
+export const PluginThreadStatusIcon = Schema.Literals(PLUGIN_THREAD_STATUS_ICONS);
+export type PluginThreadStatusIcon = typeof PluginThreadStatusIcon.Type;
+
 /**
- * A compact, host-rendered status for the open thread, such as "Realm live". The client asks the
- * plugin's `status:<id>` handler while the thread is visible; activating it opens `viewId`.
+ * A compact, host-rendered status for the open thread, shown as "Realm · Live". The client asks
+ * the plugin's `status:<id>` handler while the thread is visible; activating it opens `viewId`.
  */
 export const PluginThreadStatusItem = Schema.Struct({
   id: identifier,
   title: text(200),
+  icon: Schema.optionalKey(PluginThreadStatusIcon),
   viewId: Schema.optionalKey(identifier),
 });
 export type PluginThreadStatusItem = typeof PluginThreadStatusItem.Type;
@@ -316,6 +331,22 @@ const PluginManifestWire = Schema.Struct({
   // A view using a rule value from a newer host is dropped; the rest of the plugin still loads.
   sidebarViews: Schema.optionalKey(
     ForwardCompatibleArray(PluginSidebarView).check(Schema.isMaxLength(2)),
+  ),
+  threadStatus: Schema.optionalKey(
+    Schema.Array(
+      Schema.Struct({
+        ...PluginThreadStatusItem.fields,
+        // An icon from a newer host is cosmetic, so it falls back to the default glyph.
+        icon: Schema.optionalKey(Schema.Unknown).pipe(
+          Schema.decodeTo(Schema.optionalKey(PluginThreadStatusIcon), {
+            decode: SchemaGetter.transformOptional(
+              Option.filter(Schema.is(PluginThreadStatusIcon)),
+            ),
+            encode: SchemaGetter.passthroughSupertype(),
+          }),
+        ),
+      }),
+    ).check(Schema.isMaxLength(4)),
   ),
 });
 

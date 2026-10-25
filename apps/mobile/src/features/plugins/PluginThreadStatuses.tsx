@@ -84,7 +84,7 @@ function usePluginThreadStatuses(props: {
 }
 
 /**
- * Compact plugin-provided statuses above the composer, such as "Realm live". Nothing renders
+ * Compact plugin-provided statuses above the composer, such as "Realm · Live". Nothing renders
  * until a plugin reports one. A status with a view opens it full screen, as side panels do here.
  */
 export function PluginThreadStatuses(props: {
@@ -109,15 +109,16 @@ export function PluginThreadStatuses(props: {
           status.detail === undefined
             ? entry.installation.manifest.name
             : `${entry.installation.manifest.name}: ${status.detail}`;
-        const accessibilityLabel = `${status.label}. ${description}`;
+        const label = `${entry.item.title} · ${status.label}`;
+        const accessibilityLabel = `${label}. ${description}`;
         return viewId === undefined ? (
           <View key={key} accessible accessibilityLabel={accessibilityLabel}>
-            <Chip label={status.label} />
+            <Chip label={label} />
           </View>
         ) : (
           <Chip
             key={key}
-            label={status.label}
+            label={label}
             accessibilityLabel={accessibilityLabel}
             onPress={() =>
               navigation.navigate("PluginView", {

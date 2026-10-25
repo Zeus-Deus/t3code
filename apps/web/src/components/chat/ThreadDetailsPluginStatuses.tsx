@@ -1,5 +1,19 @@
 import type { PluginThreadStatusValue } from "@t3tools/client-runtime/plugins";
-import type { PluginThreadStatus, ScopedThreadRef } from "@t3tools/contracts";
+import type {
+  PluginThreadStatus,
+  PluginThreadStatusIcon,
+  ScopedThreadRef,
+} from "@t3tools/contracts";
+import {
+  ActivityIcon,
+  BotIcon,
+  BoxIcon,
+  GlobeIcon,
+  MonitorIcon,
+  PuzzleIcon,
+  TerminalIcon,
+  type LucideIcon,
+} from "lucide-react";
 
 import { cn } from "../../lib/utils";
 import {
@@ -11,9 +25,19 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { ThreadDetailsControl } from "./ThreadDetailsControl";
 import { ThreadDetailsSection } from "./ThreadDetailsSection";
 import {
+  THREAD_DETAILS_PANEL_ICON_CLASS,
   THREAD_DETAILS_PANEL_LABEL_CLASS,
   THREAD_DETAILS_PANEL_LOCKED_ROW_CLASS,
 } from "./threadDetailsPanelStyles";
+
+const STATUS_ICON = {
+  monitor: MonitorIcon,
+  globe: GlobeIcon,
+  bot: BotIcon,
+  terminal: TerminalIcon,
+  box: BoxIcon,
+  activity: ActivityIcon,
+} as const satisfies Record<PluginThreadStatusIcon, LucideIcon>;
 
 const TONE_DOT_CLASS = {
   neutral: "bg-muted-foreground/40",
@@ -29,13 +53,20 @@ function PluginStatusRow(props: {
 }) {
   const open = usePluginThreadStatusOpener(props.threadRef, props.value);
   const description = pluginThreadStatusDescription(props.value);
+  const { item } = props.value.entry;
+  const { label, tone } = props.value.status;
+  const Icon = item.icon === undefined ? PuzzleIcon : STATUS_ICON[item.icon];
   const content = (
     <>
-      <span aria-hidden className="inline-flex size-4 shrink-0 items-center justify-center">
-        <span className={cn("size-2 rounded-full", TONE_DOT_CLASS[props.value.status.tone])} />
-      </span>
+      <Icon aria-hidden className={THREAD_DETAILS_PANEL_ICON_CLASS} />
       <span className={cn("min-w-0 flex-1 truncate text-left", THREAD_DETAILS_PANEL_LABEL_CLASS)}>
-        {props.value.status.label}
+        {item.title}
+      </span>
+      {/* Read as "Realm · Live", like the header chip. */}
+      <span className="sr-only"> · </span>
+      <span className="flex min-w-0 max-w-1/2 shrink-0 items-center gap-1.5 text-xs text-muted-foreground">
+        <span aria-hidden className={cn("size-1.5 shrink-0 rounded-full", TONE_DOT_CLASS[tone])} />
+        <span className={cn("truncate", THREAD_DETAILS_PANEL_LABEL_CLASS)}>{label}</span>
       </span>
     </>
   );
@@ -77,7 +108,7 @@ function PluginStatusRow(props: {
   );
 }
 
-/** Plugin-provided statuses for the thread, such as "Realm live", as rows in its details card. */
+/** Plugin-provided statuses for the thread, such as "Realm · Live", as rows in its details card. */
 export function ThreadDetailsPluginStatuses() {
   const context = usePluginThreadStatusesContext();
   if (context === null || context.statuses.length === 0) return null;

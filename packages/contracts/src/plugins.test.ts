@@ -188,6 +188,44 @@ describe("plugin wire compatibility", () => {
     }
   });
 
+  it("validates thread status icons strictly in author manifests", () => {
+    const author = { ...manifest, capabilities: ["ui"], actions: [], views: [] };
+    const status = { id: "realm", title: "Realm" };
+    expect(
+      decodeManifest({ ...author, threadStatus: [status] }).threadStatus?.[0],
+    ).not.toHaveProperty("icon");
+    expect(
+      decodeManifest({ ...author, threadStatus: [{ ...status, icon: "monitor" }] }).threadStatus,
+    ).toEqual([{ ...status, icon: "monitor" }]);
+    for (const icon of ["future-icon", "", 1]) {
+      expect(() => decodeManifest({ ...author, threadStatus: [{ ...status, icon }] })).toThrow();
+    }
+  });
+
+  it("keeps a thread status whose icon comes from a newer host, with the default glyph", () => {
+    const catalogue = decodeCatalogue({
+      installations: [
+        {
+          ...installation,
+          manifest: {
+            ...manifest,
+            threadStatus: [
+              { id: "realm", title: "Realm", icon: "future-icon" },
+              { id: "desk", title: "Desk", icon: "monitor" },
+            ],
+          },
+        },
+      ],
+    });
+    const statuses = catalogue.installations[0]?.manifest.threadStatus;
+    expect(statuses).toEqual([
+      { id: "realm", title: "Realm" },
+      { id: "desk", title: "Desk", icon: "monitor" },
+    ]);
+    expect(statuses?.[0]).not.toHaveProperty("icon");
+    expect(decodeCatalogue(encodeCatalogue(catalogue))).toEqual(catalogue);
+  });
+
   it("preserves independent observer health and tolerant pending update manifests", () => {
     const decoded = decodeCatalogue({
       installations: [

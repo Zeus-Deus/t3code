@@ -49,6 +49,8 @@ export interface PluginManifest {
   readonly threadStatus?: readonly {
     readonly id: string;
     readonly title: string;
+    /** A host glyph shown beside the title; any other name fails install. */
+    readonly icon?: "monitor" | "globe" | "bot" | "terminal" | "box" | "activity";
     /** A declared side-panel view opened when the person activates the status. */
     readonly viewId?: string;
   }[];

@@ -88,7 +88,7 @@ function setup(answer: (input: PluginInvokeInput) => Promise<PluginInvokeResult>
 }
 
 const live: PluginInvokeResult = {
-  data: { label: "Realm live", tone: "success", detail: "1920x1080 desktop. Agent can use it." },
+  data: { label: "Live", tone: "success", detail: "1920x1080 desktop. Agent can use it." },
 };
 
 it("shows the open thread's status and opens its side panel", async () => {
@@ -103,7 +103,7 @@ it("shows the open thread's status and opens its side panel", async () => {
     </PluginThreadStatusesProvider>,
   );
 
-  const status = page.getByRole("button", { name: "Realm live" });
+  const status = page.getByRole("button", { name: "Realm · Live" });
   await expect.element(status).toBeVisible();
   await expect
     .element(status)
@@ -129,11 +129,11 @@ it("hides the status when the plugin answers null", async () => {
       <PluginThreadStatuses />
     </PluginThreadStatusesProvider>,
   );
-  await expect.element(page.getByRole("button", { name: "Realm live" })).toBeVisible();
+  await expect.element(page.getByRole("button", { name: "Realm · Live" })).toBeVisible();
 
   answer = { data: null };
   window.dispatchEvent(new Event("focus"));
-  await expect.element(page.getByRole("button", { name: "Realm live" })).not.toBeInTheDocument();
+  await expect.element(page.getByRole("button", { name: "Realm · Live" })).not.toBeInTheDocument();
   expect(page.getByRole("group", { name: "Plugin status" }).query()).toBeNull();
 });
 
@@ -148,18 +148,18 @@ it("never shows the previous thread's status after switching threads", async () 
       <PluginThreadStatuses />
     </PluginThreadStatusesProvider>,
   );
-  await expect.element(page.getByRole("button", { name: "Realm live" })).toBeVisible();
+  await expect.element(page.getByRole("button", { name: "Realm · Live" })).toBeVisible();
 
   await screen.rerender(
     <PluginThreadStatusesProvider threadRef={threadB}>
       <PluginThreadStatuses />
     </PluginThreadStatusesProvider>,
   );
-  expect(page.getByRole("button", { name: "Realm live" }).query()).toBeNull();
+  expect(page.getByRole("button", { name: "Realm · Live" }).query()).toBeNull();
 
-  releaseB({ data: { label: "Realm off", tone: "neutral" } });
-  await expect.element(page.getByRole("button", { name: "Realm off" })).toBeVisible();
-  expect(page.getByRole("button", { name: "Realm live" }).query()).toBeNull();
+  releaseB({ data: { label: "Off", tone: "neutral" } });
+  await expect.element(page.getByRole("button", { name: "Realm · Off" })).toBeVisible();
+  expect(page.getByRole("button", { name: "Realm · Live" }).query()).toBeNull();
 });
 
 it("lists the status in the thread details card and opens its side panel from there", async () => {
@@ -171,7 +171,7 @@ it("lists the status in the thread details card and opens its side panel from th
     </PluginThreadStatusesProvider>,
   );
 
-  const row = page.getByRole("button", { name: "Realm live" });
+  const row = page.getByRole("button", { name: "Realm · Live" });
   await expect.element(row).toBeVisible();
   await expect
     .element(row)
@@ -200,13 +200,13 @@ it("keeps the status and its poller when the details card opens and closes", asy
     </PluginThreadStatusesProvider>
   );
   await using screen = await render(<Statuses card={false} />);
-  await expect.element(page.getByRole("button", { name: "Realm live" })).toBeVisible();
+  await expect.element(page.getByRole("button", { name: "Realm · Live" })).toBeVisible();
   expect(asked).toHaveLength(1);
 
   await screen.rerender(<Statuses card />);
-  expect(page.getByRole("button", { name: "Realm live" }).query()).not.toBeNull();
+  expect(page.getByRole("button", { name: "Realm · Live" }).query()).not.toBeNull();
   await screen.rerender(<Statuses card={false} />);
-  expect(page.getByRole("button", { name: "Realm live" }).query()).not.toBeNull();
+  expect(page.getByRole("button", { name: "Realm · Live" }).query()).not.toBeNull();
   expect(asked).toHaveLength(1);
 });
 
@@ -222,18 +222,50 @@ it("keeps a card status without a panel readable instead of disabled", async () 
     </PluginThreadStatusesProvider>,
   );
 
-  await expect.element(page.getByText("Realm live")).toBeVisible();
-  expect(page.getByRole("button", { name: "Realm live" }).query()).toBeNull();
-  await expect
-    .element(page.getByText("Realms: 1920x1080 desktop. Agent can use it.", { exact: false }))
-    .toBeInTheDocument();
+  await expect.element(page.getByText("Live", { exact: true })).toBeVisible();
+  expect(page.getByRole("button", { name: "Realm · Live" }).query()).toBeNull();
+  const row = page.getByText("Realm", { exact: true }).element().closest<HTMLElement>("[tabindex]");
+  expect(row).not.toBeNull();
+  expect(row).not.toHaveAttribute("aria-disabled");
+  row!.focus();
+  expect(row).toHaveFocus();
+  expect(row).toHaveTextContent("Realm · Live, Realms: 1920x1080 desktop. Agent can use it.");
+});
+
+it("shows the declared host glyph beside the card title, and the plugin glyph otherwise", async () => {
+  setup(async (input) => ({
+    data: { label: input.handler === "status:desk" ? "Stopped" : "Live", tone: "neutral" },
+  }));
+  state.installation = {
+    ...state.installation!,
+    manifest: {
+      ...state.installation!.manifest,
+      threadStatus: [
+        { id: "realm", title: "Realm", viewId: "realm" },
+        { id: "desk", title: "Desk", icon: "monitor", viewId: "realm" },
+      ],
+    },
+  };
+  await using _screen = await render(
+    <PluginThreadStatusesProvider threadRef={threadA}>
+      <ThreadDetailsPluginStatuses />
+    </PluginThreadStatusesProvider>,
+  );
+
+  const realm = page.getByRole("button", { name: "Realm · Live" });
+  const desk = page.getByRole("button", { name: "Desk · Stopped" });
+  await expect.element(realm).toBeVisible();
+  await expect.element(desk).toBeVisible();
+  expect(realm.element().querySelector("svg.lucide-puzzle")).not.toBeNull();
+  expect(desk.element().querySelector("svg.lucide-monitor")).not.toBeNull();
+  expect(desk.element().querySelector("svg.lucide-puzzle")).toBeNull();
 });
 
 it("asks again at once when the plugin says a shown status changed", async () => {
   const asked: PluginInvokeInput[] = [];
   setup(async (input) => {
     asked.push(input);
-    return asked.length === 1 ? live : { data: { label: "Realm idle", tone: "neutral" } };
+    return asked.length === 1 ? live : { data: { label: "Idle", tone: "neutral" } };
   });
   state.revisions = new Map();
   await using _screen = await render(
@@ -241,7 +273,7 @@ it("asks again at once when the plugin says a shown status changed", async () =>
       <PluginThreadStatuses />
     </PluginThreadStatusesProvider>,
   );
-  await expect.element(page.getByRole("button", { name: "Realm live" })).toBeVisible();
+  await expect.element(page.getByRole("button", { name: "Realm · Live" })).toBeVisible();
 
   // Another topic changing does not ask the plugin again.
   state.revisions = new Map([["inst-realms\0gen-1\0view:realm", 1]]);
@@ -251,6 +283,6 @@ it("asks again at once when the plugin says a shown status changed", async () =>
     ["inst-realms\0gen-1\0status:realm", 1],
   ]);
   for (const listener of state.revisionListeners) listener();
-  await expect.element(page.getByRole("button", { name: "Realm idle" })).toBeVisible();
+  await expect.element(page.getByRole("button", { name: "Realm · Idle" })).toBeVisible();
   expect(asked).toHaveLength(2);
 });

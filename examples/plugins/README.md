@@ -161,6 +161,9 @@ or `danger`, and an optional detail shown as its description. Return
 `{ data: null }` to show nothing. Report current state cheaply and without side
 effects; failures are hidden rather than shown to the user. `viewId` must name
 one of your side-panel views, which opens when the user selects the status.
+The client shows the item's `title` with your label, such as **Realm · Live**,
+so keep the label a short state. An optional `icon` picks a host glyph: `monitor`,
+`globe`, `bot`, `terminal`, `box`, or `activity`; any other name fails install.
 
 ## Sidebar views
 

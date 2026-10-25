@@ -130,6 +130,11 @@ function usePluginThreadStatuses(
   return pluginThreadStatusesFor(values, target, entries);
 }
 
+/** The status as one phrase, such as "Realm · Live". */
+export function pluginThreadStatusText(value: PluginThreadStatusValue) {
+  return `${value.entry.item.title} · ${value.status.label}`;
+}
+
 export function pluginThreadStatusDescription(value: PluginThreadStatusValue) {
   const name = value.entry.installation.manifest.name;
   return value.status.detail === undefined ? name : `${name}: ${value.status.detail}`;
@@ -152,14 +157,15 @@ function PluginThreadStatusChip(props: {
   readonly threadRef: ScopedThreadRef;
   readonly value: PluginThreadStatusValue;
 }) {
-  const { label, tone } = props.value.status;
+  const { tone } = props.value.status;
+  const text = pluginThreadStatusText(props.value);
   const description = pluginThreadStatusDescription(props.value);
   const open = usePluginThreadStatusOpener(props.threadRef, props.value);
   return (
     <Tooltip>
       {open === undefined ? (
         <TooltipTrigger render={<Badge variant={TONE_VARIANT[tone]} />}>
-          {label}
+          {text}
           <span className="sr-only">{`, ${description}`}</span>
         </TooltipTrigger>
       ) : (
@@ -173,7 +179,7 @@ function PluginThreadStatusChip(props: {
             />
           }
         >
-          {label}
+          {text}
         </TooltipTrigger>
       )}
       <TooltipPopup side="bottom">{description}</TooltipPopup>
@@ -209,7 +215,7 @@ export function usePluginThreadStatusesContext(): PluginThreadStatusesValue | nu
 }
 
 /**
- * Compact plugin-provided statuses for the open thread, such as "Realm live", for the header
+ * Compact plugin-provided statuses for the open thread, such as "Realm · Live", for the header
  * while the thread details card is closed. Nothing renders until a plugin reports one, and a
  * failing plugin stays quiet.
  */
