@@ -131,7 +131,7 @@ function usePluginThreadStatuses(
 }
 
 /** The status as one phrase, such as "Realm · Live". */
-export function pluginThreadStatusText(value: PluginThreadStatusValue) {
+function pluginThreadStatusText(value: PluginThreadStatusValue) {
   return `${value.entry.item.title} · ${value.status.label}`;
 }
 

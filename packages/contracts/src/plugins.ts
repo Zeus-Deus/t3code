@@ -64,7 +64,7 @@ export const PluginView = Schema.Struct({
 export type PluginView = typeof PluginView.Type;
 
 /** Host glyphs a thread status may name; plugins cannot ship their own. */
-export const PLUGIN_THREAD_STATUS_ICONS = [
+const PLUGIN_THREAD_STATUS_ICONS = [
   "monitor",
   "globe",
   "bot",
