@@ -365,12 +365,42 @@ function SidebarThreadTooltip({
   );
 }
 
+const projectRowActionClassName =
+  "inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring [&_svg]:size-3.5";
+
+function ProjectRowAction(props: {
+  label: string;
+  onClick: (event: ReactMouseEvent) => void;
+  onPointerDown: (event: ReactPointerEvent) => void;
+  children: ReactNode;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <button
+            type="button"
+            aria-label={props.label}
+            onClick={props.onClick}
+            onPointerDown={props.onPointerDown}
+            className={projectRowActionClassName}
+          />
+        }
+      >
+        {props.children}
+      </TooltipTrigger>
+      <TooltipPopup side="top">{props.label}</TooltipPopup>
+    </Tooltip>
+  );
+}
+
 function SnoozeMenuButton(props: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSnooze: (preset: Pick<SnoozePreset, "snoozedUntil">) => void;
   timestampFormat: TimestampFormat;
   environmentId: EnvironmentId;
+  triggerClassName?: string;
 }) {
   const { open, onOpenChange, onSnooze, timestampFormat, environmentId } = props;
   const presets = open
@@ -389,7 +419,10 @@ function SnoozeMenuButton(props: {
                   aria-label="Snooze thread"
                   onClick={(event) => event.stopPropagation()}
                   onDoubleClick={(event) => event.stopPropagation()}
-                  className="inline-flex h-full cursor-pointer items-center gap-0.5 rounded-md bg-transparent px-1.5 text-xs text-muted-foreground hover:text-foreground"
+                  className={
+                    props.triggerClassName ??
+                    "inline-flex h-full cursor-pointer items-center gap-0.5 rounded-md bg-transparent px-1.5 text-xs text-muted-foreground hover:text-foreground"
+                  }
                 />
               }
             />
@@ -1206,6 +1239,39 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
   if (variant !== "card") {
     const multiline = variant === "folder-multiline";
     const inFolder = variant === "folder" || multiline;
+    const trailingLabel =
+      variantAction === "unsnooze" && props.snoozeWakeLabelText !== null ? (
+        <span className="text-xs text-info-foreground tabular-nums">
+          {props.snoozeWakeLabelText}
+        </span>
+      ) : isWoke ? (
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <button
+                type="button"
+                aria-label="Dismiss Woke notification"
+                onClick={handleAcknowledgeWokeClick}
+                className="inline-flex cursor-pointer items-center gap-1 rounded-sm text-xs font-medium text-warning-foreground outline-none hover:underline focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+              >
+                <AlarmClockIcon aria-hidden className="size-3" />
+                <span role="status">Woke</span>
+              </button>
+            }
+          />
+          <TooltipPopup side="top">Dismiss Woke notification</TooltipPopup>
+        </Tooltip>
+      ) : (
+        <span className="text-xs">
+          <RelativeTimeLabel
+            timestamp={
+              variantAction === "unsettle"
+                ? resolveSettledThreadTimestamp(thread)
+                : threadTimeTimestamp(thread)
+            }
+          />
+        </span>
+      );
     return (
       <li
         data-thread-item={threadKey}
