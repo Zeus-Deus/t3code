@@ -241,14 +241,14 @@ export function SidebarProjectSectionHeader(props: {
   );
 }
 
-/** Folds idle projects behind one row; open for this session only. */
+/** Folds idle projects behind one row atop the bottom shelves; open for this session only. */
 export function SidebarQuietProjectsToggle(props: {
   count: number;
   expanded: boolean;
   onToggle: () => void;
 }) {
   return (
-    <li className="mx-0.5 mt-2 h-8 list-none" data-thread-selection-safe>
+    <li className="mx-0.5 mt-auto h-8 list-none" data-thread-selection-safe>
       <CollapsibleSectionHeader
         expanded={props.expanded}
         onClick={props.onToggle}

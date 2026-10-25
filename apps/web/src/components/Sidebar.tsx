@@ -3544,6 +3544,10 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                         />,
                       ];
                       let projectRowCount = 0;
+                      // The quiet-projects toggle opens the bottom group, so only it takes the
+                      // free space; the shelves below it stay attached.
+                      const quietProjectsToggleShown =
+                        projectLayout !== null && projectLayout.quietSections.length > 0;
                       if (projectLayout !== null) {
                         const renderSection = (section: SidebarProjectSection) => {
                           const tree = section.tree;
@@ -3696,7 +3700,11 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                               <SidebarSectionHeader
                                 key="snoozed-shelf-header"
                                 marker="snoozed-header"
-                                className={cn((projectLayout !== null || workingThreads.length === 0) && "mt-auto")}
+                                className={cn(
+                                  (projectLayout !== null || workingThreads.length === 0) &&
+                                    !quietProjectsToggleShown &&
+                                    "mt-auto",
+                                )}
                                 label="Snoozed"
                                 count={snoozedThreads.length}
                                 hostsUndoNotice={workingThreads.length === 0}
@@ -3714,6 +3722,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                                 marker="settled-header"
                                 className={cn(
                                   (projectLayout !== null || workingThreads.length === 0) &&
+                                    !quietProjectsToggleShown &&
                                     snoozedThreads.length === 0 &&
                                     "mt-auto",
                                 )}
