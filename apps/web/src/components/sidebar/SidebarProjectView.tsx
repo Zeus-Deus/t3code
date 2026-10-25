@@ -18,6 +18,33 @@ import { SidebarHeaderIconButton } from "./SidebarThreadHeader";
 import type { ProjectViewRow } from "./projectView.logic";
 
 const ACTIVITY_VALUE = "activity";
+const ACTIVITY_TITLE = "Activity";
+
+const sameTitle = (left: string, right: string) =>
+  left.trim().toLowerCase() === right.trim().toLowerCase();
+
+/**
+ * Titles are plugins' own words, so two plugins, or a plugin and the built-in list, can both say
+ * "Projects". Only then does a choice name its plugin. The key is the last resort when one plugin
+ * repeats a title, since it is the one name guaranteed to differ.
+ */
+function sidebarChoiceLabels(options: ReadonlyArray<PluginSidebarChoice>) {
+  return new Map(
+    options.map((option) => {
+      const title = pluginSidebarChoiceTitle(option);
+      const twins = options.filter(
+        (other) => other.key !== option.key && sameTitle(pluginSidebarChoiceTitle(other), title),
+      );
+      const owner =
+        twins.length === 0 && !sameTitle(title, ACTIVITY_TITLE)
+          ? null
+          : twins.some((other) => other.pluginName === option.pluginName)
+            ? option.key
+            : option.pluginName;
+      return [option.key, { title, owner, name: owner === null ? title : `${title} (${owner})` }];
+    }),
+  );
+}
 
 /**
  * One offered view toggles directly; several views use a menu without growing the header.
@@ -28,14 +55,15 @@ export function SidebarViewSwitch(props: {
   onSelect: (option: PluginSidebarChoice | null) => void;
 }) {
   if (props.options.length === 0) return null;
+  const labels = sidebarChoiceLabels(props.options);
   const selected = props.options.find((option) => option.key === props.selectedKey);
   const first = props.options[0]!;
   if (props.options.length === 1) {
-    const title = pluginSidebarChoiceTitle(first);
+    const { name } = labels.get(first.key)!;
     return (
       <SidebarHeaderIconButton
-        label={`Toggle ${title} view`}
-        tooltip={selected ? "Show Activity in sidebar" : `Show ${title} in sidebar`}
+        label={`Toggle ${name} view`}
+        tooltip={selected ? "Show Activity in sidebar" : `Show ${name} in sidebar`}
         aria-pressed={selected !== undefined}
         active={selected !== undefined}
         onClick={() => props.onSelect(selected ? null : first)}
@@ -50,7 +78,7 @@ export function SidebarViewSwitch(props: {
         render={
           <SidebarHeaderIconButton
             label="Sidebar view"
-            tooltip={`Sidebar view: ${selected === undefined ? "Activity" : pluginSidebarChoiceTitle(selected)}`}
+            tooltip={`Sidebar view: ${selected === undefined ? ACTIVITY_TITLE : labels.get(selected.key)!.name}`}
           />
         }
       >
@@ -64,13 +92,28 @@ export function SidebarViewSwitch(props: {
           }
         >
           <MenuRadioItem value={ACTIVITY_VALUE} closeOnClick>
-            Activity
+            {ACTIVITY_TITLE}
           </MenuRadioItem>
-          {props.options.map((option) => (
-            <MenuRadioItem key={option.key} value={option.key} closeOnClick>
-              {pluginSidebarChoiceTitle(option)}
-            </MenuRadioItem>
-          ))}
+          {props.options.map((option) => {
+            const { title, owner, name } = labels.get(option.key)!;
+            return (
+              <MenuRadioItem
+                key={option.key}
+                value={option.key}
+                closeOnClick
+                aria-label={owner === null ? undefined : name}
+              >
+                {owner === null ? (
+                  title
+                ) : (
+                  <span className="flex min-w-0 items-center gap-2">
+                    <span className="min-w-0 truncate">{title}</span>
+                    <span className="min-w-0 truncate text-xs text-muted-foreground">{owner}</span>
+                  </span>
+                )}
+              </MenuRadioItem>
+            );
+          })}
         </MenuRadioGroup>
       </MenuPopup>
     </Menu>

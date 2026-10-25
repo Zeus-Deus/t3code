@@ -1,5 +1,8 @@
 import { EnvironmentId, type PluginInstallation } from "@t3tools/contracts";
-import { pluginSidebarChoiceTitle } from "@t3tools/client-runtime/plugins";
+import {
+  isPluginSidebarTreeOption,
+  pluginSidebarChoiceTitle,
+} from "@t3tools/client-runtime/plugins";
 import { page, userEvent } from "vite-plus/test/browser";
 import { describe, expect, it, vi } from "vite-plus/test";
 
@@ -80,6 +83,30 @@ function projectsPlugin(overrides: Partial<PluginInstallation> = {}): PluginInst
   };
 }
 
+function projectsTreePlugin(): PluginInstallation {
+  const installation = projectsPlugin();
+  return {
+    ...installation,
+    installationId: "inst-projects-tree",
+    manifest: {
+      ...installation.manifest,
+      id: "examples.projects-tree",
+      name: "Projects Tree",
+      capabilities: ["ui.native-trees", "threads.read"],
+      sidebarViews: [],
+      nativeTrees: [{ id: "projects", title: "Projects" }],
+    },
+    grants: { capabilities: ["ui.native-trees", "threads.read"], projectIds: [] },
+  };
+}
+
+function withSidebarViews(
+  installation: PluginInstallation,
+  sidebarViews: NonNullable<PluginInstallation["manifest"]["sidebarViews"]>,
+): PluginInstallation {
+  return { ...installation, manifest: { ...installation.manifest, sidebarViews } };
+}
+
 function SidebarList(props: { onRender?: (view: string) => void }) {
   const view = useSidebarView();
   props.onRender?.(view.selected === null ? "Activity" : pluginSidebarChoiceTitle(view.selected));
@@ -98,6 +125,11 @@ function Harness() {
       <output data-testid="rendered-view">
         {view.selected === null ? "Activity" : pluginSidebarChoiceTitle(view.selected)}
       </output>
+      <output data-testid="selected-choice">
+        {view.selected === null
+          ? "activity"
+          : `${isPluginSidebarTreeOption(view.selected) ? "tree" : "view"} ${view.selected.key}`}
+      </output>
       {view.options.length > 0 || view.selected !== null ? (
         <SidebarViewSwitch
           options={view.options}
@@ -110,6 +142,9 @@ function Harness() {
 }
 
 const renderedView = () => page.getByTestId("rendered-view");
+const selectedChoice = () => page.getByTestId("selected-choice");
+const viewMenu = () => page.getByRole("button", { name: "Sidebar view", exact: true });
+const menuChoice = (name: string) => page.getByRole("menuitemradio", { name, exact: true });
 const toggle = () => page.getByRole("button", { name: "Toggle Projects view", exact: true });
 
 describe("sidebar view choice", () => {
@@ -149,13 +184,87 @@ describe("sidebar view choice", () => {
       },
     ]);
     await using _screen = await render(<Harness />);
-    const button = () => page.getByRole("button", { name: "Sidebar view", exact: true });
-    await userEvent.click(button());
-    await userEvent.click(page.getByRole("menuitemradio", { name: "Quiet projects", exact: true }));
+    await userEvent.click(viewMenu());
+    await userEvent.click(menuChoice("Quiet projects"));
     await expect.element(renderedView()).toHaveTextContent("Quiet projects");
-    await userEvent.click(button());
-    await userEvent.click(page.getByRole("menuitemradio", { name: "Activity", exact: true }));
+    await userEvent.click(viewMenu());
+    await userEvent.click(menuChoice("Activity"));
     await expect.element(renderedView()).toHaveTextContent("Activity");
+  });
+
+  it("names the owning plugin when two plugins offer views with the same title", async () => {
+    setup([
+      projectsPlugin({ manifest: { ...projectsPlugin().manifest, id: "zeus-deus.projects" } }),
+      projectsTreePlugin(),
+    ]);
+    await using _screen = await render(<Harness />);
+    await userEvent.click(viewMenu());
+    await expect.element(menuChoice("Activity")).toBeVisible();
+    await expect.element(menuChoice("Projects (Projects)")).toBeVisible();
+    await userEvent.click(menuChoice("Projects (Projects Tree)"));
+    await expect
+      .element(selectedChoice())
+      .toHaveTextContent("tree examples.projects-tree/tree:projects");
+
+    await userEvent.click(viewMenu());
+    await expect
+      .element(menuChoice("Projects (Projects Tree)"))
+      .toHaveAttribute("aria-checked", "true");
+    await expect
+      .element(menuChoice("Projects (Projects)"))
+      .toHaveAttribute("aria-checked", "false");
+    await userEvent.click(menuChoice("Projects (Projects)"));
+    await expect.element(selectedChoice()).toHaveTextContent("view zeus-deus.projects/projects");
+
+    await userEvent.click(viewMenu());
+    await userEvent.click(menuChoice("Activity"));
+    await expect.element(selectedChoice()).toHaveTextContent("activity");
+  });
+
+  it("keeps the built-in Activity distinct from a plugin view titled Activity", async () => {
+    setup([
+      withSidebarViews(projectsPlugin(), [
+        { id: "projects", title: "Projects", groupBy: "project" },
+        { id: "activity", title: "Activity", groupBy: "project" },
+      ]),
+    ]);
+    await using _screen = await render(<Harness />);
+    await userEvent.click(viewMenu());
+    // A unique title stays as the plugin wrote it.
+    await expect.element(menuChoice("Projects")).toBeVisible();
+    await userEvent.click(menuChoice("Activity (Projects)"));
+    await expect.element(selectedChoice()).toHaveTextContent("view t3code.projects/activity");
+
+    await userEvent.click(viewMenu());
+    await expect.element(menuChoice("Activity")).toHaveAttribute("aria-checked", "false");
+    await userEvent.click(menuChoice("Activity"));
+    await expect.element(selectedChoice()).toHaveTextContent("activity");
+  });
+
+  it("tells apart one plugin's view and tree that share a title", async () => {
+    const tree = projectsTreePlugin();
+    setup([
+      {
+        ...tree,
+        manifest: {
+          ...tree.manifest,
+          id: "t3code.projects",
+          name: "Projects",
+          sidebarViews: [{ id: "projects", title: "Projects", groupBy: "project" }],
+        },
+        grants: {
+          capabilities: ["ui.sidebar-views", "ui.native-trees", "threads.read"],
+          projectIds: [],
+        },
+      },
+    ]);
+    await using _screen = await render(<Harness />);
+    await userEvent.click(viewMenu());
+    await userEvent.click(menuChoice("Projects (t3code.projects/tree:projects)"));
+    await expect.element(selectedChoice()).toHaveTextContent("tree t3code.projects/tree:projects");
+    await userEvent.click(viewMenu());
+    await userEvent.click(menuChoice("Projects (t3code.projects/projects)"));
+    await expect.element(selectedChoice()).toHaveTextContent("view t3code.projects/projects");
   });
 
   it("falls back while the plugin is unavailable and restores the remembered choice", async () => {
