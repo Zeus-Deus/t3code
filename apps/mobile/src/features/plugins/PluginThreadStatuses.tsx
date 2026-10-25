@@ -1,6 +1,8 @@
 import { useIsFocused, useNavigation } from "@react-navigation/native";
 import {
   createPluginThreadStatusPoller,
+  pluginChangeKey,
+  pluginStatusTopic,
   pluginRunnableInstallations,
   pluginThreadStatusEntries,
   pluginThreadStatusesFor,
@@ -18,7 +20,11 @@ import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { AppState, ScrollView, View } from "react-native";
 
 import { Chip } from "../../components/ui/Chip";
-import { pluginEnvironment, usePluginCatalogue } from "../../state/plugins";
+import {
+  pluginEnvironment,
+  usePluginCatalogue,
+  usePluginChangeRevisions,
+} from "../../state/plugins";
 import { useEnvironmentScope } from "../../state/session";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { newPluginOperationId } from "./usePluginActions";
@@ -76,6 +82,29 @@ function usePluginThreadStatuses(props: {
   useEffect(() => {
     poller?.update({ target, entries, visible: focused && appActive });
   });
+  // A plugin that says a shown status changed is asked again now, not at the next poll.
+  const revisions = usePluginChangeRevisions(entries.length > 0 ? props.environmentId : null);
+  const statusRevision =
+    revisions === null
+      ? null
+      : entries
+          .map(
+            ({ installation, item }) =>
+              revisions.get(
+                pluginChangeKey({
+                  installationId: installation.installationId,
+                  generation: installation.generation,
+                  topic: pluginStatusTopic(item.id),
+                }),
+              ) ?? 0,
+          )
+          .join(",");
+  const seenStatusRevision = useRef(statusRevision);
+  useEffect(() => {
+    const seen = seenStatusRevision.current;
+    seenStatusRevision.current = statusRevision;
+    if (seen !== null && statusRevision !== null && seen !== statusRevision) poller?.refresh();
+  }, [poller, statusRevision]);
   const values = useSyncExternalStore(
     poller?.subscribe ?? noSubscription,
     poller?.getSnapshot ?? noValues,

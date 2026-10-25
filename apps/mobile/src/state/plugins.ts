@@ -14,6 +14,7 @@ import {
   pluginRunnableInstallations,
   type PluginActionEntry,
   type PluginActionPlacement,
+  type PluginChangeRevisions,
 } from "@t3tools/client-runtime/plugins";
 import { createPluginEnvironmentAtoms } from "@t3tools/client-runtime/state/plugins";
 import {
@@ -235,12 +236,45 @@ const pluginTreeViewSourcesFamily = Atom.family((key: string) =>
 export const pluginTreeViewSourcesAtom = (environmentIds: ReadonlyArray<EnvironmentId>) =>
   pluginTreeViewSourcesFamily(environmentIds.join("\n"));
 
+// Undefined while the subscription has not reported its first count. A failed subscription
+// counts as none, so readers fall back to reading once.
+function usePluginChangeSubscription(
+  environmentId: EnvironmentId | null,
+): PluginChangeRevisions | null | undefined {
+  const presentations = useAtomValue(environmentPresentations.presentationsAtom);
+  const presentation = environmentId === null ? undefined : presentations.get(environmentId);
+  const canRead = useEnvironmentScope(environmentId, AuthOrchestrationReadScope);
+  const capabilities = presentation?.serverConfig?.environment.capabilities;
+  const subscribed =
+    environmentId !== null &&
+    canRead &&
+    presentation?.connection.phase === "connected" &&
+    environmentSupportsPlugins(capabilities) &&
+    pluginChangesSupported(capabilities);
+  const query = useEnvironmentQuery(
+    subscribed ? pluginEnvironment.changes({ environmentId, input: {} }) : null,
+  );
+  if (!subscribed) return null;
+  if (query.data !== null) return query.data;
+  return query.error === null ? undefined : null;
+}
+
 /**
- * How often a plugin topic changed since this client subscribed, or null where the environment
- * sends no change signals. Pass null while nothing is shown, so hidden views hold no subscription.
- * Any difference from the value last acted on, including a reset after reconnecting, means read
- * again. Undefined until the subscription first reports: a snapshot read waits for that count, so
- * it follows the subscription instead of racing ahead of it. A failed subscription counts as none.
+ * Change counts for an environment's plugin topics since this client subscribed, or null where
+ * the environment sends no change signals. Pass null while nothing is shown, so hidden views keep
+ * no subscription. Compare a topic's count with the value last acted on: any difference,
+ * including a reset after reconnecting, means read again.
+ */
+export function usePluginChangeRevisions(
+  environmentId: EnvironmentId | null,
+): PluginChangeRevisions | null {
+  return usePluginChangeSubscription(environmentId) ?? null;
+}
+
+/**
+ * One topic's count from `usePluginChangeRevisions`, or undefined until the subscription first
+ * reports. A snapshot read waits for that first count, so it follows the subscription instead of
+ * racing ahead of it, and the first count is not itself a change.
  */
 export function usePluginChangeRevision(
   environmentId: EnvironmentId | null,
@@ -250,21 +284,8 @@ export function usePluginChangeRevision(
     readonly topic: string;
   } | null,
 ): number | null | undefined {
-  const presentations = useAtomValue(environmentPresentations.presentationsAtom);
-  const presentation = environmentId === null ? undefined : presentations.get(environmentId);
-  const canRead = useEnvironmentScope(environmentId, AuthOrchestrationReadScope);
-  const capabilities = presentation?.serverConfig?.environment.capabilities;
-  const subscribed =
-    environmentId !== null &&
-    topic !== null &&
-    canRead &&
-    presentation?.connection.phase === "connected" &&
-    environmentSupportsPlugins(capabilities) &&
-    pluginChangesSupported(capabilities);
-  const query = useEnvironmentQuery(
-    subscribed ? pluginEnvironment.changes({ environmentId, input: {} }) : null,
-  );
-  if (!subscribed) return null;
-  if (query.data === null) return query.error === null ? undefined : null;
-  return query.data.get(pluginChangeKey(topic)) ?? 0;
+  const revisions = usePluginChangeSubscription(topic === null ? null : environmentId);
+  if (revisions === null || topic === null) return null;
+  if (revisions === undefined) return undefined;
+  return revisions.get(pluginChangeKey(topic)) ?? 0;
 }
