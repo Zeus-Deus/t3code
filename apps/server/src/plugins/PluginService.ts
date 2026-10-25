@@ -441,13 +441,20 @@ const make = Effect.gen(function* () {
                     !record.removed &&
                     pluginCapabilityAllowed(record.installation, actor, "threads.read", projectId),
                 )
-                .flatMap(({ installation }) =>
-                  (installation.manifest.nativeTrees ?? []).map((tree) => ({
+                .flatMap(({ installation }) => [
+                  ...(installation.manifest.nativeTrees ?? []).map((tree) => ({
                     installationId: installation.installationId,
                     generation: installation.generation,
                     topic: `tree:${tree.id}`,
                   })),
-                );
+                  ...(pluginCapabilityAllowed(installation, actor, "ui")
+                    ? (installation.manifest.threadStatus ?? []).map((status) => ({
+                        installationId: installation.installationId,
+                        generation: installation.generation,
+                        topic: `status:${status.id}`,
+                      }))
+                    : []),
+                ]);
             }),
           ),
           Stream.flatMap(Stream.fromIterable),

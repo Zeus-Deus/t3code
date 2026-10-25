@@ -5898,7 +5898,7 @@ it.effect("coalesces payload-free contribution invalidations and revokes session
 );
 
 it.effect(
-  "invalidates native grouping on distinct run and attention edges without reading streamed updates",
+  "invalidates native grouping and statuses on distinct run and attention edges without reading streamed updates",
   () =>
     Effect.gen(function* () {
       const f = yield* fixture;
@@ -5998,7 +5998,82 @@ it.effect(
       yield* Deferred.await(drained);
       yield* TestClock.adjust("25 millis");
       expect(f.shellReads).toHaveLength(5);
-      expect(yield* Queue.size(changes)).toBe(1);
-      expect((yield* Queue.take(changes)).topic).toBe("tree:native");
+      expect(yield* Queue.size(changes)).toBe(2);
+      expect(
+        new Set([(yield* Queue.take(changes)).topic, (yield* Queue.take(changes)).topic]),
+      ).toEqual(new Set(["tree:native", "status:lane"]));
+    }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect.each([
+  { type: "thread.snoozed", access: "allowed" },
+  { type: "thread.unsnoozed", access: "allowed" },
+  { type: "thread.deleted", access: "allowed" },
+  { type: "thread.visited", access: "allowed" },
+  { type: "thread.snoozed", access: "no-ui" },
+  { type: "thread.snoozed", access: "no-thread-read" },
+  { type: "thread.snoozed", access: "plugin-project" },
+  { type: "thread.snoozed", access: "actor-project" },
+] as const)(
+  "invalidates status-only contributions for $type with $access access",
+  ({ type, access }) =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      const capabilities = ["ui", "threads.read"] as const;
+      yield* f.fs.writeFileString(
+        f.path.join(f.directory, "t3-plugin.json"),
+        yield* encodeJson({ ...manifest, capabilities, actions: [], views: [] }),
+      );
+      const installed = yield* f.install();
+      const granted = capabilities.filter(
+        (capability) =>
+          !(access === "no-ui" && capability === "ui") &&
+          !(access === "no-thread-read" && capability === "threads.read"),
+      );
+      const enabled = yield* f.plugins.consent({
+        installationId: installed.installationId,
+        digest: installed.digest,
+        grants: {
+          capabilities: granted,
+          projectIds: access === "plugin-project" ? [] : [projectId],
+        },
+      });
+      const drained = yield* Deferred.make<void>();
+      const event: OrchestrationV2StoredEvent = {
+        sequence: 50,
+        commandId: null,
+        event: {
+          id: EventId.make(`event:status:${type}`),
+          threadId,
+          occurredAt: at,
+          type,
+          payload: { ...shell, lastVisitedAt: null },
+        },
+      };
+      f.setLive(() =>
+        Stream.make(event).pipe(Stream.ensuring(Deferred.succeed(drained, undefined))),
+      );
+      const changes = yield* Queue.unbounded<import("@t3tools/contracts").PluginChanged>();
+      yield* f.plugins
+        .subscribeChanges({
+          ...actor,
+          projectIds: access === "actor-project" ? [ProjectId.make("project:other")] : [projectId],
+        })
+        .pipe(
+          Stream.runForEach((change) => Queue.offer(changes, change)),
+          Effect.forkChild,
+        );
+      if (granted.includes("ui")) expect((yield* Queue.take(changes)).topic).toBe("status:lane");
+      yield* Deferred.await(drained);
+      yield* TestClock.adjust("25 millis");
+      const shouldNotify = access === "allowed" && type !== "thread.visited";
+      expect(yield* Queue.size(changes)).toBe(shouldNotify ? 1 : 0);
+      if (shouldNotify)
+        expect(yield* Queue.take(changes)).toEqual({
+          installationId: enabled.installationId,
+          generation: enabled.generation,
+          topic: "status:lane",
+        });
+      expect(f.shellReads).toEqual([]);
     }).pipe(Effect.provide(base()), Effect.scoped),
 );
