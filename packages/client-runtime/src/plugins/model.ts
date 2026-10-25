@@ -498,7 +498,12 @@ export function parsePluginSourceInput(raw: string): PluginSourceParseResult {
     if (url.username !== "" || url.password !== "") {
       return { ok: false, message: "Remove credentials from the URL." };
     }
-    const ref = decodeURIComponent(url.hash.slice(1)).trim();
+    let ref: string;
+    try {
+      ref = decodeURIComponent(url.hash.slice(1)).trim();
+    } catch {
+      return { ok: false, message: "That Git ref is not valid." };
+    }
     url.hash = "";
     return {
       ok: true,

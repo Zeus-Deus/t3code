@@ -262,6 +262,26 @@ describe("parsePluginSourceInput", () => {
       ok: true,
       source: { kind: "git", url: "https://github.com/acme/board.git", ref: "v1.2.0" },
     });
+    expect(parsePluginSourceInput("https://github.com/acme/board.git#release%2Fv1")).toEqual({
+      ok: true,
+      source: { kind: "git", url: "https://github.com/acme/board.git", ref: "release/v1" },
+    });
+    expect(parsePluginSourceInput("https://github.com/acme/board.git# ")).toEqual({
+      ok: true,
+      source: { kind: "git", url: "https://github.com/acme/board.git" },
+    });
+  });
+
+  it("refuses a malformed percent-encoded Git ref instead of throwing", () => {
+    for (const value of [
+      "https://example.invalid/plugin.git#release%",
+      "https://example.invalid/plugin.git#%E0%A4",
+    ]) {
+      expect(parsePluginSourceInput(value)).toEqual({
+        ok: false,
+        message: "That Git ref is not valid.",
+      });
+    }
   });
 
   it("refuses relative paths, plain http, and embedded credentials", () => {
