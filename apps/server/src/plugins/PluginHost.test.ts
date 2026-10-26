@@ -2650,3 +2650,19 @@ it.effect.each(["empty", "disabled"] as const)(
       expect(f.launchInputs).toEqual([]);
     }).pipe(Effect.provide(base()), Effect.scoped),
 );
+
+it.effect.each([
+  { title: "Shelf", expected: "Shelf" },
+  { title: undefined, expected: "Plugin thread" },
+])("keeps the requested title $title and retains message provenance", ({ title, expected }) =>
+  Effect.gen(function* () {
+    const f = yield* fixture;
+    yield* f.host.call(f.invocation, "threads.create", {
+      ...f.request,
+      ...(title === undefined ? {} : { title }),
+    });
+    expect(f.launchInputs[0]?.title).toBe(expected);
+    expect(f.launchInputs[0]?.creationSource).toBe("server");
+    expect(f.launchInputs[0]?.initialMessage?.text).toBe("[Plugin: Test]\nSame request");
+  }).pipe(Effect.provide(base()), Effect.scoped),
+);

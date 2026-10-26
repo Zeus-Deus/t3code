@@ -698,7 +698,7 @@ const make = Effect.gen(function* () {
                 commandId: CommandId.make(commandKey),
                 threadId: ThreadId.make(`${commandKey}:thread`),
                 projectId: request.projectId,
-                title: `[${installation.manifest.name}] ${request.title ?? "Plugin thread"}`,
+                title: request.title ?? "Plugin thread",
                 modelSelection,
                 runtimeMode,
                 interactionMode,

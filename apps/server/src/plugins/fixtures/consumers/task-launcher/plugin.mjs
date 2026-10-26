@@ -246,7 +246,7 @@ export function activate(ctx) {
           taskId: task.id,
           request: {
             projectId: plan.projectId,
-            title: task.title,
+            title: `[Task Launcher] ${task.title}`,
             text: task.prompt,
             idempotencyKey: `launch-${task.id}`,
             ...choices(item, plan.defaults, ctx.capabilities.includes("worktrees.create")),

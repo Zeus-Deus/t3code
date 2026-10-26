@@ -173,7 +173,7 @@ export function state(value) {
         if (
           !record(request) ||
           request.projectId !== plan.projectId ||
-          request.title !== task.title ||
+          (request.title !== task.title && request.title !== `[Task Launcher] ${task.title}`) ||
           request.text !== task.prompt ||
           request.idempotencyKey !== `launch-${task.id}`
         )
