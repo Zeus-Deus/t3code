@@ -191,6 +191,8 @@ const fixture = Effect.gen(function* () {
   });
   let beforeLaunch: (commandId: CommandId) => Effect.Effect<void, Launch.ThreadLaunchError> = () =>
     Effect.void;
+  let projectDefaultModelSelection: OrchestrationV2ThreadShell["modelSelection"] | null =
+    shell.modelSelection;
   const projectShell = {
     id: projectId,
     title: "Test",
@@ -244,7 +246,7 @@ const fixture = Effect.gen(function* () {
               id: projectId,
               title: "Test",
               workspaceRoot: "/fixture",
-              defaultModelSelection: shell.modelSelection,
+              defaultModelSelection: projectDefaultModelSelection,
               scripts: [],
               createdAt: "2026-10-23T12:00:00.000Z",
               updatedAt: "2026-10-23T12:00:00.000Z",
@@ -332,6 +334,9 @@ const fixture = Effect.gen(function* () {
     settings: Context.get(context, Settings.ServerSettingsService),
     setListedThreads: (value: typeof listedThreads) => {
       listedThreads = value;
+    },
+    setProjectDefaultModelSelection: (value: typeof projectDefaultModelSelection) => {
+      projectDefaultModelSelection = value;
     },
     setCatalog: (value: typeof catalog) => {
       catalog = value;
@@ -2577,5 +2582,71 @@ it.effect.each(["storage.set", "storage.delete"] as const)(
       yield* Deferred.succeed(releaseLock, undefined);
       yield* Fiber.join(owner);
       expect((yield* f.store.read).installations[0]?.storage.board).toBe("before");
+    }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect(
+  "creates with the automatic catalog default when neither project nor machine saved a model",
+  () =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      f.setProjectDefaultModelSelection(null);
+      yield* f.settings.updateSettings({ defaultModelSelection: null });
+      const catalog = yield* f.registry.getProviders;
+      f.setCatalog([
+        {
+          ...catalog[0]!,
+          models: [
+            { slug: "other", name: "Other", isCustom: false, capabilities: null },
+            {
+              slug: "automatic",
+              name: "Automatic",
+              isCustom: false,
+              isDefault: true,
+              capabilities: null,
+            },
+          ],
+        },
+      ]);
+      yield* f.host.call(f.invocation, "threads.create", f.request);
+      expect(f.launchInputs[0]?.modelSelection).toEqual({
+        instanceId: "codex",
+        model: "automatic",
+      });
+    }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect.each(["request", "caller", "project", "machine"] as const)(
+  "preserves the %s model ahead of automatic selection",
+  (source) =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      if (source !== "project") f.setProjectDefaultModelSelection(null);
+      yield* f.settings.updateSettings({
+        defaultModelSelection: source === "machine" ? f.shell.modelSelection : null,
+      });
+      f.setCatalog([]);
+      const invocation =
+        source === "caller" ? { ...f.invocation, context: { threadId: f.shell.id } } : f.invocation;
+      const request =
+        source === "request" ? { ...f.request, modelSelection: f.shell.modelSelection } : f.request;
+      yield* f.host.call(invocation, "threads.create", request);
+      expect(f.launchInputs[0]?.modelSelection).toEqual(f.shell.modelSelection);
+    }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect.each(["empty", "disabled"] as const)(
+  "does not invent a model for an %s catalog",
+  (state) =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      f.setProjectDefaultModelSelection(null);
+      yield* f.settings.updateSettings({ defaultModelSelection: null });
+      if (state === "empty") f.setCatalog([]);
+      else f.setModelEnabled(false);
+      expect(
+        yield* f.host.call(f.invocation, "threads.create", f.request).pipe(Effect.result),
+      ).toMatchObject({ _tag: "Failure", failure: { reason: "invalid_input" } });
+      expect(f.launchInputs).toEqual([]);
     }).pipe(Effect.provide(base()), Effect.scoped),
 );

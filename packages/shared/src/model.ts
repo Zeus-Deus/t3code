@@ -1,4 +1,6 @@
 import {
+  DEFAULT_MODEL_BY_PROVIDER,
+  type ServerProvider,
   type CustomModelSetting,
   MODEL_SLUG_ALIASES_BY_PROVIDER,
   ModelCapabilities,
@@ -521,4 +523,37 @@ export function applyClaudePromptEffortPrefix(
     return trimmed;
   }
   return `Ultrathink:\n${trimmed}`;
+}
+
+export function getDefaultProviderInstanceModel(
+  providers: ReadonlyArray<ServerProvider>,
+  instanceId: ProviderInstanceId,
+): string | undefined {
+  const provider = providers.find((entry) => entry.instanceId === instanceId);
+  if (!provider) return undefined;
+  return (
+    provider.models.find((model) => model.isDefault && !model.isCustom)?.slug ??
+    provider.models.find((model) => !model.isCustom)?.slug ??
+    provider.models[0]?.slug ??
+    DEFAULT_MODEL_BY_PROVIDER[provider.driver]
+  );
+}
+
+export function resolveDefaultProviderModelSelection(
+  providers: ReadonlyArray<ServerProvider>,
+  selection: ModelSelection | null | undefined,
+): ModelSelection | null {
+  const selectable = (provider: ServerProvider) =>
+    provider.enabled && provider.availability !== "unavailable";
+  const requested = providers.find(
+    (provider) => provider.instanceId === selection?.instanceId && selectable(provider),
+  );
+  const provider =
+    requested ??
+    providers.find((provider) => selectable(provider) && provider.status === "ready") ??
+    providers.find((provider) => selectable(provider) && provider.status !== "error");
+  if (!provider) return null;
+  if (selection?.instanceId === provider.instanceId) return selection;
+  const model = getDefaultProviderInstanceModel(providers, provider.instanceId);
+  return model ? { instanceId: provider.instanceId, model } : null;
 }

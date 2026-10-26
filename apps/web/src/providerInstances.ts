@@ -1,6 +1,5 @@
 import { pipe } from "effect/Function";
 import {
-  DEFAULT_MODEL_BY_PROVIDER,
   defaultInstanceIdForDriver,
   resolveProjectProviderInstanceEnabled,
   type ModelSelection,
@@ -182,27 +181,6 @@ function sortProviderInstanceEntries(
   return sorted;
 }
 
-function getProviderInstanceEntry(
-  providers: ReadonlyArray<ServerProvider>,
-  instanceId: ProviderInstanceId,
-): ProviderInstanceEntry | undefined {
-  return deriveProviderInstanceEntries(providers).find((entry) => entry.instanceId === instanceId);
-}
-
-export function getDefaultProviderInstanceModel(
-  providers: ReadonlyArray<ServerProvider>,
-  instanceId: ProviderInstanceId,
-): string | undefined {
-  const entry = getProviderInstanceEntry(providers, instanceId);
-  if (!entry) return undefined;
-  return (
-    entry.models.find((model) => model.isDefault && !model.isCustom)?.slug ??
-    entry.models.find((model) => !model.isCustom)?.slug ??
-    entry.models[0]?.slug ??
-    DEFAULT_MODEL_BY_PROVIDER[entry.driverKind]
-  );
-}
-
 const isSelectableProviderInstanceEntry = (entry: ProviderInstanceEntry): boolean =>
   entry.enabled && entry.isAvailable;
 
@@ -230,13 +208,7 @@ export function resolveSelectableProviderInstance(
   return resolveSelectableProviderInstanceEntry(entries, instanceId)?.instanceId;
 }
 
-export function resolveDefaultProviderModelSelection(
-  providers: ReadonlyArray<ServerProvider>,
-  selection: ModelSelection | null | undefined,
-): ModelSelection | null {
-  const instanceId = resolveSelectableProviderInstance(providers, selection?.instanceId);
-  if (instanceId === undefined) return null;
-  if (selection?.instanceId === instanceId) return selection;
-  const model = getDefaultProviderInstanceModel(providers, instanceId);
-  return model ? { instanceId, model } : null;
-}
+export {
+  getDefaultProviderInstanceModel,
+  resolveDefaultProviderModelSelection,
+} from "@t3tools/shared/model";

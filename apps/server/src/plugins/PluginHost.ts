@@ -32,6 +32,7 @@ import { DispatchModeLimit } from "../orchestration-v2/DispatchModeLimit.ts";
 import * as ThreadLaunch from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import { resolveDefaultProviderModelSelection } from "@t3tools/shared/model";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import * as Option from "effect/Option";
 import * as PluginReceipts from "./PluginReceipts.ts";
@@ -639,11 +640,21 @@ const make = Effect.gen(function* () {
           request.projectId,
           project.value,
         ).settings;
-        const modelSelection =
+        let modelSelection =
           request.modelSelection ??
           caller?.modelSelection ??
           defaults.defaultModelSelection ??
           undefined;
+        if (modelSelection === undefined) {
+          const catalog = yield* providers.getProviders;
+          const enabled = yield* Effect.filter(catalog, (provider) =>
+            threads.isProviderInstanceEnabledForProject({
+              projectId: request.projectId,
+              instanceId: provider.instanceId,
+            }),
+          );
+          modelSelection = resolveDefaultProviderModelSelection(enabled, null) ?? undefined;
+        }
         if (modelSelection === undefined)
           return yield* new PluginError({
             reason: "invalid_input",
