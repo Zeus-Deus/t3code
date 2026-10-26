@@ -1,10 +1,13 @@
 import { EnvironmentId, ProjectId, ThreadId, type PluginTreeNode } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
+import { scopeThreadRef } from "../environment/scoped.ts";
+
 import {
   buildPluginTreeLayout,
   PLUGIN_TREE_OTHER_SECTION_KEY,
   pluginTreeNotice,
+  pluginTreeFamilyRoots,
   pluginTreeThreadKeys,
   togglePluginTreeFold,
 } from "./nativeTrees.ts";
@@ -23,7 +26,7 @@ const thread = (id: string, environmentId = local, parent: string | null = null)
   environmentId,
   lineage: { parentThreadId: parent === null ? null : ThreadId.make(id === parent ? id : parent) },
 });
-const key = (entry: Thread) => `${entry.environmentId}:${entry.id}`;
+const key = (entry: Pick<Thread, "id" | "environmentId">) => `${entry.environmentId}:${entry.id}`;
 
 const group = (id: string, title: string, parentId?: string, collapsed?: boolean): PluginTreeNode =>
   ({
@@ -92,6 +95,120 @@ const outline = (result: ReturnType<typeof layout>) =>
       );
     return `${"  ".repeat(section.depth)}${title}${section.folded ? " (folded)" : ""} ${section.count}: ${JSON.stringify(rows(section.rows))}`;
   });
+
+describe("pluginTreeFamilyRoots", () => {
+  const listed = (id: string, root: string, environmentId = local) => ({
+    id: ThreadId.make(id),
+    environmentId,
+    lineage: { rootThreadId: ThreadId.make(root) },
+  });
+
+  it("loads a missing worker through its nearest listed ancestor, across headings and missing rows", () => {
+    expect(
+      pluginTreeFamilyRoots({
+        sources: [
+          {
+            environmentId: local,
+            nodes: [
+              placed("worker", "idle-worker", "missing-parent"),
+              placed("missing-parent", "idle-parent", "shelf"),
+              group("shelf", "Review", "coordinator"),
+              placed("coordinator", "coordinator", "unrelated"),
+              placed("unrelated", "unrelated"),
+            ],
+          },
+        ],
+        threads: [listed("coordinator", "family-root"), listed("unrelated", "other-root")],
+      }),
+    ).toEqual([scopeThreadRef(local, ThreadId.make("family-root"))]);
+  });
+
+  it("mounts each root once per environment and never borrows another environment's ancestor", () => {
+    const nodes = [
+      placed("root", "root"),
+      placed("one", "one", "root"),
+      placed("two", "two", "root"),
+    ];
+    expect(
+      pluginTreeFamilyRoots({
+        sources: [
+          { environmentId: local, nodes },
+          { environmentId: local, nodes },
+          { environmentId: remote, nodes },
+        ],
+        threads: [listed("root", "root"), listed("root", "root", remote)],
+      }),
+    ).toEqual([
+      scopeThreadRef(local, ThreadId.make("root")),
+      scopeThreadRef(remote, ThreadId.make("root")),
+    ]);
+    expect(
+      pluginTreeFamilyRoots({
+        sources: [{ environmentId: remote, nodes }],
+        threads: [listed("root", "root")],
+      }),
+    ).toEqual([]);
+  });
+
+  it("does not load fully listed trees, unanchored references or malformed parent chains", () => {
+    expect(
+      pluginTreeFamilyRoots({
+        sources: [
+          {
+            environmentId: local,
+            nodes: [
+              placed("root", "root"),
+              placed("listed", "listed", "root"),
+              placed("unanchored", "unanchored"),
+              placed("broken", "broken", "absent"),
+              placed("cycle-a", "cycle-a", "cycle-b"),
+              group("cycle-b", "Cycle", "cycle-a"),
+            ],
+          },
+        ],
+        threads: [listed("root", "root"), listed("listed", "root")],
+      }),
+    ).toEqual([]);
+    expect(pluginTreeFamilyRoots({ sources: [], threads: [listed("root", "root")] })).toEqual([]);
+  });
+
+  it("keeps a loaded family mounted while its placed workers are still missing from the shell", () => {
+    const root = listed("root", "root");
+    const parent = listed("parent", "root");
+    const worker = listed("worker", "root");
+    const sources = [
+      {
+        environmentId: local,
+        nodes: [
+          placed("root", "root"),
+          placed("parent", "parent", "root"),
+          placed("worker", "worker", "parent"),
+        ],
+      },
+    ];
+    const shellThreadKeys = new Set([key(root)]);
+    const before = pluginTreeFamilyRoots({ sources, threads: [root], shellThreadKeys });
+    expect(before).toEqual([scopeThreadRef(local, root.id)]);
+    expect(
+      pluginTreeFamilyRoots({ sources, threads: [root, parent, worker], shellThreadKeys }),
+    ).toEqual(before);
+    expect(
+      pluginTreeFamilyRoots({
+        sources,
+        threads: [root, parent, worker],
+        shellThreadKeys: new Set([root, parent, worker].map(key)),
+      }),
+    ).toEqual([]);
+    // An ancestor loaded from a shelf or the route can anchor a tree that does not place the root.
+    expect(
+      pluginTreeFamilyRoots({
+        sources: [{ environmentId: local, nodes: sources[0]!.nodes.slice(1) }],
+        threads: [root, parent],
+        shellThreadKeys,
+      }),
+    ).toEqual(before);
+  });
+});
 
 describe("buildPluginTreeLayout", () => {
   it("nests groups, projects and display children in the plugin's order", () => {

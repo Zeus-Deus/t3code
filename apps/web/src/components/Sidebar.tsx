@@ -4,6 +4,7 @@ import type { EnvironmentServerConfig } from "@t3tools/client-runtime/connection
 import {
   buildPluginTreeLayout,
   isPluginSidebarTreeOption,
+  pluginTreeFamilyRoots,
   type PluginTreeHeading,
   type PluginTreeSection,
   type PluginTreeSource,
@@ -150,7 +151,8 @@ import {
 import { environmentPresentations } from "../state/presentation";
 import { primaryServerKeybindingsAtom } from "../state/server";
 import { environmentProjects } from "../state/projects";
-import { threadEnvironment } from "../state/threads";
+import { threadEnvironment, useThreadFamily } from "../state/threads";
+import { environmentSnapshotAtom } from "../state/shell";
 import { useOlderSettledShelf, useOlderSettledShelfGrowth } from "../state/olderSettledShelf";
 import { useThreadSearch } from "../state/queries";
 import { useOrchestrationCommand } from "../state/use-orchestration-command";
@@ -463,6 +465,35 @@ function routeThreadOnly(
   if (routeThreadKey === null) return EMPTY_THREADS;
   const routeThread = threads.find((thread) => threadShellKey(thread) === routeThreadKey);
   return routeThread === undefined ? EMPTY_THREADS : [routeThread];
+}
+
+function PluginTreeFamily({ threadRef }: { readonly threadRef: ScopedThreadRef }) {
+  useThreadFamily(threadRef.environmentId, threadRef.threadId);
+  return null;
+}
+
+function PluginTreeFamilies(props: {
+  readonly source: PluginTreeSource;
+  readonly threads: ReadonlyArray<EnvironmentThreadShell>;
+}) {
+  const { source, threads } = props;
+  const snapshot = useAtomValue(environmentSnapshotAtom(source.environmentId));
+  const roots = pluginTreeFamilyRoots({
+    sources: [source],
+    threads,
+    ...(snapshot === null
+      ? {}
+      : {
+          shellThreadKeys: new Set(
+            snapshot.threads.map((thread) =>
+              scopedThreadKey(scopeThreadRef(source.environmentId, thread.id)),
+            ),
+          ),
+        }),
+  });
+  return roots.map((threadRef) => (
+    <PluginTreeFamily key={scopedThreadKey(threadRef)} threadRef={threadRef} />
+  ));
 }
 
 // Separate hooks cache maps independently of later Sidebar hooks and preserve dnd-kit inputs.
@@ -3104,7 +3135,16 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   return (
     <>
       {selectedTree === null ? null : (
-        <PluginTreeSnapshotSources choice={selectedTree} snoozeWake={snoozeWakeTick} />
+        <>
+          <PluginTreeSnapshotSources choice={selectedTree} snoozeWake={snoozeWakeTick} />
+          {treeSources?.map((source) => (
+            <PluginTreeFamilies
+              key={`${selectedTree.key}:${source.environmentId}`}
+              source={source}
+              threads={threads}
+            />
+          ))}
+        </>
       )}
       <ThreadContextDragGhost />
       <SidebarChromeHeader isElectron={isElectron} />

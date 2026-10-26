@@ -18,6 +18,7 @@ import { makeThreadFixture } from "../test-fixtures";
 import type { Thread } from "../types";
 import { useThreadSelectionStore } from "../threadSelectionStore";
 import { useUiStateStore } from "../uiStateStore";
+import { threadFamilies } from "../state/threads";
 import { PluginSidebarViewSources } from "./plugins/PluginCatalogueSubscriptions";
 import Sidebar from "./Sidebar";
 import { resetPluginTreeSnapshotsForTests } from "./sidebar/pluginTreeSources";
@@ -34,7 +35,8 @@ const FAR_FUTURE = "2999-01-01T00:00:00.000Z";
 const data = vi.hoisted(() => {
   const listeners = new Set<() => void>();
   let snapshot = {
-    threads: [] as unknown[],
+    threads: [] as Thread[],
+    shellThreads: null as Thread[] | null,
     groups: [] as unknown[],
     projects: [] as unknown[],
     installations: [] as unknown[],
@@ -53,7 +55,8 @@ const data = vi.hoisted(() => {
     },
     update: (patch: Partial<typeof snapshot>) => {
       snapshot = { ...snapshot, ...patch };
-      for (const listener of listeners) listener();
+      const callbacks = [...listeners];
+      for (const listener of callbacks) listener();
     },
   };
 });
@@ -183,6 +186,20 @@ vi.mock("../state/projects", async (original) => ({
 vi.mock("../state/threads", async (original) => ({
   ...(await original<object>()),
   threadEnvironment: { updateMetadata: {} },
+}));
+vi.mock("../state/shell", async (original) => ({
+  ...(await original<object>()),
+  environmentSnapshotAtom: Atom.family((environmentId: string) =>
+    Atom.make((get) => {
+      get.addFinalizer(data.subscribe(() => get.refreshSelf()));
+      const { shellThreads, threads } = data.read();
+      return {
+        threads: (shellThreads ?? threads).filter(
+          (thread) => thread.environmentId === environmentId,
+        ),
+      };
+    }),
+  ),
 }));
 vi.mock("../state/queries", async (original) => ({
   ...(await original<object>()),
@@ -349,6 +366,7 @@ function setup(input: {
   const docs = [project(server, "p1", "Docs")];
   data.update({
     threads: input.threads,
+    shellThreads: null,
     projects: [...app, ...docs],
     groups: [group("repo:app", "App", app), group("server:p1", "Docs", docs)],
     installations: [projectsPlugin(true, input.rules)],
@@ -678,6 +696,88 @@ function setupTree(input: {
 }
 
 describe("Sidebar plugin tree", () => {
+  it("keeps idle workers visible away from their family and releases only when the tree no longer needs it", async () => {
+    const coordinator = thread("coordinator", laptop, "p1");
+    const elsewhere = thread("elsewhere", laptop, "p1");
+    const worker = thread("idle-worker", laptop, "p1", {
+      source: { ...coordinator.source, creationSource: "mcp" },
+      lineage: {
+        rootThreadId: coordinator.id,
+        parentThreadId: coordinator.id,
+        relationshipToParent: "subagent",
+      },
+    });
+    const shell = [coordinator, elsewhere];
+    const nodes = [
+      treeThread("coordinator", coordinator.id),
+      treeThread("worker", worker.id, "coordinator"),
+      treeThread("worker-again", worker.id, "coordinator"),
+    ];
+    setupTree({
+      threads: shell,
+      route: elsewhere,
+      trees: new Map([
+        [laptop, nodes],
+        [server, []],
+      ]),
+    });
+    data.update({ shellThreads: shell });
+    const releases = vi.fn();
+    using mounts = vi
+      .spyOn(threadFamilies, "mount")
+      .mockImplementation((_registry, environmentId, rootId) => {
+        expect(environmentId).toBe(laptop);
+        expect(rootId).toBe(coordinator.id);
+        // Family RPC/merge is the boundary; route and shell never contain the idle worker.
+        data.update({ threads: [...shell, worker] });
+        return () => {
+          releases();
+          data.update({ threads: shell });
+        };
+      });
+    await using _screen = await renderSidebar();
+    await expect.element(page.getByText("idle-worker", { exact: true })).toBeVisible();
+    await expect
+      .element(page.getByText("elsewhere", { exact: true }))
+      .toHaveAttribute("aria-current", "page");
+    expect(mounts).toHaveBeenCalledTimes(1);
+    expect(releases).not.toHaveBeenCalled();
+
+    await act(() => data.update({ route: routeTo(coordinator) }));
+    await act(() => data.update({ route: routeTo(elsewhere) }));
+    expect(mounts).toHaveBeenCalledTimes(1);
+    expect(releases).not.toHaveBeenCalled();
+    await expect.element(page.getByText("idle-worker", { exact: true })).toBeVisible();
+
+    await act(() =>
+      data.update({
+        trees: new Map([
+          [laptop, nodes.slice(0, 1)],
+          [server, []],
+        ]),
+        treeRevision: 1,
+      }),
+    );
+    await vi.waitFor(() => expect(releases).toHaveBeenCalledTimes(1));
+    expect(mounts).toHaveBeenCalledTimes(1);
+    await expect.element(page.getByText("idle-worker", { exact: true })).not.toBeInTheDocument();
+
+    await act(() =>
+      data.update({
+        trees: new Map([
+          [laptop, nodes],
+          [server, []],
+        ]),
+        treeRevision: 2,
+      }),
+    );
+    await expect.element(page.getByText("idle-worker", { exact: true })).toBeVisible();
+    expect(mounts).toHaveBeenCalledTimes(2);
+    await userEvent.click(page.getByRole("button", { name: "Toggle Focus view", exact: true }));
+    await vi.waitFor(() => expect(releases).toHaveBeenCalledTimes(2));
+    await expect.element(page.getByText("idle-worker", { exact: true })).not.toBeInTheDocument();
+  });
+
   it("renders the plugin's arrangement with native rows and keeps every thread reachable", async () => {
     const focus = thread("focus", laptop, "p1");
     const parent = thread("parent", server, "p9");

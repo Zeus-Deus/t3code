@@ -1,4 +1,10 @@
-import type { EnvironmentId, PluginTreeNode, ProjectId, ThreadId } from "@t3tools/contracts";
+import type {
+  EnvironmentId,
+  PluginTreeNode,
+  ProjectId,
+  ScopedThreadRef,
+  ThreadId,
+} from "@t3tools/contracts";
 
 import { scopedThreadKey, scopeThreadRef } from "../environment/scoped.ts";
 
@@ -50,6 +56,53 @@ export interface PluginTreeSection<TProject, TThread> {
 export interface PluginTreeSource {
   readonly environmentId: EnvironmentId;
   readonly nodes: ReadonlyArray<PluginTreeNode>;
+}
+
+/** Families needed for placed references the shell omitted, anchored by listed ancestors. */
+export function pluginTreeFamilyRoots(input: {
+  readonly sources: ReadonlyArray<PluginTreeSource>;
+  readonly threads: ReadonlyArray<{
+    readonly id: ThreadId;
+    readonly environmentId: EnvironmentId;
+    readonly lineage: { readonly rootThreadId: ThreadId };
+  }>;
+  /** Unmerged shell keys keep a loaded family's mount alive. */
+  readonly shellThreadKeys?: ReadonlySet<string>;
+}): ReadonlyArray<ScopedThreadRef> {
+  const threadsByKey = new Map(
+    input.threads.map((thread) => [
+      scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+      thread,
+    ]),
+  );
+  const roots = new Map<string, ScopedThreadRef>();
+  for (const source of input.sources) {
+    const nodesById = new Map(source.nodes.map((node) => [node.id, node]));
+    for (const node of source.nodes) {
+      if (node.kind !== "thread") continue;
+      const key = scopedThreadKey(scopeThreadRef(source.environmentId, node.threadId));
+      if (input.shellThreadKeys?.has(key) ?? threadsByKey.has(key)) continue;
+      const seen = new Set([node.id]);
+      let parentId = node.parentId;
+      while (parentId !== undefined && !seen.has(parentId)) {
+        seen.add(parentId);
+        const parent = nodesById.get(parentId);
+        if (parent === undefined) break;
+        if (parent.kind === "thread") {
+          const ancestor = threadsByKey.get(
+            scopedThreadKey(scopeThreadRef(source.environmentId, parent.threadId)),
+          );
+          if (ancestor !== undefined) {
+            const ref = scopeThreadRef(source.environmentId, ancestor.lineage.rootThreadId);
+            roots.set(scopedThreadKey(ref), ref);
+            break;
+          }
+        }
+        parentId = parent.parentId;
+      }
+    }
+  }
+  return [...roots.values()];
 }
 
 export const PLUGIN_TREE_OTHER_SECTION_KEY = "\0plugin-tree-other";
