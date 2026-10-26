@@ -448,10 +448,15 @@ const make = Effect.gen(function* () {
                     topic: `tree:${tree.id}`,
                   })),
                   ...(pluginCapabilityAllowed(installation, actor, "ui")
-                    ? (installation.manifest.threadStatus ?? []).map((status) => ({
+                    ? [
+                        ...(installation.manifest.threadStatus ?? []).map(
+                          (status) => `status:${status.id}`,
+                        ),
+                        ...installation.manifest.views.map((view) => `view:${view.id}`),
+                      ].map((topic) => ({
                         installationId: installation.installationId,
                         generation: installation.generation,
-                        topic: `status:${status.id}`,
+                        topic,
                       }))
                     : []),
                 ]);
