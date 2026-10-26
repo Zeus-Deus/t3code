@@ -110,18 +110,9 @@ interface ThreadNode<TProject, TThread> {
 
 type TreeEntry<TProject, TThread> = HeadingNode<TProject, TThread> | ThreadNode<TProject, TThread>;
 
-/**
- * Lays out one tree from every environment that offers it, in environment priority order.
- *
- * - Node ids are local to an environment; nothing merges by id. Project headings at the root merge
- *   only when the host's own project grouping puts them in the same logical project.
- * - References the host does not list (archived, filtered, not loaded, outside the scope) are
- *   skipped and their children move up, so no listed thread disappears behind a missing parent.
- * - Nesting under a thread is display only; it says nothing about who owns or runs the thread.
- * - A thread the tree leaves out follows its parent thread when that is placed; otherwise a live one
- *   goes to the "other" section, and a parked one (snoozed, settled) stays on the host's shelves.
- * - Group and project headings fold, keeping only the open thread; thread rows do not fold.
- */
+// Merge root project headings only through host grouping; node ids remain environment-local.
+// Missing references promote children, and unplaced threads remain reachable on host shelves.
+// Thread nesting is display only; only group/project headings fold.
 export function buildPluginTreeLayout<TProject, TThread extends PluginTreeThread>(input: {
   readonly sources: ReadonlyArray<PluginTreeSource>;
   /** Every thread the host lists, in its order. */

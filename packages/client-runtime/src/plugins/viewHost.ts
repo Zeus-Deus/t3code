@@ -302,14 +302,9 @@ export function buildPluginViewDocument(
   return `<!doctype html><html><head>${preamble}</head>${body}`;
 }
 
-/**
- * Mobile: React Native exposes its bridge to every frame on Android, so the WebView page nests
- * the view in a sandboxed srcdoc frame and wraps what it relays with a secret only it holds. The
- * page keeps the first port the view hands over and relays only through it, so a page the view
- * navigates to reads nothing; React Native's host still checks the token on each message.
- * The frame is created with its sandbox, srcdoc and load listener before it is inserted, so it
- * never has an initial about:blank load that could count as the view leaving its page.
- */
+// Android exposes the native bridge to every frame, so a secret-bearing outer page relays only
+// the sandboxed view's first port. Set sandbox/srcdoc/listener before insertion to avoid counting
+// an initial about:blank load as navigation; later navigation closes the port.
 export function pluginViewOuterDocument(viewDocument: string, secret: string): string {
   return `<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1">
 <style>html,body{margin:0;height:100%;background:transparent}iframe{border:0;display:block;width:100%;height:100%}</style></head>

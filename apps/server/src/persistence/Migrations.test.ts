@@ -4,6 +4,8 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import PluginReceipts from "./Migrations/070_PluginReceipts.ts";
+
 import { migrationManifest, runMigrations } from "./Migrations.ts";
 
 const v2Migrations = migrationManifest.filter(([id]) => id >= 55);
@@ -142,3 +144,58 @@ it.effect("creates the final core plugin ledger without legacy catalogue or KV t
     assert.deepStrictEqual(yield* runMigrations(), []);
   }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
 );
+
+describe("plugin preview migration history", () => {
+  it.effect.each([false, true])(
+    "preserves receipts from a preview with legacy state migration %s",
+    (legacyState) =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* runMigrations({ toMigrationInclusive: 67 });
+        yield* PluginReceipts;
+        yield* sql`INSERT INTO effect_sql_migrations (migration_id, name) VALUES (68, 'PluginReceipts')`;
+        if (legacyState) {
+          yield* sql`CREATE TABLE plugin_state_metadata(id INTEGER PRIMARY KEY, value_json TEXT NOT NULL)`;
+          yield* sql`INSERT INTO plugin_state_metadata VALUES(1, '{"retained":true}')`;
+          yield* sql`INSERT INTO effect_sql_migrations (migration_id, name) VALUES (69, 'PluginState')`;
+        }
+        yield* sql`INSERT INTO plugin_operation_receipts(operation_key,installation_id,generation,request_digest,result_json)
+        VALUES('retained','board','one','digest','{"threadId":"retained"}')`;
+
+        assert.deepStrictEqual(yield* runMigrations(), [
+          [68, "ShellStopRequestIndex"],
+          [69, "ThreadMessageSearch"],
+        ]);
+        assert.deepStrictEqual(yield* history, migrationManifest);
+        assert.deepStrictEqual(
+          yield* sql`SELECT operation_key, result_json FROM plugin_operation_receipts`,
+          [{ operation_key: "retained", result_json: '{"threadId":"retained"}' }],
+        );
+        if (legacyState) {
+          assert.deepStrictEqual(yield* sql`SELECT value_json FROM plugin_state_metadata`, [
+            { value_json: '{"retained":true}' },
+          ]);
+        }
+        const indexes =
+          yield* sql`SELECT name FROM sqlite_schema WHERE name = 'orchestration_v2_projection_turn_items_stop_request_idx'`;
+        assert.strictEqual(indexes.length, 1);
+        assert.deepStrictEqual(yield* runMigrations(), []);
+      }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect("leaves an unknown later preview history unchanged", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runMigrations({ toMigrationInclusive: 67 });
+      yield* PluginReceipts;
+      yield* sql`INSERT INTO effect_sql_migrations (migration_id, name) VALUES (68, 'PluginReceipts'), (69, 'UnknownPreview')`;
+      const before = yield* history;
+      assert.isTrue(Exit.isFailure(yield* Effect.exit(runMigrations())));
+      assert.deepStrictEqual(yield* history, before);
+      assert.deepStrictEqual(
+        yield* sql`SELECT name FROM sqlite_schema WHERE name = 'orchestration_v2_projection_turn_items_stop_request_idx'`,
+        [],
+      );
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+});

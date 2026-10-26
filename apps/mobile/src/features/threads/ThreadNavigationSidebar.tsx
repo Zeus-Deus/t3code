@@ -315,8 +315,6 @@ function ThreadNavigationSidebarPane(
             threads: listThreads,
             environmentId: options.selectedEnvironmentId,
             projectRefs: selectedProjectScope === null ? null : selectedProjectScope.projectRefs,
-            searchQuery: props.searchQuery,
-            matchedThreadKeys: new Set(threadSearchMatchByKey.keys()),
           }),
           projectScopes,
           selectedProjectKey,

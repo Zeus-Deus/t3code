@@ -11,7 +11,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Sqlite from "../persistence/Sqlite.ts";
 import * as Receipts from "./PluginReceipts.ts";
 import * as CoreReceipts from "../persistence/OrchestrationCommandReceipts.ts";
-import { runMigrations } from "../persistence/Migrations.ts";
+import { migrationManifest, runMigrations } from "../persistence/Migrations.ts";
 const layer = Receipts.layer.pipe(
   Layer.provideMerge(Sqlite.layerMemory),
   Layer.provide(NodeServices.layer),
@@ -159,7 +159,7 @@ it.effect(
       yield* sql`INSERT INTO plugin_operation_receipts(operation_key,installation_id,generation,request_digest,result_json) VALUES('old','plugin','one','digest','{"threadId":"retained"}')`;
       yield* sql`INSERT INTO plugin_run_deliveries VALUES('plugin','one','run'),('plugin','two','run')`;
       yield* sql`INSERT INTO plugin_event_reservations VALUES('plugin','one','delivery','old'),('plugin','two','delivery','second'),('plugin','two','delivery','third')`;
-      yield* sql`INSERT INTO effect_sql_migrations(migration_id,name) VALUES(69,'PluginState')`;
+      yield* sql`INSERT INTO effect_sql_migrations(migration_id,name) VALUES(${Math.max(...migrationManifest.map(([id]) => id)) + 1},'PluginState')`;
       expect(yield* runMigrations()).toEqual([]);
       const receipts = yield* Receipts.PluginReceipts;
       const identity = { installationId: "plugin", generation: "new" };

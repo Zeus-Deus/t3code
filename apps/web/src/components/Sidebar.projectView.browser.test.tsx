@@ -186,7 +186,7 @@ vi.mock("../state/threads", async (original) => ({
 }));
 vi.mock("../state/queries", async (original) => ({
   ...(await original<object>()),
-  useThreadSearch: () => ({ matches: [], isPending: false }),
+  useThreadSearch: () => ({ query: "", matches: [], isPending: false }),
 }));
 vi.mock("../state/use-orchestration-command", async (original) => ({
   ...(await original<object>()),

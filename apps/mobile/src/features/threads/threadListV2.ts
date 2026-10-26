@@ -620,7 +620,7 @@ function sortSettledThreadsReusingLast(
   return lastSettledOutput;
 }
 
-/** The threads a list shows for its filters and search, before sections and shelves. */
+/** Threads in scope before a plugin arranges its non-search view. */
 export function filterThreadListV2Threads(input: {
   readonly threads: ReadonlyArray<EnvironmentThreadShell>;
   readonly environmentId: EnvironmentId | null;
@@ -628,10 +628,7 @@ export function filterThreadListV2Threads(input: {
     readonly environmentId: EnvironmentId;
     readonly projectId: ProjectId;
   }> | null;
-  readonly searchQuery: string;
-  readonly matchedThreadKeys?: ReadonlySet<string>;
 }): EnvironmentThreadShell[] {
-  const query = input.searchQuery.trim().toLocaleLowerCase();
   const projectKeys = input.projectRefs
     ? new Set(input.projectRefs.map((ref) => `${ref.environmentId}:${ref.projectId}`))
     : null;
@@ -640,15 +637,7 @@ export function filterThreadListV2Threads(input: {
       thread.archivedAt === null &&
       thread.lineage.relationshipToParent !== "subagent" &&
       (input.environmentId === null || thread.environmentId === input.environmentId) &&
-      (projectKeys === null || projectKeys.has(`${thread.environmentId}:${thread.projectId}`)) &&
-      (query.length === 0 ||
-        thread.title.toLocaleLowerCase().includes(query) ||
-        threadPullRequestSearchTerms(thread).some((term) =>
-          term.toLocaleLowerCase().includes(query),
-        ) ||
-        input.matchedThreadKeys?.has(
-          threadSearchMatchKey({ environmentId: thread.environmentId, threadId: thread.id }),
-        ) === true),
+      (projectKeys === null || projectKeys.has(`${thread.environmentId}:${thread.projectId}`)),
   );
 }
 

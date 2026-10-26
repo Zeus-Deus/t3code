@@ -120,16 +120,8 @@ export function pluginSidebarViewOptions(
     );
 }
 
-/**
- * The views offered beside the built-in activity list, and the one to render. `selected` is null
- * whenever the remembered choice is no longer contributed (disabled, removed, incompatible, safe
- * mode, grant withdrawn), so the sidebar falls back to activity without the choice being erased:
- * enabling the plugin again restores it. While the environment that supplied the remembered view
- * has not reported yet (starting up, reconnecting) its last known rules keep applying, so a launch
- * does not flash the activity list.
- *
- * `sources` lists every known environment in priority order; the first to offer a key wins.
- */
+// Keep a remembered choice through reconnects, but fall back when the provider withdraws it.
+// Sources are in priority order; the first environment offering a key wins.
 export function resolvePluginSidebarView(input: {
   readonly remembered: PluginSidebarChoice | null;
   readonly sources: ReadonlyMap<EnvironmentId, PluginSidebarViewSource>;

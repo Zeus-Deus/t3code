@@ -24,7 +24,7 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
-import { Platform, type AlertButton } from "react-native";
+import { type AlertButton } from "react-native";
 
 import * as Dialog from "../../components/ui/Dialog";
 import { tryOpenExternalUrl } from "../../lib/openExternalUrl";
@@ -236,15 +236,9 @@ export function usePluginActionRunner() {
               {
                 text: "Details",
                 onPress: () =>
-                  navigation.navigate("SettingsSheet", {
-                    screen: "SettingsContent",
-                    params: {
-                      screen: "SettingsPluginDetail",
-                      params: {
-                        environmentId: target.environmentId,
-                        installationId: target.installation.installationId,
-                      },
-                    },
+                  navigation.navigate("SettingsPluginDetail", {
+                    environmentId: target.environmentId,
+                    installationId: target.installation.installationId,
                   }),
               },
             ]

@@ -101,13 +101,8 @@ function flattenProjectRows<TThread>(rows: ReadonlyArray<ProjectViewRow<TThread>
   return threads;
 }
 
-/**
- * Arranges the sidebar's threads by project for a plugin-declared view. The host decides what is
- * live: `liveThreads` are the pinned, active and working threads in activity order, and settled or
- * snoozed threads stay on the shared shelves below. The view's rules only choose which project
- * headings appear. No thread is ever dropped: unknown projects get their own section, and the open
- * thread shows even when its project is folded.
- */
+// The plugin chooses project headings; the host owns activity order and parked shelves.
+// Unknown projects and the open thread remain reachable even when groups are folded.
 export function buildProjectView<
   TGroup extends ProjectViewGroupInput,
   TThread extends ProjectViewThread,

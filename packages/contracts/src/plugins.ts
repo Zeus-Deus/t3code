@@ -491,15 +491,9 @@ export const PluginInvocationContext = Schema.Struct({
   lineage: Schema.optionalKey(Schema.Literal("unresolved")),
 });
 export type PluginInvocationContext = typeof PluginInvocationContext.Type;
-/**
- * Who started an invocation, as established by the host. `threadId` is present only when the host
- * verified the caller acts for that T3 thread (an agent's own thread); it is never taken from
- * invocation input or target context.
- * `subagentOf` is the first non-subagent ancestor, following only subagent edges; forks stop it.
- * `lineage: "unresolved"` means a read failed or ancestry is missing, deleted, cyclic or over the
- * depth bound; `subagentOf` is then omitted. Retry before choosing an owner from `threadId`.
- * This optional v1 addition is absent on older hosts, so omission alone is not proof of a root.
- */
+// Caller identity is host-verified, never derived from target input. subagentOf follows only
+// subagent edges to their first non-subagent ancestor. Unresolved lineage omits that field;
+// missing lineage on an older v1 host is not proof of a root thread.
 export const PluginCaller = Schema.Struct({
   kind: Schema.Literals(["client", "agent", "background"]),
   threadId: Schema.optionalKey(ThreadId),

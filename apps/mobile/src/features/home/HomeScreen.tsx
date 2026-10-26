@@ -466,8 +466,6 @@ export function HomeScreen(props: HomeScreenProps) {
             threads: listThreads,
             environmentId: props.selectedEnvironmentId,
             projectRefs: v2ScopedProjectGroup === null ? null : v2ScopedProjectGroup.projectRefs,
-            searchQuery: props.searchQuery,
-            matchedThreadKeys: new Set(threadSearchMatchByKey.keys()),
           }),
           projectScopes,
           selectedProjectKey: v2ScopedProjectGroup?.key ?? null,
