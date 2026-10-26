@@ -23,6 +23,16 @@ export interface PluginInvocationOrigin {
 
 type NavigationIntent = Exclude<PluginClientIntent, { readonly type: "composer.insert" }>;
 
+export function pluginViewThreadId(
+  manifest: Pick<PluginManifest, "views">,
+  intent: Extract<PluginClientIntent, { readonly type: "view.open" }>,
+  originThreadId: ThreadId | null,
+): ThreadId | null {
+  return manifest.views.some((view) => view.id === intent.viewId && view.placement === "side-panel")
+    ? (intent.threadId ?? originThreadId)
+    : originThreadId;
+}
+
 export type PluginIntentStep =
   | {
       readonly kind: "insert";
@@ -72,7 +82,7 @@ export function planPluginIntents(input: {
     }
     return { kind: "navigate", intent, mode: apply ? "apply" : "offer" };
   };
-  // Mirrors the client opener: side-panel views open beside the origin thread, others as a page.
+  // Mirrors the opener; a targeted side panel can leave the origin composer behind.
   const leavesOrigin = (intent: NavigationIntent): boolean => {
     switch (intent.type) {
       case "thread.reveal":
@@ -80,6 +90,8 @@ export function planPluginIntents(input: {
       case "view.open":
         return !(
           input.origin.threadId !== null &&
+          pluginViewThreadId(input.manifest, intent, input.origin.threadId) ===
+            input.origin.threadId &&
           input.manifest.views.some(
             (view) => view.id === intent.viewId && view.placement === "side-panel",
           )

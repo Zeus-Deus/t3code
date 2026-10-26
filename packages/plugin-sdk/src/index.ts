@@ -102,7 +102,12 @@ export type PluginClientIntent =
   | { readonly type: "composer.insert"; readonly text: string; readonly quote?: boolean }
   | { readonly type: "preview.open"; readonly url: string }
   | { readonly type: "thread.reveal"; readonly threadId: string; readonly messageId?: string }
-  | { readonly type: "view.open"; readonly viewId: string };
+  | {
+      readonly type: "view.open";
+      readonly viewId: string;
+      /** For a side panel, reveal and open beside this thread in the same environment. */
+      readonly threadId?: string;
+    };
 /** An image file the plugin wrote under `context.dataDirectory`, named by its relative path. */
 export interface PluginResultImage {
   readonly path: string;

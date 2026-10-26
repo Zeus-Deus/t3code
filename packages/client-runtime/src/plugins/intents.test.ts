@@ -3,6 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   planPluginIntents,
+  pluginViewThreadId,
   pluginUnsupportedIntentCount,
   type PluginInvocationOrigin,
 } from "./intents.ts";
@@ -86,6 +87,18 @@ describe("planPluginIntents", () => {
     ).toEqual([true]);
     expect(visibility([{ type: "view.open", viewId: "notes" }, insert])).toEqual([true]);
     expect(
+      visibility([
+        { type: "view.open", viewId: "notes", threadId: ThreadId.make("thread-b") },
+        insert,
+      ]),
+    ).toEqual([false]);
+    expect(
+      visibility([
+        { type: "view.open", viewId: "notes", threadId: ThreadId.make("thread-a") },
+        insert,
+      ]),
+    ).toEqual([true]);
+    expect(
       visibility([{ type: "preview.open", url: "https://tickets.example/T-1" }, insert]),
     ).toEqual([true]);
   });
@@ -137,4 +150,41 @@ describe("pluginUnsupportedIntentCount", () => {
     });
     expect(steps).toMatchObject([{ kind: "rejected" }]);
   });
+});
+
+it("targets only side panels, defaults old intents to their origin, and offers late results", () => {
+  const panel = {
+    id: "notes",
+    title: "Notes",
+    entry: "notes.html",
+    placement: "side-panel" as const,
+  };
+  const views = { views: [...manifest.views, panel] };
+  const destination = ThreadId.make("coordinator");
+  expect(
+    pluginViewThreadId(
+      views,
+      { type: "view.open", viewId: "notes", threadId: destination },
+      origin.threadId,
+    ),
+  ).toBe(destination);
+  expect(pluginViewThreadId(views, { type: "view.open", viewId: "notes" }, origin.threadId)).toBe(
+    origin.threadId,
+  );
+  expect(
+    pluginViewThreadId(
+      views,
+      { type: "view.open", viewId: "board", threadId: destination },
+      origin.threadId,
+    ),
+  ).toBe(origin.threadId);
+  expect(
+    planPluginIntents({
+      origin,
+      manifest: views,
+      intents: [{ type: "view.open", viewId: "notes", threadId: destination }],
+      currentLocationKey: "/elsewhere",
+      canOpenPreview: false,
+    }),
+  ).toMatchObject([{ kind: "navigate", mode: "offer" }]);
 });

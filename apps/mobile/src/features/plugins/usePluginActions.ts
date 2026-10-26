@@ -7,6 +7,7 @@ import {
   pluginFailureNeedsDetails,
   pluginUnsupportedIntentCount,
   pluginUnsupportedIntentNotice,
+  pluginViewThreadId,
   type PluginIntentStep,
 } from "@t3tools/client-runtime/plugins";
 import {
@@ -102,14 +103,24 @@ export function usePluginIntentApplier() {
       case "thread.reveal":
         openThread(target.environmentId, intent.threadId);
         return;
-      case "view.open":
+      case "view.open": {
+        const threadId = pluginViewThreadId(target.installation.manifest, intent, target.threadId);
+        if (
+          intent.threadId !== undefined &&
+          target.installation.manifest.views.some(
+            (view) => view.id === intent.viewId && view.placement === "side-panel",
+          )
+        ) {
+          openThread(target.environmentId, intent.threadId);
+        }
         navigation.navigate("PluginView", {
           environmentId: target.environmentId,
           installationId: target.installation.installationId,
           viewId: intent.viewId,
-          ...(target.threadId === null ? {} : { threadId: target.threadId }),
+          ...(threadId === null ? {} : { threadId }),
         });
         return;
+      }
       case "preview.open":
         void tryOpenExternalUrl(intent.url, "plugin");
     }

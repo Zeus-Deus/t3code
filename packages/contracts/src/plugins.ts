@@ -528,7 +528,11 @@ export const PluginClientIntent = Schema.Union([
     threadId: ThreadId,
     messageId: Schema.optionalKey(text(256)),
   }),
-  Schema.Struct({ type: Schema.Literal("view.open"), viewId: identifier }),
+  Schema.Struct({
+    type: Schema.Literal("view.open"),
+    viewId: identifier,
+    threadId: Schema.optionalKey(ThreadId),
+  }),
 ]);
 export type PluginClientIntent = typeof PluginClientIntent.Type;
 export const PluginInvokeInput = Schema.Struct({

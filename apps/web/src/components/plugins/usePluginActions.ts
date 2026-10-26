@@ -7,6 +7,7 @@ import {
   pluginFailureNeedsDetails,
   pluginUnsupportedIntentCount,
   pluginUnsupportedIntentNotice,
+  pluginViewThreadId,
   type PluginIntentStep,
 } from "@t3tools/client-runtime/plugins";
 import {
@@ -23,6 +24,7 @@ import {
   type PluginClientIntent,
   type PluginInstallation,
   type ScopedThreadRef,
+  type ThreadId,
 } from "@t3tools/contracts";
 import { useNavigate, useRouter } from "@tanstack/react-router";
 import * as Schema from "effect/Schema";
@@ -75,21 +77,38 @@ const openExternally = (url: string) => {
  * Applies plugin intents to this client, for the target the user acted on. Results that arrive
  * after the user moved away never write into whatever became active; they are offered instead.
  */
-/** Side panels open beside the thread they were asked from; anything else opens as a page. */
+/** Side panels retain their thread context; other views open as pages. */
 export function usePluginViewOpener() {
   const navigate = useNavigate();
   return (
     target: Pick<PluginInvocationTarget, "environmentId" | "installation" | "threadRef">,
     viewId: string,
+    requestedThreadId?: ThreadId,
   ) => {
     const view = target.installation.manifest.views.find((entry) => entry.id === viewId);
     if (!view) return;
-    if (view.placement === "side-panel" && target.threadRef !== null) {
-      useRightPanelStore.getState().openPluginView(target.threadRef, {
+    const threadId = pluginViewThreadId(
+      target.installation.manifest,
+      {
+        type: "view.open",
+        viewId,
+        ...(requestedThreadId === undefined ? {} : { threadId: requestedThreadId }),
+      },
+      target.threadRef?.threadId ?? null,
+    );
+    if (view.placement === "side-panel" && threadId !== null) {
+      const threadRef = scopeThreadRef(target.environmentId, threadId);
+      useRightPanelStore.getState().openPluginView(threadRef, {
         installationId: target.installation.installationId,
         viewId: view.id,
         title: view.title,
       });
+      if (requestedThreadId !== undefined) {
+        void navigate({
+          to: "/$environmentId/$threadId",
+          params: buildThreadRouteParams(threadRef),
+        });
+      }
       return;
     }
     void navigate({
@@ -124,7 +143,7 @@ export function usePluginIntentApplier() {
         });
         return;
       case "view.open":
-        openView(target, intent.viewId);
+        openView(target, intent.viewId, intent.threadId);
         return;
       case "preview.open":
         if (target.threadRef !== null && step.mode === "apply") {

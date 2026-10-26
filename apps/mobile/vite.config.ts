@@ -17,6 +17,7 @@ const reactTests = [
   "src/features/files/ZipArchiveView.test.tsx",
   "src/features/pull-requests/guide/useReviewGuide.test.tsx",
   "src/features/plugins/PluginThreadStatuses.test.tsx",
+  "src/features/plugins/usePluginActions.test.tsx",
   "src/features/plugins/usePluginTreeList.test.tsx",
   "src/features/settings/SettingsServerControlsRouteScreen.test.tsx",
   "src/features/settings/components/BranchNamingSettings.test.tsx",

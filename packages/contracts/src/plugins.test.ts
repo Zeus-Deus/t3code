@@ -432,3 +432,13 @@ it("keeps query feature requirements outside the frozen v1 catalogue and accepts
   ).toMatchObject({ creationSource: "future-source", isRunning: true, needsAttention: false });
   expect(() => decode({ ...metadata, creationSource: "x".repeat(129) })).toThrow();
 });
+
+it("preserves an optional target thread on view.open while accepting old intents", () => {
+  expect(
+    decodeResult({ intents: [{ type: "view.open", viewId: "overview", threadId: "coordinator" }] })
+      .intents,
+  ).toEqual([{ type: "view.open", viewId: "overview", threadId: "coordinator" }]);
+  expect(decodeResult({ intents: [{ type: "view.open", viewId: "overview" }] }).intents).toEqual([
+    { type: "view.open", viewId: "overview" },
+  ]);
+});

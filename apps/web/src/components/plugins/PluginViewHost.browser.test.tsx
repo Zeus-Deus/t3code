@@ -1,5 +1,6 @@
 import {
   EnvironmentId,
+  ThreadId,
   type PluginInstallation,
   type PluginInvokeResult,
 } from "@t3tools/contracts";
@@ -63,6 +64,10 @@ vi.mock(import("./usePluginActions"), async (original) => ({
     state.applied.push({ locationKey: target.locationKey, intents });
   },
 }));
+
+import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
+import { useRightPanelStore } from "../../rightPanelStore";
+import { usePluginViewOpener } from "./usePluginActions";
 
 import { PluginPageView } from "./PluginViewHost";
 
@@ -202,4 +207,47 @@ it("drops a pending answer from the generation a plugin update replaced", async 
   expect(await freshGot).toEqual({ fresh: true });
   expect(state.generations).toEqual(["gen-1", "gen-2"]);
   expect(state.applied).toEqual([]);
+});
+
+it("reveals an explicit thread and opens the side panel there, leaving the origin's panels alone", async () => {
+  setup("", async () => ({}));
+  const installation: PluginInstallation = {
+    ...state.installation!,
+    manifest: {
+      ...state.installation!.manifest,
+      views: [{ id: "board", title: "Board", entry: "view.html", placement: "side-panel" }],
+    },
+  };
+  const origin = scopeThreadRef(environmentId, ThreadId.make("origin"));
+  const destination = scopeThreadRef(environmentId, ThreadId.make("coordinator"));
+  useRightPanelStore.setState({ byThreadKey: {}, threadPanelVisibilityByThreadKey: {} });
+  useRightPanelStore
+    .getState()
+    .openPluginView(destination, { installationId: "inst-1", viewId: "board", title: "Board" });
+  useRightPanelStore.getState().close(destination);
+  expect(useRightPanelStore.getState().byThreadKey[scopedThreadKey(destination)]?.isOpen).toBe(
+    false,
+  );
+  function OpenOverview() {
+    const open = usePluginViewOpener();
+    return (
+      <button
+        onClick={() =>
+          open({ environmentId, installation, threadRef: origin }, "board", destination.threadId)
+        }
+      >
+        Open Overview
+      </button>
+    );
+  }
+  await using screen = await render(<OpenOverview />, { router: "/env-1/origin" });
+  await page.getByRole("button", { name: "Open Overview" }).click();
+  await vi.waitFor(() => expect(screen.router!.state.location.pathname).toBe("/env-1/coordinator"));
+  expect(useRightPanelStore.getState().byThreadKey[scopedThreadKey(origin)]).toBeUndefined();
+  expect(useRightPanelStore.getState().byThreadKey[scopedThreadKey(destination)]?.isOpen).toBe(
+    true,
+  );
+  expect(
+    useRightPanelStore.getState().byThreadKey[scopedThreadKey(destination)]?.surfaces,
+  ).toMatchObject([{ kind: "plugin", installationId: "inst-1", viewId: "board" }]);
 });
