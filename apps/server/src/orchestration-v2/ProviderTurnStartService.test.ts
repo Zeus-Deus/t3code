@@ -4,6 +4,10 @@ import { it as effectIt } from "@effect/vitest";
 import {
   CheckpointScopeId,
   GitCommandError,
+  EventId,
+  OrchestrationV2AppThreadJson,
+  OrchestrationV2ConversationMessageJson,
+  OrchestrationV2TurnItemJson,
   MessageId,
   NodeId,
   ProviderSessionId,
@@ -15,6 +19,7 @@ import {
   RunAttemptId,
   RunId,
   ThreadId,
+  TurnItemId,
   ProjectId,
   type OrchestrationV2ThreadProjection,
   OrchestrationV2DomainEvent,
@@ -49,8 +54,21 @@ import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as ProviderTurnStart from "./ProviderTurnStartService.ts";
 import * as RunExecutionService from "./RunExecutionService.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
+import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
+import * as KeyedLock from "@t3tools/shared/KeyedLock";
+import * as SqlitePersistence from "../persistence/Sqlite.ts";
+import * as EventStore from "./EventStore.ts";
+import * as EffectOutbox from "./EffectOutbox.ts";
+import * as ProjectionMaintenance from "./ProjectionMaintenance.ts";
+import { historicalMessage } from "@t3tools/provider-core/server/handoffBudget";
 
 const isDomainEvent = Schema.is(OrchestrationV2DomainEvent);
+const encodeBriefThread = Schema.encodeEffect(OrchestrationV2AppThreadJson);
+const decodeBriefThread = Schema.decodeEffect(OrchestrationV2AppThreadJson);
+const encodeBriefMessage = Schema.encodeEffect(OrchestrationV2ConversationMessageJson);
+const decodeBriefMessage = Schema.decodeEffect(OrchestrationV2ConversationMessageJson);
+const encodeBriefItem = Schema.encodeEffect(OrchestrationV2TurnItemJson);
+const decodeBriefItem = Schema.decodeEffect(OrchestrationV2TurnItemJson);
 
 const managedWorktreesDir = "/tmp/provider-turn-start-worktrees";
 // fs.realpath applies `..` and `.` before following symlinks.
@@ -131,6 +149,7 @@ function startWithMissingWorktree(
         Layer.mock(ContextHandoffService.ContextHandoffServiceV2)({}),
         Layer.mock(EventSink.EventSinkV2)({ writeIfRunCurrent }),
         IdAllocator.layer,
+        ThreadCommandExecutor.layer,
         Layer.succeed(FileSystem.FileSystem, {
           exists: () => Effect.succeed(false),
           realPath: (target: string) =>
@@ -263,6 +282,8 @@ it.each([
 
 function makeLocalCommandHarness(input: {
   readonly text: string;
+  readonly threadCommands?: ThreadCommandExecutor.ThreadCommandExecutor["Service"];
+  readonly handledPromptCommand?: boolean;
   readonly worktreePath?: string;
   readonly worktreesDir?: string;
   readonly workspaceRoot?: string;
@@ -637,7 +658,7 @@ function makeLocalCommandHarness(input: {
   );
   const tryHandlePromptCommand = vi.fn(() =>
     input.logoutFailure === undefined
-      ? Effect.succeed(true)
+      ? Effect.succeed(input.handledPromptCommand ?? true)
       : Effect.fail(
           new ProviderSetupError({
             instanceId: oldInstanceId,
@@ -646,29 +667,34 @@ function makeLocalCommandHarness(input: {
           }),
         ),
   );
-  const writeIfRunCurrent = vi.fn(({ events: incoming, activeAttemptId, expectedStatus }) =>
-    "writeFailure" in input
-      ? Effect.fail(
-          new EventSink.EventSinkWriteError({
-            eventCount: incoming.length,
-            cause: input.writeFailure,
-          }),
-        )
-      : Effect.sync(() => {
-          const current = projection.runs.find((candidate) => candidate.id === runId);
-          const committed =
-            current !== undefined &&
-            current.activeAttemptId === activeAttemptId &&
-            current.status === expectedStatus;
-          if (committed) {
-            for (const event of incoming) {
-              expect(isDomainEvent(event)).toBe(true);
-              events.push(event);
-              projection = ProjectionStore.applyToProjection(projection, event);
+  const writeIfRunCurrent = vi.fn<EventSink.EventSinkV2Shape["writeIfRunCurrent"]>(
+    ({
+      events: incoming,
+      activeAttemptId,
+      expectedStatus,
+    }: Parameters<EventSink.EventSinkV2Shape["writeIfRunCurrent"]>[0]) =>
+      "writeFailure" in input
+        ? Effect.fail(
+            new EventSink.EventSinkWriteError({
+              eventCount: incoming.length,
+              cause: input.writeFailure,
+            }),
+          )
+        : Effect.sync(() => {
+            const current = projection.runs.find((candidate) => candidate.id === runId);
+            const committed =
+              current !== undefined &&
+              current.activeAttemptId === activeAttemptId &&
+              current.status === expectedStatus;
+            if (committed) {
+              for (const event of incoming) {
+                expect(isDomainEvent(event)).toBe(true);
+                events.push(event);
+                projection = ProjectionStore.applyToProjection(projection, event);
+              }
             }
-          }
-          return { committed, storedEvents: [] };
-        }),
+            return { committed, storedEvents: [] };
+          }),
   );
   const resolveRuntimePolicy = vi.fn(
     ({ thread }: Parameters<RuntimePolicy.RuntimePolicyV2Shape["resolve"]>[0]) =>
@@ -698,6 +724,9 @@ function makeLocalCommandHarness(input: {
         }),
         Layer.mock(EventSink.EventSinkV2)({ writeIfRunCurrent }),
         IdAllocator.layer,
+        input.threadCommands === undefined
+          ? ThreadCommandExecutor.layer
+          : Layer.succeed(ThreadCommandExecutor.ThreadCommandExecutor, input.threadCommands),
         layerWorktreeLocation(input.worktreesDir),
         input.fileSystem === undefined
           ? FileSystem.layerNoop({ exists: () => Effect.succeed(true) })
@@ -1417,3 +1446,359 @@ for (const previousMessages of [[], ["/compact", " /COMPACT "]]) {
       }),
   );
 }
+
+function withPluginBrief(harness: ReturnType<typeof makeLocalCommandHarness>) {
+  const projection = harness.projection();
+  const message = projection.messages.at(-1)!;
+  const pluginBrief = { pluginName: "Project Coordinator", text: "Coordinate Shelf." };
+  const turnItem = {
+    id: TurnItemId.make("brief:user-item"),
+    threadId: message.threadId,
+    runId: message.runId,
+    nodeId: message.nodeId,
+    providerThreadId: projection.runs.at(-1)!.providerThreadId,
+    providerTurnId: null,
+    nativeItemRef: null,
+    parentItemId: null,
+    ordinal: 1,
+    status: "completed",
+    title: null,
+    startedAt: message.createdAt,
+    completedAt: message.createdAt,
+    updatedAt: message.updatedAt,
+    type: "user_message",
+    messageId: message.id,
+    inputIntent: "turn_start",
+    text: message.text,
+    attachments: message.attachments,
+    createdBy: message.createdBy,
+    creationSource: message.creationSource,
+  } as const;
+  harness.setProjection({
+    ...projection,
+    thread: {
+      ...projection.thread,
+      pluginBrief,
+      title: "Shelf",
+      providerInstanceId: projection.runs.at(-1)!.providerInstanceId,
+      modelSelection: projection.runs.at(-1)!.modelSelection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: message.threadId },
+      forkedFrom: null,
+      createdAt: message.createdAt,
+      updatedAt: message.updatedAt,
+      archivedAt: null,
+      settledOverride: null,
+      settledAt: null,
+      lastVisitedAt: null,
+      deletedAt: null,
+      createdBy: "system",
+      creationSource: "server",
+    },
+    turnItems: [turnItem],
+  });
+  return { pluginBrief, message };
+}
+
+effectIt.effect(
+  "binds a plugin brief to the starting human message and provider input atomically",
+  () =>
+    Effect.gen(function* () {
+      const harness = makeLocalCommandHarness({
+        text: "Build a shelf",
+        failReadsAfterRunning: true,
+      });
+      const { pluginBrief, message } = withPluginBrief(harness);
+      yield* harness.start;
+      const projection = harness.projection();
+      expect(projection.thread.pluginBriefMessageId).toBe(message.id);
+      expect(projection.messages.at(-1)).toMatchObject({ text: "Build a shelf", pluginBrief });
+      expect(projection.turnItems.find((item) => item.type === "user_message")).toMatchObject({
+        pluginBrief,
+      });
+      expect(
+        harness.writeIfRunCurrent.mock.calls[0]?.[0].events.map((event) => event.type),
+      ).toEqual(["thread.metadata-updated", "message.updated", "turn-item.updated"]);
+      expect(harness.startRootRun.mock.calls[0]?.[0].message.text).toBe(
+        "[Plugin: Project Coordinator]\nCoordinate Shelf.\n\n---\nBuild a shelf",
+      );
+    }),
+);
+
+effectIt.effect(
+  "keeps a bound plugin snapshot after the first provider start fails and retries",
+  () =>
+    Effect.gen(function* () {
+      const harness = makeLocalCommandHarness({ text: "Build a shelf", openFailure: "offline" });
+      const { pluginBrief, message } = withPluginBrief(harness);
+      yield* Effect.exit(harness.startWithRetry);
+      expect(harness.projection().messages.at(-1)?.pluginBrief).toEqual(pluginBrief);
+      const projection = harness.projection();
+      harness.setProjection({
+        ...projection,
+        thread: { ...projection.thread, pluginBrief: { ...pluginBrief, text: "Changed later" } },
+      });
+      yield* Effect.exit(harness.startWithRetry);
+      expect(harness.projection().messages.at(-1)?.pluginBrief).toEqual(pluginBrief);
+      expect(harness.projection().thread.pluginBriefMessageId).toBe(message.id);
+    }),
+);
+
+effectIt.effect.each(["/compact", "/logout"])(
+  "native slash command %s leaves the plugin brief pending",
+  (text) =>
+    Effect.gen(function* () {
+      const harness = makeLocalCommandHarness({ text, openFailure: "offline" });
+      withPluginBrief(harness);
+      yield* Effect.exit(harness.startWithRetry);
+      expect(harness.projection().thread.pluginBriefMessageId).toBeUndefined();
+      expect(harness.projection().messages.at(-1)?.pluginBrief).toBeUndefined();
+    }),
+);
+
+effectIt.effect(
+  "persists the brief snapshot through event replay and SQL projection recovery",
+  () =>
+    Effect.gen(function* () {
+      const harness = makeLocalCommandHarness({ text: "Build a shelf", openFailure: "offline" });
+      const { pluginBrief, message } = withPluginBrief(harness);
+      const before = harness.projection();
+      const { pluginBrief: _brief, ...oldThread } = before.thread;
+      expect(
+        (yield* decodeBriefThread(yield* encodeBriefThread(oldThread))).pluginBrief,
+      ).toBeUndefined();
+      expect(
+        (yield* decodeBriefMessage(yield* encodeBriefMessage(message))).pluginBrief,
+      ).toBeUndefined();
+      expect(
+        yield* decodeBriefItem(yield* encodeBriefItem(before.turnItems[0]!)),
+      ).not.toHaveProperty("pluginBrief");
+      yield* harness.start;
+      expect(harness.projection().runs.at(-1)?.status).toBe("failed");
+      expect(
+        harness.projection().turnItems.find((item) => item.type === "user_message"),
+      ).toMatchObject({ pluginBrief, text: message.text });
+      const database = SqlitePersistence.layerMemory;
+      const stores = Layer.mergeAll(
+        ProjectionStore.layer,
+        EventStore.layer,
+        EffectOutbox.layer,
+      ).pipe(Layer.provideMerge(database));
+      const persistence = EventSink.layer.pipe(
+        Layer.provideMerge(stores),
+        Layer.provide(IdAllocator.layer),
+      );
+      const layer = ProjectionMaintenance.layer.pipe(Layer.provideMerge(persistence));
+      yield* Effect.gen(function* () {
+        const sink = yield* EventSink.EventSinkV2;
+        yield* sink.write({
+          events: [
+            {
+              id: EventId.make("brief:thread-created"),
+              type: "thread.created",
+              threadId: before.thread.id,
+              occurredAt: message.createdAt,
+              payload: before.thread,
+            },
+            ...harness.events,
+          ],
+        });
+        const projections = yield* ProjectionStore.ProjectionStoreV2;
+        const verify = Effect.gen(function* () {
+          const recovered = yield* projections.getThreadProjection(before.thread.id);
+          expect(recovered.thread.pluginBriefMessageId).toBe(message.id);
+          expect(recovered.messages.at(-1)).toMatchObject({ pluginBrief, text: message.text });
+          const item = recovered.turnItems.find((item) => item.type === "user_message");
+          expect(item).toMatchObject({ pluginBrief, text: message.text });
+          expect(item && historicalMessage(item)?.text).toBe(
+            "[Plugin: Project Coordinator]\nCoordinate Shelf.\n\n---\nBuild a shelf",
+          );
+        });
+        yield* verify;
+        yield* (yield* ProjectionMaintenance.ProjectionMaintenanceV2).rebuild;
+        yield* verify;
+      }).pipe(Effect.provide(layer));
+    }),
+);
+
+effectIt.effect.each(["queued", "cancelled"] as const)(
+  "does not bind a brief for a %s run",
+  (status) =>
+    Effect.gen(function* () {
+      const harness = makeLocalCommandHarness({
+        text: "Original text",
+        failReadsAfterRunning: true,
+      });
+      withPluginBrief(harness);
+      const initial = harness.projection();
+      harness.setProjection({ ...initial, runs: initial.runs.map((run) => ({ ...run, status })) });
+      yield* harness.start;
+      expect(harness.writeIfRunCurrent).not.toHaveBeenCalled();
+      expect(harness.projection().thread.pluginBriefMessageId).toBeUndefined();
+      if (status === "queued") {
+        const queued = harness.projection();
+        harness.setProjection({
+          ...queued,
+          runs: queued.runs.map((run) => ({ ...run, status: "starting" })),
+          messages: queued.messages.map((message) => ({ ...message, text: "Edited text" })),
+          turnItems: queued.turnItems.map((item) =>
+            item.type === "user_message" ? { ...item, text: "Edited text" } : item,
+          ),
+        });
+        yield* harness.start;
+        expect(harness.startRootRun.mock.calls[0]?.[0].message.text).toBe(
+          "[Plugin: Project Coordinator]\nCoordinate Shelf.\n\n---\nEdited text",
+        );
+        expect(harness.projection().messages.at(-1)?.text).toBe("Edited text");
+      }
+    }),
+);
+
+effectIt.effect.each(["agent", "system"] as const)(
+  "%s messages leave the brief for a human turn",
+  (createdBy) =>
+    Effect.gen(function* () {
+      const harness = makeLocalCommandHarness({
+        text: "Automatic work",
+        failReadsAfterRunning: true,
+      });
+      withPluginBrief(harness);
+      const initial = harness.projection();
+      harness.setProjection({
+        ...initial,
+        messages: initial.messages.map((message) => ({ ...message, createdBy })),
+      });
+      yield* harness.start;
+      expect(harness.projection().thread.pluginBriefMessageId).toBeUndefined();
+      expect(harness.startRootRun.mock.calls[0]?.[0].message.text).toBe("Automatic work");
+    }),
+);
+
+effectIt.effect("binds the brief for an ordinary slash-leading prompt sent to the provider", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({
+      text: "/ordinary request",
+      handledPromptCommand: false,
+      failReadsAfterRunning: true,
+    });
+    const { pluginBrief } = withPluginBrief(harness);
+    yield* harness.start;
+    expect(harness.projection().messages.at(-1)?.pluginBrief).toEqual(pluginBrief);
+    expect(harness.startRootRun.mock.calls[0]?.[0].message.text).toBe(
+      "[Plugin: Project Coordinator]\nCoordinate Shelf.\n\n---\n/ordinary request",
+    );
+  }),
+);
+
+effectIt.effect("preserves a metadata command concurrent with plugin brief binding", () =>
+  Effect.gen(function* () {
+    const threadCommands = yield* KeyedLock.make<ThreadId>();
+    const harness = makeLocalCommandHarness({
+      text: "Build",
+      failReadsAfterRunning: true,
+      threadCommands,
+    });
+    withPluginBrief(harness);
+    const bindingEntered = yield* Deferred.make<void>();
+    const releaseBinding = yield* Deferred.make<void>();
+    const write = harness.writeIfRunCurrent.getMockImplementation()!;
+    harness.writeIfRunCurrent.mockImplementationOnce((input) =>
+      Deferred.succeed(bindingEntered, undefined).pipe(
+        Effect.andThen(Deferred.await(releaseBinding)),
+        Effect.andThen(write(input)),
+      ),
+    );
+    const startup = yield* harness.start.pipe(Effect.forkChild({ startImmediately: true }));
+    yield* Deferred.await(bindingEntered);
+    const metadata = yield* threadCommands
+      .withLock(
+        harness.projection().thread.id,
+        Effect.sync(() => {
+          const current = harness.projection();
+          harness.setProjection({
+            ...current,
+            thread: {
+              ...current.thread,
+              title: "Renamed Shelf",
+              pinnedAt: current.thread.createdAt,
+            },
+          });
+        }),
+      )
+      .pipe(Effect.forkChild({ startImmediately: true }));
+    yield* Deferred.succeed(releaseBinding, undefined);
+    yield* Fiber.join(startup);
+    yield* Fiber.join(metadata);
+    expect(harness.projection().thread).toMatchObject({
+      title: "Renamed Shelf",
+      pinnedAt: expect.anything(),
+    });
+  }),
+);
+
+effectIt.effect("claims the plugin brief only once across concurrent starts", () =>
+  Effect.gen(function* () {
+    const threadCommands = yield* KeyedLock.make<ThreadId>();
+    const harness = makeLocalCommandHarness({
+      text: "Build",
+      failReadsAfterRunning: true,
+      threadCommands,
+    });
+    withPluginBrief(harness);
+    const bindingEntered = yield* Deferred.make<void>();
+    const releaseBinding = yield* Deferred.make<void>();
+    const write = harness.writeIfRunCurrent.getMockImplementation()!;
+    harness.writeIfRunCurrent.mockImplementationOnce((input) =>
+      Deferred.succeed(bindingEntered, undefined).pipe(
+        Effect.andThen(Deferred.await(releaseBinding)),
+        Effect.andThen(write(input)),
+      ),
+    );
+    const first = yield* harness.start.pipe(Effect.forkChild({ startImmediately: true }));
+    yield* Deferred.await(bindingEntered);
+    const second = yield* harness.start.pipe(Effect.forkChild({ startImmediately: true }));
+    yield* Deferred.succeed(releaseBinding, undefined);
+    yield* Fiber.join(first);
+    yield* Fiber.join(second);
+    expect(
+      harness.events.filter(
+        (event) => event.type === "message.updated" && event.payload.pluginBrief !== undefined,
+      ),
+    ).toHaveLength(1);
+  }),
+);
+
+effectIt.effect("does not add the pending thread brief to later human messages", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({ text: "Next request", failReadsAfterRunning: true });
+    withPluginBrief(harness);
+    const current = harness.projection();
+    harness.setProjection({
+      ...current,
+      thread: { ...current.thread, pluginBriefMessageId: MessageId.make("earlier-message") },
+    });
+    yield* harness.start;
+    expect(harness.startRootRun.mock.calls[0]?.[0].message.text).toBe("Next request");
+    expect(harness.projection().messages.at(-1)?.pluginBrief).toBeUndefined();
+  }),
+);
+
+effectIt.effect(
+  "keeps the disclosed plugin brief literal when projecting user composer references",
+  () =>
+    Effect.gen(function* () {
+      const harness = makeLocalCommandHarness({ text: "Build", failReadsAfterRunning: true });
+      withPluginBrief(harness);
+      const current = harness.projection();
+      const text = "Read [notes](t3-context://v1/thread/notes).";
+      harness.setProjection({
+        ...current,
+        thread: { ...current.thread, pluginBrief: { pluginName: "Coordinator", text } },
+      });
+      yield* harness.start;
+      expect(harness.startRootRun.mock.calls[0]?.[0].message.text).toBe(
+        `[Plugin: Coordinator]\n${text}\n\n---\nBuild`,
+      );
+    }),
+);

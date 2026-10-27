@@ -166,6 +166,7 @@ const layerProviderTurnStartServiceProvided = ProviderTurnStartService.layer.pip
       layerContextHandoffServiceProvided,
       layerEventSink,
       IdAllocator.layer,
+      ThreadCommandExecutor.layer,
       ProjectionStore.layer,
       layerProviderSessionManagerProvided,
       layerProviderAuthServiceProvided,

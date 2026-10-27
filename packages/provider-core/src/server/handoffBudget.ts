@@ -2,6 +2,7 @@ import type {
   ChatAttachment,
   ModelSelection,
   OrchestrationV2ThreadProjection,
+  OrchestrationV2PluginBrief,
   ThreadTokenUsageSnapshot,
   OrchestrationV2ContextHandoff,
   OrchestrationV2HistoricalMessage,
@@ -124,12 +125,23 @@ export function handoffBudget(input: {
   );
 }
 
+export function formatPluginBrief(input: {
+  readonly text: string;
+  readonly pluginBrief?: OrchestrationV2PluginBrief | undefined;
+}): string {
+  return input.pluginBrief === undefined
+    ? input.text
+    : `[Plugin: ${input.pluginBrief.pluginName}]\n${input.pluginBrief.text}\n\n---\n${input.text}`;
+}
+
 export function historicalMessage(
   item: OrchestrationV2TurnItem,
 ): OrchestrationV2HistoricalMessage | null {
   let text: string;
   switch (item.type) {
     case "user_message":
+      text = formatPluginBrief(item);
+      break;
     case "assistant_message":
       text = item.text;
       break;

@@ -2359,3 +2359,106 @@ it.effect(
     }).pipe(Effect.provide(harness.layer), Effect.scoped);
   },
 );
+
+it.effect(
+  "atomically creates an empty plugin conversation with its brief and preserves its title",
+  () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const pluginBrief = { pluginName: "Project Coordinator", text: "Coordinate the project." };
+      const created = yield* launches.launch({
+        ...launchInput({ command: "brief:create", thread: "brief:thread" }),
+        title: "Shelf",
+        pluginBrief,
+        createdBy: "system",
+        creationSource: "server",
+      });
+      assert.deepEqual(created.projection.thread.pluginBrief, pluginBrief);
+      assert.deepEqual(created.projection.messages, []);
+      assert.deepEqual(created.projection.runs, []);
+      const stored = yield* threads
+        .streamStoredEventsFrom({ threadId: created.threadId, eventType: "thread.created" })
+        .pipe(Stream.take(1), Stream.runCollect);
+      assert.deepEqual(stored[0]?.event.payload, created.projection.thread);
+      yield* threads.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("brief:send"),
+        threadId: created.threadId,
+        messageId: MessageId.make("brief:user"),
+        text: "Build a shelf",
+        attachments: [],
+        titleSeed: "Build a shelf",
+        dispatchMode: { type: "start_immediately" },
+        createdBy: "user",
+        creationSource: "web",
+      });
+      const current = yield* threads.getThreadProjection(created.threadId);
+      assert.equal(current.thread.title, "Shelf");
+      assert.equal(current.thread.titleRegeneration ?? null, null);
+      assert.equal(harness.generateThreadTitle.mock.calls.length, 0);
+    }).pipe(Effect.provide(harness.layer), Effect.scoped);
+  },
+);
+
+it.effect("leaves the brief pending when queued human messages are edited or cancelled", () => {
+  const harness = makeHarness();
+  return Effect.gen(function* () {
+    const launches = yield* ThreadLaunch.ThreadLaunchService;
+    const threads = yield* ThreadManagement.ThreadManagementService;
+    const pluginBrief = { pluginName: "Coordinator", text: "Coordinate Shelf." };
+    const created = yield* launches.launch({
+      ...launchInput({ command: "brief:queue:create", thread: "brief:queue" }),
+      pluginBrief,
+    });
+    yield* threads.dispatch({
+      type: "message.dispatch",
+      commandId: CommandId.make("brief:queue:system"),
+      threadId: created.threadId,
+      messageId: MessageId.make("brief:queue:system"),
+      text: "Background work",
+      attachments: [],
+      dispatchMode: { type: "start_immediately" },
+      createdBy: "system",
+      creationSource: "server",
+    });
+    const queued = yield* threads.sendToThread({
+      projectId,
+      commandId: CommandId.make("brief:queue:user"),
+      threadId: created.threadId,
+      messageId: MessageId.make("brief:queue:user"),
+      text: "Original text",
+      attachments: [],
+      mode: "queue",
+      createdBy: "user",
+      creationSource: "web",
+    });
+    assert.equal(queued.delivery, "queued");
+    yield* threads.dispatch({
+      type: "queued-run.edit",
+      commandId: CommandId.make("brief:queue:edit"),
+      threadId: created.threadId,
+      runId: queued.run.id,
+      text: "Edited text",
+    });
+    let projection = yield* threads.getThreadProjection(created.threadId);
+    assert.deepEqual(projection.thread.pluginBrief, pluginBrief);
+    assert.isUndefined(projection.thread.pluginBriefMessageId);
+    assert.equal(
+      projection.messages.find((message) => message.id === queued.message.id)?.text,
+      "Edited text",
+    );
+    assert.isTrue(projection.messages.every((message) => message.pluginBrief === undefined));
+    yield* threads.dispatch({
+      type: "queued-run.cancel",
+      commandId: CommandId.make("brief:queue:cancel"),
+      threadId: created.threadId,
+      runId: queued.run.id,
+    });
+    projection = yield* threads.getThreadProjection(created.threadId);
+    assert.equal(projection.runs.find((run) => run.id === queued.run.id)?.status, "cancelled");
+    assert.isUndefined(projection.thread.pluginBriefMessageId);
+    assert.deepEqual(projection.thread.pluginBrief, pluginBrief);
+  }).pipe(Effect.provide(harness.layer), Effect.scoped);
+});

@@ -617,6 +617,8 @@ const make = Effect.gen(function* () {
       if (method === "threads.create") {
         const request = yield* decode(PluginThreadCreateInput, input);
         yield* requireCapability("threads.create", request.projectId);
+        if (request.brief !== undefined)
+          yield* requireCapability("ui.native-tree-conversations", request.projectId);
         const sourceThreadId =
           actor.source === "agent" ? actor.threadId : invocation.context?.threadId;
         // Source inheritance is optional; v1 create-only plugins use project defaults.
@@ -704,11 +706,17 @@ const make = Effect.gen(function* () {
                 interactionMode,
                 workspaceStrategy,
                 ...(caller === null ? {} : { launchedFrom: { threadId: caller.id } }),
-                initialMessage: {
-                  messageId: MessageId.make(`${commandKey}:message`),
-                  text: `[Plugin: ${installation.manifest.name}]\n${request.text}`,
-                  attachments: [],
-                },
+                ...(request.brief === undefined
+                  ? {
+                      initialMessage: {
+                        messageId: MessageId.make(`${commandKey}:message`),
+                        text: `[Plugin: ${installation.manifest.name}]\n${request.text}`,
+                        attachments: [],
+                      },
+                    }
+                  : {
+                      pluginBrief: { pluginName: installation.manifest.name, text: request.brief },
+                    }),
                 createdBy: "system",
                 creationSource: "server",
               })
@@ -726,6 +734,13 @@ const make = Effect.gen(function* () {
           Effect.fn("PluginHost.authorizeCreate")(function* (current) {
             if (
               !pluginCapabilityAllowed(current, actor, "threads.create", request.projectId) ||
+              (request.brief !== undefined &&
+                !pluginCapabilityAllowed(
+                  current,
+                  actor,
+                  "ui.native-tree-conversations",
+                  request.projectId,
+                )) ||
               (workspaceStrategy.type === "worktree" &&
                 !pluginCapabilityAllowed(current, actor, "worktrees.create", request.projectId))
             )

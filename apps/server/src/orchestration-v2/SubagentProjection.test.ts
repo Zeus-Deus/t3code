@@ -434,3 +434,26 @@ it.each(
     assert.deepEqual(child.forkedFrom, { type: "node", nodeId: parentNodeId });
   },
 );
+
+it("does not pass a pending or consumed plugin brief to delegated or native subagents", () => {
+  for (const pluginBriefMessageId of [undefined, MessageId.make("bound-message")]) {
+    const child = makeSubagentChildThread({
+      parentThread: {
+        ...makeParentThread(),
+        pluginBrief: { pluginName: "Coordinator", text: "Coordinate Shelf." },
+        pluginBriefMessageId,
+      },
+      childThreadId,
+      parentNodeId: NodeId.make("brief:parent-node"),
+      activeProviderThreadId: null,
+      providerInstanceId: childProviderInstanceId,
+      modelSelection: childModelSelection,
+      title: "Worker",
+      now: childCreatedAt,
+      createdBy: "agent",
+      creationSource: "mcp",
+    });
+    assert.isUndefined(child.pluginBrief);
+    assert.isUndefined(child.pluginBriefMessageId);
+  }
+});

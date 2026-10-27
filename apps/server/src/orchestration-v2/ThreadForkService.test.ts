@@ -273,3 +273,23 @@ it.effect.each([false, true])(
       assert.equal(targetThread.settledAt, null);
     }),
 );
+
+it.effect("does not inherit a pending or consumed plugin brief into a fork", () =>
+  Effect.gen(function* () {
+    const sourceRun = makeSourceRun("completed");
+    for (const pluginBriefMessageId of [undefined, MessageId.make("bound-message")]) {
+      const source = makeSourceProjection(sourceRun);
+      const sourceProjection = {
+        ...source,
+        thread: {
+          ...source.thread,
+          pluginBrief: { pluginName: "Coordinator", text: "Coordinate Shelf." },
+          pluginBriefMessageId,
+        },
+      };
+      const result = yield* planFork(sourceRun, sourceProjection);
+      assert.isUndefined(result.targetThread.pluginBrief);
+      assert.isUndefined(result.targetThread.pluginBriefMessageId);
+    }
+  }),
+);

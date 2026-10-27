@@ -437,6 +437,12 @@ export const OrchestrationV2IndependentLaunchSource = Schema.Struct({ threadId: 
 export type OrchestrationV2IndependentLaunchSource =
   typeof OrchestrationV2IndependentLaunchSource.Type;
 
+export const OrchestrationV2PluginBrief = Schema.Struct({
+  pluginName: TrimmedNonEmptyString,
+  text: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(4_000)),
+});
+export type OrchestrationV2PluginBrief = typeof OrchestrationV2PluginBrief.Type;
+
 export const OrchestrationV2AppThread = Schema.Struct({
   ...OrchestrationV2CreationFields,
   id: ThreadId,
@@ -458,6 +464,8 @@ export const OrchestrationV2AppThread = Schema.Struct({
   lineage: OrchestrationV2AppThreadLineage,
   // Informational provenance only; ownership and cancellation follow lineage.
   launchedFrom: Schema.optional(OrchestrationV2IndependentLaunchSource),
+  pluginBrief: Schema.optional(OrchestrationV2PluginBrief),
+  pluginBriefMessageId: Schema.optional(MessageId),
   forkedFrom: Schema.NullOr(
     Schema.Union([
       Schema.Struct({ type: Schema.Literal("run"), threadId: ThreadId, runId: RunId }),
@@ -1264,6 +1272,7 @@ export const OrchestrationV2IdleCompaction = Schema.Literals(["beforeCacheExpire
 export type OrchestrationV2IdleCompaction = typeof OrchestrationV2IdleCompaction.Type;
 
 export const OrchestrationV2ConversationMessage = Schema.Struct({
+  pluginBrief: Schema.optional(OrchestrationV2PluginBrief),
   notification: Schema.optional(OrchestrationV2Notification),
   ...OrchestrationV2CreationFields,
   scheduledTaskId: Schema.optional(ScheduledTaskId),
@@ -1564,6 +1573,7 @@ export const OrchestrationV2TurnItem = Schema.Union([
     ...OrchestrationV2TurnItemBaseFields,
     ...OrchestrationV2CreationFields,
     type: Schema.Literal("user_message"),
+    pluginBrief: Schema.optional(OrchestrationV2PluginBrief),
     messageId: MessageId,
     scheduledTaskId: Schema.optional(ScheduledTaskId),
     senderThreadId: Schema.optional(ThreadId),
@@ -2395,6 +2405,7 @@ export const OrchestrationV2TurnItemJson = Schema.Union([
     ...OrchestrationV2TurnItemJsonBaseFields,
     ...OrchestrationV2CreationFields,
     type: Schema.Literal("user_message"),
+    pluginBrief: Schema.optional(OrchestrationV2PluginBrief),
     messageId: MessageId,
     scheduledTaskId: Schema.optional(ScheduledTaskId),
     senderThreadId: Schema.optional(ThreadId),
@@ -2860,6 +2871,7 @@ export const OrchestrationV2Command = Schema.Union([
   }),
   Schema.Struct({
     type: Schema.Literal("thread.create"),
+    pluginBrief: Schema.optional(OrchestrationV2PluginBrief),
     ...OrchestrationV2CreationFields,
     commandId: CommandId,
     threadId: ThreadId,

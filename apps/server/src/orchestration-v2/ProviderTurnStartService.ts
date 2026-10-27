@@ -38,6 +38,7 @@ import {
   DEFAULT_HANDOFF_TOKEN_CAP,
   handoffTokenCapConfig,
   handoffBudget,
+  formatPluginBrief,
   attachmentTokenAllowance,
   contextUsageForHandoff,
   historicalMessage,
@@ -55,6 +56,8 @@ import {
 } from "@t3tools/provider-core/server/failure";
 import * as RunExecutionService from "./RunExecutionService.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
+import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
+import { isNativeMaintenanceCommand } from "./CommandPolicy.ts";
 import {
   isRestartNoteContinuation,
   pendingRestartCancelledBackgroundWork,
@@ -140,6 +143,7 @@ export const layer: Layer.Layer<
   | ProviderSessionManager.ProviderSessionManagerV2
   | RunExecutionService.RunExecutionServiceV2
   | RuntimePolicy.RuntimePolicyV2
+  | ThreadCommandExecutor.ThreadCommandExecutor
 > = Layer.effect(
   ProviderTurnStartServiceV2,
   Effect.gen(function* () {
@@ -155,6 +159,7 @@ export const layer: Layer.Layer<
     const providerSessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
     const runExecution = yield* RunExecutionService.RunExecutionServiceV2;
     const runtimePolicy = yield* RuntimePolicy.RuntimePolicyV2;
+    const threadCommands = yield* ThreadCommandExecutor.ThreadCommandExecutor;
     const isManagedWorktreePath = yield* makeIsManagedWorktreePath;
 
     const recreateMissingWorktree = Effect.fn("ProviderTurnStartService.recreateMissingWorktree")(
@@ -302,7 +307,7 @@ export const layer: Layer.Layer<
       readonly willRetry?: boolean;
     }) {
       const { runId } = input;
-      const projection = yield* projectionStore.getTurnStartContext(input.threadId, runId);
+      let projection = yield* projectionStore.getTurnStartContext(input.threadId, runId);
       const run = projection.runs.find((candidate) => candidate.id === runId);
       if (run === undefined) {
         return yield* new ProviderTurnStartError({ runId, cause: `Run ${runId} was not found.` });
@@ -315,7 +320,7 @@ export const layer: Layer.Layer<
       const providerThread = projection.providerThreads.find(
         (candidate) => candidate.id === run.providerThreadId,
       );
-      const message = projection.messages.find((candidate) => candidate.id === run.userMessageId);
+      let message = projection.messages.find((candidate) => candidate.id === run.userMessageId);
       const checkpointScope = projection.checkpointScopes.find(
         (candidate) => candidate.id === rootNode?.checkpointScopeId,
       );
@@ -369,6 +374,7 @@ export const layer: Layer.Layer<
           cause: `Run ${runId} is missing its execution projection state.`,
         });
       }
+
       const settleRunBeforeStart = Effect.fn("orchestrationV2.providerTurnStart.settleBeforeStart")(
         function* (input: {
           readonly signal: string;
@@ -572,6 +578,90 @@ export const layer: Layer.Layer<
           return;
         }
       }
+      if (
+        projection.thread.pluginBrief !== undefined &&
+        projection.thread.pluginBriefMessageId === undefined &&
+        message.createdBy === "user" &&
+        !isNativeMaintenanceCommand(message)
+      ) {
+        // Binding shares the command lock so metadata changes and competing starts cannot overwrite its claim.
+        const bound = yield* threadCommands.withLock(
+          input.threadId,
+          Effect.gen(function* () {
+            const current = yield* projectionStore.getTurnStartContext(input.threadId, runId);
+            const currentRun = current.runs.find((candidate) => candidate.id === runId);
+            if (currentRun?.status !== "starting" || currentRun.activeAttemptId !== attempt.id)
+              return undefined;
+            const currentMessage = current.messages.find(
+              (candidate) => candidate.id === run.userMessageId,
+            );
+            if (currentMessage === undefined) return undefined;
+            const pluginBrief = current.thread.pluginBrief;
+            if (
+              pluginBrief === undefined ||
+              current.thread.pluginBriefMessageId !== undefined ||
+              currentMessage.pluginBrief !== undefined ||
+              currentMessage.role !== "user" ||
+              currentMessage.createdBy !== "user" ||
+              currentMessage.scheduledTaskId !== undefined ||
+              currentMessage.senderThreadId !== undefined ||
+              currentMessage.notification !== undefined ||
+              currentMessage.idleCompaction !== undefined ||
+              currentMessage.workflowScript === true
+            )
+              return current;
+            const now = yield* DateTime.now;
+            const messageId = currentMessage.id;
+            const boundMessage = { ...currentMessage, pluginBrief };
+            const thread = { ...current.thread, pluginBriefMessageId: messageId };
+            const userItems = current.turnItems.filter(
+              (item) => item.type === "user_message" && item.messageId === messageId,
+            );
+            const bindingEvents: Array<OrchestrationV2DomainEvent> = [];
+            for (const event of [
+              { type: "thread.metadata-updated" as const, payload: thread },
+              { type: "message.updated" as const, payload: boundMessage },
+              ...userItems.map((item) => ({
+                type: "turn-item.updated" as const,
+                payload: { ...item, pluginBrief },
+              })),
+            ]) {
+              bindingEvents.push({
+                ...event,
+                id: yield* idAllocator.allocate.event({ threadId: thread.id }),
+                threadId: thread.id,
+                runId: run.id,
+                providerInstanceId: run.providerInstanceId,
+                occurredAt: now,
+              });
+            }
+            const committed = yield* eventSink.writeIfRunCurrent({
+              threadId: thread.id,
+              runId: run.id,
+              activeAttemptId: attempt.id,
+              expectedStatus: "starting",
+              events: bindingEvents,
+            });
+            if (!committed.committed) return undefined;
+            return {
+              ...current,
+              thread,
+              messages: current.messages.map((candidate) =>
+                candidate.id === messageId ? boundMessage : candidate,
+              ),
+              turnItems: current.turnItems.map((item) =>
+                item.type === "user_message" && item.messageId === messageId
+                  ? { ...item, pluginBrief }
+                  : item,
+              ),
+            };
+          }),
+        );
+        if (bound === undefined) return;
+        projection = bound;
+        message = bound.messages.find((candidate) => candidate.id === run.userMessageId);
+        if (message === undefined) return;
+      }
       const { worktreePath, branch } = projection.thread;
       if (worktreePath !== null && branch !== null) {
         const exists = yield* fileSystem
@@ -757,10 +847,10 @@ export const layer: Layer.Layer<
       });
       let effectiveHandoffs = handoffs;
       let resumeFellBack = false;
-      const userText = projectComposerContextForProvider({
+      const userText = formatPluginBrief({ pluginBrief: message.pluginBrief, text: projectComposerContextForProvider({
         text: message.text,
         records: message.context?.records ?? [],
-      });
+      }) });
       // Codex and Claude parse /goal from the prompt, so it goes verbatim and history waits a turn.
       const goalDriver = session.driver === "codex" || session.driver === "claudeAgent";
       const goalCommand = goalDriver && parseGoalCommand(message) !== null;

@@ -2666,3 +2666,82 @@ it.effect.each([
     expect(f.launchInputs[0]?.initialMessage?.text).toBe("[Plugin: Test]\nSame request");
   }).pipe(Effect.provide(base()), Effect.scoped),
 );
+
+const setBriefCapability = Effect.fn("PluginHostTest.setBriefCapability")(function* (
+  store: Store.PluginStore["Service"],
+  enabled: boolean,
+) {
+  yield* store.update((state) =>
+    Effect.succeed([
+      undefined,
+      {
+        ...state,
+        installations: state.installations.map((record) => ({
+          ...record,
+          installation: {
+            ...record.installation,
+            manifest: {
+              ...record.installation.manifest,
+              optionalCapabilities: ["ui.native-tree-conversations"],
+            },
+            grants: {
+              ...record.installation.grants,
+              capabilities: enabled
+                ? [...record.installation.grants.capabilities, "ui.native-tree-conversations"]
+                : record.installation.grants.capabilities.filter(
+                    (capability) => capability !== "ui.native-tree-conversations",
+                  ),
+            },
+          },
+        })),
+      },
+    ] as const),
+  );
+});
+
+it.effect.each([false, true])(
+  "requires the optional capability for brief create (granted=%s)",
+  (granted) =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      yield* setBriefCapability(f.store, granted);
+      const request = {
+        idempotencyKey: "brief",
+        projectId,
+        title: "Shelf",
+        brief: "Coordinate Shelf.",
+      };
+      if (!granted) {
+        const denied = yield* f.host
+          .call(f.invocation, "threads.create", request)
+          .pipe(Effect.result);
+        expect(denied).toMatchObject({ _tag: "Failure", failure: { reason: "permission_denied" } });
+        expect(f.launchInputs).toHaveLength(0);
+        return;
+      }
+      yield* f.host.call(f.invocation, "threads.create", request);
+      expect(f.launchInputs).toHaveLength(1);
+      expect(f.launchInputs[0]).toMatchObject({
+        title: "Shelf",
+        pluginBrief: { pluginName: "Test", text: request.brief },
+      });
+      expect(f.launchInputs[0]).not.toHaveProperty("initialMessage");
+    }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect("rechecks the brief capability before returning a created thread", () =>
+  Effect.gen(function* () {
+    const f = yield* fixture;
+    yield* setBriefCapability(f.store, true);
+    f.setBeforeLaunch(() => setBriefCapability(f.store, false).pipe(Effect.orDie));
+    const denied = yield* f.host
+      .call(f.invocation, "threads.create", {
+        idempotencyKey: "brief",
+        projectId,
+        brief: "Coordinate Shelf.",
+      })
+      .pipe(Effect.result);
+    expect(f.launchInputs).toHaveLength(1);
+    expect(denied).toMatchObject({ _tag: "Failure", failure: { reason: "permission_denied" } });
+  }).pipe(Effect.provide(base()), Effect.scoped),
+);
