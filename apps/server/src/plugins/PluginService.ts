@@ -1841,6 +1841,8 @@ const make = Effect.gen(function* () {
               assertPluginActive(present(record), input.generation) ??
               assertNotTransitioning(input.installationId);
             if (denied) return yield* denied;
+            if (!pluginCapabilityAllowed(record.installation, actor, "ui.native-tree-projects"))
+              return yield* pluginPermissionDenied();
             if (record.installation.grants.projectIds.includes(input.projectId))
               return [present(record), state] as const;
             const next = {

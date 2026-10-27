@@ -29,6 +29,7 @@ import {
   type OrchestrationV2ServerCommand,
   type OrchestrationV2StoredEvent,
   type PluginManifest,
+  type PluginCapability,
   type PluginInstallation,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -436,7 +437,7 @@ const makeFixture = Effect.fn("PluginServiceTest.fixture")(function* (realWorker
   const store = Context.get(context, Store.PluginStore);
   const host = Context.get(context, Host.PluginHost);
   const install = () => plugins.install({ source: { kind: "local", directory } });
-  const enable = Effect.fn("test.enable")(function* () {
+  const enable = Effect.fn("test.enable")(function* (extra: ReadonlyArray<PluginCapability> = []) {
     const item = yield* install();
     return yield* plugins.consent({
       installationId: item.installationId,
@@ -450,6 +451,7 @@ const makeFixture = Effect.fn("PluginServiceTest.fixture")(function* (realWorker
           "threads.create",
           "events.run-finalized",
           "ui",
+          ...extra,
         ],
         projectIds: [projectId],
       },
@@ -6445,12 +6447,48 @@ it.effect.each([
     }).pipe(Effect.provide(base()), Effect.scoped),
 );
 
+it.effect.each(["not-requested", "not-granted"] as const)(
+  "does not add project access when the project-tree capability is %s",
+  (missing) =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      if (missing === "not-granted")
+        yield* f.fs.writeFileString(
+          f.path.join(f.directory, "t3-plugin.json"),
+          yield* encodeJson({ ...manifest, optionalCapabilities: ["ui.native-tree-projects"] }),
+        );
+      const enabled = yield* f.enable();
+      const before = yield* f.store.read;
+      const manager: PluginActor = {
+        ...actor,
+        scopes: [AuthAccessWriteScope, AuthTerminalOperateScope],
+      };
+      expect(
+        yield* f.plugins
+          .grantProject(
+            {
+              installationId: enabled.installationId,
+              generation: enabled.generation,
+              projectId: ProjectId.make("extra"),
+            },
+            manager,
+          )
+          .pipe(Effect.result),
+      ).toMatchObject({ _tag: "Failure", failure: { reason: "permission_denied" } });
+      expect(yield* f.store.read).toBe(before);
+    }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
 it.effect(
   "grants only another project without approving pending bytes or restarting a generation",
   () =>
     Effect.gen(function* () {
       const f = yield* fixture;
-      const enabled = yield* f.enable();
+      yield* f.fs.writeFileString(
+        f.path.join(f.directory, "t3-plugin.json"),
+        yield* encodeJson({ ...manifest, optionalCapabilities: ["ui.native-tree-projects"] }),
+      );
+      const enabled = yield* f.enable(["ui.native-tree-projects"]);
       const extra = ProjectId.make("project:extra");
       yield* f.plugins.updateSettings({
         installationId: enabled.installationId,
@@ -6526,7 +6564,11 @@ it.effect(
   () =>
     Effect.gen(function* () {
       const f = yield* fixture;
-      const enabled = yield* f.enable();
+      yield* f.fs.writeFileString(
+        f.path.join(f.directory, "t3-plugin.json"),
+        yield* encodeJson({ ...manifest, optionalCapabilities: ["ui.native-tree-projects"] }),
+      );
+      const enabled = yield* f.enable(["ui.native-tree-projects"]);
       const before = yield* f.store.read;
       const entered = yield* Deferred.make<void>();
       const release = yield* Deferred.make<void>();
