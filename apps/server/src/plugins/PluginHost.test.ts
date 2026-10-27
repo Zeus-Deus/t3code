@@ -3038,3 +3038,53 @@ it.effect.each([
     expect(f.lifecycleCommands).toEqual([]);
   }).pipe(Effect.provide(base()), Effect.scoped),
 );
+
+it.effect.each(["threads.adopt", "threads.unarchive"] as const)(
+  "sending to another thread does not establish ownership for %s",
+  (method) =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      yield* grantProjectTree(f.store);
+      const targetId = ThreadId.make("someone-elses-thread");
+      const core = Context.get(
+        yield* Layer.build(CoreReceipts.layer),
+        CoreReceipts.OrchestrationCommandReceiptRepository,
+      );
+      const originalSend = f.threads.sendToThread;
+      using _send = vi.spyOn(f.threads, "sendToThread").mockImplementation((input) =>
+        originalSend(input).pipe(
+          Effect.tap(() =>
+            core
+              .upsert({
+                commandId: input.commandId,
+                aggregateKind: "thread",
+                aggregateId: targetId,
+                commandType: "message.dispatch",
+                acceptedAt: "2026-10-23T12:00:00.000Z",
+                resultSequence: 1,
+                status: "accepted",
+                error: null,
+              })
+              .pipe(Effect.orDie),
+          ),
+        ),
+      );
+      const invocation = { ...f.invocation, event: false, clientAction: true };
+      yield* f.host.call(invocation, "threads.send", {
+        idempotencyKey: "send-only",
+        threadId: targetId,
+        text: "An authorized message to another thread.",
+      });
+      expect(f.sends).toHaveLength(1);
+      expect(
+        yield* f.receipts.createdThread({ installationId: "plugin", threadId: targetId }),
+      ).toBe(false);
+      f.setShell({ ...f.shell, id: targetId, archivedAt: f.shell.createdAt });
+      expect(
+        (yield* f.host
+          .call(invocation, method, { threadId: targetId, owner: "tree:projects" })
+          .pipe(Effect.asVoid, Effect.flip)).reason,
+      ).toBe("permission_denied");
+      expect(f.lifecycleCommands).toEqual([]);
+    }).pipe(Effect.provide(base()), Effect.scoped),
+);

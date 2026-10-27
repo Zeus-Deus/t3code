@@ -59,6 +59,20 @@ it.effect("bounds the result cache without making every operation scan the catal
       INSERT INTO plugin_operation_receipts(operation_key,installation_id,generation,request_digest,result_json,effect_json)
       SELECT 'old-'||n,'plugin','one','digest','{"threadId":"prior"}','{"threadId":"prior"}' FROM numbers`;
     const receipts = yield* Receipts.PluginReceipts;
+    const core = Context.get(
+      yield* Layer.build(CoreReceipts.layer),
+      CoreReceipts.OrchestrationCommandReceiptRepository,
+    );
+    yield* core.upsert({
+      commandId: CommandId.make("old-1"),
+      aggregateKind: "thread",
+      aggregateId: ThreadId.make("prior"),
+      commandType: "thread.create",
+      acceptedAt: "2026-10-27T00:00:00.000Z",
+      resultSequence: 1,
+      status: "accepted",
+      error: null,
+    });
     yield* receipts.reserve({
       installationId: "plugin",
       generation: "one",
@@ -69,6 +83,9 @@ it.effect("bounds the result cache without making every operation scan the catal
     expect(
       yield* sql`SELECT result_json,effect_json FROM plugin_operation_receipts WHERE operation_key='old-1'`,
     ).toEqual([{ result_json: null, effect_json: '{"threadId":"prior"}' }]);
+    expect(
+      yield* receipts.createdThread({ installationId: "plugin", threadId: ThreadId.make("prior") }),
+    ).toBe(true);
     expect(
       yield* receipts
         .reserve({
