@@ -56,6 +56,10 @@ const data = vi.hoisted(() => {
     answerInvoke: () => Promise.resolve({}) as Promise<unknown>,
     // Projects new threads were started in.
     newThreads: [] as unknown[],
+    // Native context menus shown, by item ids, and the item the person picks.
+    menus: [] as string[][],
+    menuChoice: null as string | null,
+    archived: [] as unknown[],
   };
   return {
     read: () => snapshot,
@@ -229,9 +233,26 @@ vi.mock("../state/session", async (original) => ({
   ...(await original<object>()),
   readEnvironmentScope: () => true,
 }));
+vi.mock("../localApi", async (original) => ({
+  ...(await original<object>()),
+  readLocalApi: () => ({
+    contextMenu: {
+      show: async (items: ReadonlyArray<{ id: string; children?: unknown }>) => {
+        data.read().menus.push(items.map((item) => item.id));
+        return data.read().menuChoice;
+      },
+    },
+    dialogs: { confirm: async () => true },
+  }),
+}));
 vi.mock("../hooks/useThreadActions", async (original) => ({
   ...(await original<object>()),
-  useThreadActions: () => ({}),
+  useThreadActions: () => ({
+    archiveThread: async (threadRef: unknown) => {
+      data.read().archived.push(threadRef);
+      return { _tag: "Success" };
+    },
+  }),
   useAcknowledgeThreadWoke: () => () => {},
 }));
 vi.mock("../hooks/useHandleNewThread", async (original) => ({
@@ -245,7 +266,12 @@ vi.mock("../hooks/useHandleNewThread", async (original) => ({
     defaultProjectRef: null,
   }),
 }));
-vi.mock("./plugins/usePluginThreadMenu", () => ({ usePluginThreadMenu: () => () => [] }));
+vi.mock("./plugins/usePluginThreadMenu", () => ({
+  usePluginThreadMenu: () => ({
+    capture: () => ({ entries: [], items: [], locationKey: "" }),
+    run: () => false,
+  }),
+}));
 vi.mock("./sidebar/SidebarChrome", () => ({
   SidebarChromeHeader: () => null,
   SidebarChromeFooter: () => null,
@@ -282,7 +308,9 @@ vi.mock("./sidebar/SidebarThreadRow", () => ({
       {props.jumpLabel ? <kbd>{props.jumpLabel}</kbd> : null}
     </li>
   ),
-  SidebarSearchResultRow: () => null,
+  SidebarSearchResultRow: (props: { thread: Thread }) => (
+    <li data-testid="search-row">{props.thread.title}</li>
+  ),
   SidebarThreadStatusIcon: () => null,
   JumpHintBadge: (props: { label: string }) => <kbd>{props.label}</kbd>,
 }));
@@ -695,6 +723,31 @@ function treeConversationPlugin(): PluginInstallation {
   };
 }
 
+/** Owns conversations in an exclusive "focus" tree, with access to the laptop's `p1`. */
+function ownedTreePlugin(enabled = true): PluginInstallation {
+  const base = treeConversationPlugin();
+  const capabilities = [...base.grants.capabilities, "ui.native-tree-projects" as const];
+  return {
+    ...base,
+    enabled,
+    status: enabled ? "idle" : "disabled",
+    manifest: {
+      ...base.manifest,
+      capabilities,
+      nativeTrees: [
+        {
+          id: "focus",
+          title: "Focus",
+          unplaced: "omit",
+          create: { actionId: "coordinate", title: "New project" },
+          emptyText: "Start a project.",
+        },
+      ],
+    },
+    grants: { capabilities, projectIds: [ProjectId.make("p1")] },
+  };
+}
+
 const treeGroup = (id: string, title: string, extra: Partial<PluginTreeNode> = {}) =>
   ({ id, kind: "group", title, ...extra }) as PluginTreeNode;
 const treeProject = (id: string, projectId: string, parentId?: string): PluginTreeNode => ({
@@ -717,6 +770,9 @@ function setupTree(input: {
 }) {
   setup({ threads: input.threads, route: input.route, chooseProjects: false });
   data.update({
+    menus: [],
+    menuChoice: null,
+    archived: [],
     installations: [treePlugin()],
     trees: new Map(input.trees),
     treeRevision: 0,
@@ -895,6 +951,99 @@ describe("Sidebar plugin tree", () => {
     await act(() => data.update({ installations: [treePlugin(false)] }));
     await expect.poll(sectionNames).toEqual([]);
     await expect.element(page.getByText("a")).toHaveAttribute("aria-current", "page");
+  });
+
+  it("keeps owned conversations only in their exclusive tree while it is offered", async () => {
+    const main = {
+      ...thread("main", laptop, "p1"),
+      pluginOwner: { installationId: "inst-projects", treeId: "focus" },
+    };
+    const worker = thread("worker", laptop, "p1", {
+      source: { ...main.source, creationSource: "mcp" },
+      lineage: { rootThreadId: main.id, parentThreadId: main.id, relationshipToParent: "subagent" },
+    });
+    // Launched from it rather than delegated: an ordinary thread that stays in Activity.
+    const launched = thread("launched", laptop, "p1", {
+      lineage: { rootThreadId: main.id, parentThreadId: main.id, relationshipToParent: "fork" },
+    });
+    const loose = thread("loose", laptop, "p1");
+    const parked = thread("parked", laptop, "p1", settled);
+    setupTree({
+      threads: [main, worker, launched, loose, parked],
+      route: loose,
+      // The first read fails on both environments.
+      trees: new Map(),
+    });
+    window.localStorage.removeItem("t3code:sidebar:view");
+    data.update({ installations: [ownedTreePlugin()] });
+    await using _screen = await renderSidebar();
+
+    // Activity leaves the owned conversation (and its delegated worker) to the tree.
+    await expect.poll(rowTitles).toEqual(["launched", "loose"]);
+    // Search still finds it.
+    await userEvent.fill(page.getByLabelText("Search threads"), "main");
+    await expect
+      .poll(() =>
+        page
+          .getByTestId("search-row")
+          .elements()
+          .map((row) => row.textContent),
+      )
+      .toEqual(["main"]);
+    await userEvent.clear(page.getByLabelText("Search threads"));
+
+    // Choosing the tree shows it even though no read succeeded, and nothing else.
+    await userEvent.click(page.getByRole("button", { name: "Toggle Focus view", exact: true }));
+    await expect.element(page.getByRole("button", { name: "Open App", exact: true })).toBeVisible();
+    await expect
+      .element(page.getByText("Couldn't load Focus. It may be incomplete."))
+      .toBeVisible();
+    // Its children follow it here too; "loose" and the settled shelf stay in Activity.
+    await expect.poll(rowTitles).toEqual(["launched", "worker"]);
+    expect(sectionNames()).toEqual(["project:repo:app"]);
+    expect(page.getByTestId("sidebar-settled-shelf-toggle").elements()).toHaveLength(0);
+    expect(page.getByText("Start a project.").elements()).toHaveLength(0);
+
+    // Removing it from the view is the native archive of the main thread alone.
+    data.update({ menuChoice: "archive", menus: [], archived: [] });
+    page
+      .getByRole("button", { name: "Open App", exact: true })
+      .element()
+      .dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+    await vi.waitFor(() => expect(data.read().archived).toEqual([routeTo(main)]));
+    expect(data.read().menus[0]).toEqual(expect.arrayContaining(["archive", "project-settings"]));
+
+    // Disabled, the plugin returns its conversation to Activity.
+    await act(() => data.update({ installations: [ownedTreePlugin(false)] }));
+    await expect.poll(rowTitles).toEqual(["launched", "loose", "main"]);
+  });
+
+  it("tells a loaded empty exclusive tree from one still loading", async () => {
+    const loose = thread("loose", laptop, "p1");
+    setupTree({
+      threads: [loose],
+      route: null,
+      trees: new Map([
+        [laptop, []],
+        [server, []],
+      ]),
+    });
+    data.update({
+      installations: [ownedTreePlugin()],
+      // The change subscription has not reported, so no read starts yet.
+      treeRevision: undefined,
+    });
+    await using _screen = await renderSidebar();
+    // The tree's create action heads it from the start; its empty text waits for a read.
+    const create = page.getByRole("button", { name: "New project", exact: true });
+    await expect.element(create).toBeVisible();
+    expect(data.read().treeReads).toEqual([]);
+    expect(rowTitles()).toEqual([]);
+    expect(page.getByText("Start a project.").elements()).toHaveLength(0);
+    await act(() => data.update({ treeRevision: 0 }));
+    await expect.element(page.getByText("Start a project.")).toBeVisible();
+    await expect.element(create).toBeVisible();
+    expect(rowTitles()).toEqual([]);
   });
 
   it("says when the tree could not load and the sidebar shows activity instead", async () => {
@@ -1283,13 +1432,18 @@ describe("Sidebar plugin tree", () => {
     await userEvent.click(serverHeading.getByRole("button", { name: "New thread in App" }));
     expect(data.read().newThreads).toEqual([scopeProjectRef(server, ProjectId.make("p9"))]);
 
+    // Its thread's own menu keeps project settings, still on the conversation's machine.
+    data.update({ menuChoice: "project-settings" });
     onServer
       .element()
       .dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
-    expect(navigate).toHaveBeenLastCalledWith({
-      to: "/settings/projects",
-      search: { project: "repo:app", machine: server },
-    });
+    await vi.waitFor(() => expect(data.read().menus.at(-1)).toContain("project-settings"));
+    await vi.waitFor(() =>
+      expect(navigate).toHaveBeenLastCalledWith({
+        to: "/settings/projects",
+        search: { project: "repo:app", machine: server },
+      }),
+    );
 
     // The laptop's heading keeps its own project.
     const onLaptop = page.getByRole("button", { name: "App on Laptop, Start coordinator" });

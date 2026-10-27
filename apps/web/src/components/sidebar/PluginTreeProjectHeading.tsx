@@ -29,6 +29,10 @@ export function PluginTreeProjectHeading(
     readonly routeThreadKey: string | null;
     readonly jumpLabel: string | null;
     readonly onThreadClick: (event: ReactMouseEvent, threadRef: ScopedThreadRef) => void;
+    readonly onThreadContextMenu: (
+      threadRef: ScopedThreadRef,
+      position: { readonly x: number; readonly y: number },
+    ) => void;
   },
 ) {
   const {
@@ -38,6 +42,7 @@ export function PluginTreeProjectHeading(
     routeThreadKey,
     jumpLabel,
     onThreadClick,
+    onThreadContextMenu,
     ...header
   } = props;
   const name = header.project?.displayName ?? "";
@@ -59,6 +64,14 @@ export function PluginTreeProjectHeading(
           jumpHint: jumpLabel === null ? null : <JumpHintBadge label={jumpLabel} />,
           status: <SidebarThreadStatusIcon thread={thread} markSettledDone />,
           onOpen: (event) => onThreadClick(event, scopeThreadRef(thread.environmentId, thread.id)),
+          // The native thread menu: archive keeps its guard and Undo, and project settings stay.
+          onContextMenu: (event) => {
+            event.preventDefault();
+            onThreadContextMenu(scopeThreadRef(thread.environmentId, thread.id), {
+              x: event.clientX,
+              y: event.clientY,
+            });
+          },
         }}
       />
     );

@@ -4,8 +4,11 @@ import type { EnvironmentServerConfig } from "@t3tools/client-runtime/connection
 import {
   buildPluginTreeLayout,
   isPluginSidebarTreeOption,
+  isPluginTreeExclusive,
+  isPluginTreeOwnedThread,
   pluginTreeFamilyRoots,
   type PluginTreeHeading,
+  type PluginTreeOwnerGrant,
   type PluginTreeSection,
   type PluginTreeSource,
 } from "@t3tools/client-runtime/plugins";
@@ -41,7 +44,10 @@ import {
   createInboxReturnTracker,
   isThreadWorking,
 } from "@t3tools/client-runtime/state/thread-inbox";
-import { sortSettledThreads } from "@t3tools/client-runtime/state/thread-sort";
+import {
+  sortSettledThreads,
+  threadActivityTimestampMs,
+} from "@t3tools/client-runtime/state/thread-sort";
 import {
   nextShownOrder,
   threadSearchMatchKey,
@@ -261,9 +267,11 @@ import { SidebarDraftBlock } from "./sidebar/SidebarDraftBlock";
 import { buildProjectView, type ProjectViewSection } from "./sidebar/projectView.logic";
 import {
   PluginTreeSnapshotSources,
+  usePluginTreeLoaded,
   usePluginTreeNotice,
   usePluginTreeSources,
 } from "./sidebar/pluginTreeSources";
+import { PluginTreeCreate } from "./sidebar/PluginTreeCreate";
 import { PluginTreeProjectHeading } from "./sidebar/PluginTreeProjectHeading";
 import {
   SidebarProjectSectionHeader,
@@ -273,6 +281,7 @@ import {
   SidebarThreadNest,
 } from "./sidebar/SidebarProjectView";
 import {
+  usePluginTreeOwnerGrants,
   useSidebarProjectFolds,
   useSidebarView,
   useSidebarViewSessionStore,
@@ -521,6 +530,7 @@ function useSidebarThreads(input: {
   // Keeps folders with no active threads, so a project the user filtered to can start one.
   readonly keepEmptyFolders: boolean;
   /** A plugin-declared project view replaces the pinned, active and working lists. */
+  readonly treeOwners: ReadonlyMap<EnvironmentId, ReadonlyArray<PluginTreeOwnerGrant>>;
   readonly projectView: {
     readonly rules:
       | { readonly kind: "declared"; readonly view: PluginSidebarView }
@@ -539,6 +549,7 @@ function useSidebarThreads(input: {
     routeRowThreadKey,
     folderGroups,
     keepEmptyFolders: keepEmpty,
+    treeOwners,
     projectView,
   } = input;
   // Folders already separate the work, so boring mode has no Working shelf.
@@ -591,18 +602,25 @@ function useSidebarThreads(input: {
     showDelegatedThreads: projectView !== null,
   });
 
-  const { pinnedThreads, activeThreads, workingThreads } = partition;
+  // Search and trees see every thread; only Activity leaves owned conversations to their tree.
   const searchableThreads = [
-    ...pinnedThreads,
-    ...activeThreads,
-    ...workingThreads,
+    ...partition.pinnedThreads,
+    ...partition.activeThreads,
+    ...partition.workingThreads,
     ...partition.snoozedThreads,
     ...partition.settledThreads,
   ];
   const liveThreads = [
-    ...pinnedThreads,
-    ...sortThreadsForSidebar([...activeThreads, ...workingThreads]),
+    ...partition.pinnedThreads,
+    ...sortThreadsForSidebar([...partition.activeThreads, ...partition.workingThreads]),
   ];
+  const isHiddenFromActivity = (thread: EnvironmentThreadShell) =>
+    projectView === null && isPluginTreeOwnedThread(thread, treeOwners.get(thread.environmentId));
+  const inActivity = (list: EnvironmentThreadShell[]) =>
+    projectView === null ? list.filter((thread) => !isHiddenFromActivity(thread)) : list;
+  const pinnedThreads = inActivity(partition.pinnedThreads);
+  const activeThreads = inActivity(partition.activeThreads);
+  const workingThreads = inActivity(partition.workingThreads);
   const treeLayout =
     projectView?.rules.kind !== "tree"
       ? null
@@ -616,11 +634,17 @@ function useSidebarThreads(input: {
             projectScopeKey === null || group.projectKey === projectScopeKey,
           folds: projectView.foldedKeys,
           routeThreadKey: routeRowThreadKey,
+          activityAt: threadActivityTimestampMs,
         });
-  const shelved = (list: readonly EnvironmentThreadShell[]) =>
-    treeLayout === null
-      ? list
-      : list.filter((thread) => !treeLayout.placedKeys.has(threadShellKey(thread)));
+  const exclusiveTree =
+    projectView?.rules.kind === "tree" && isPluginTreeExclusive(projectView.rules.sources);
+  // An exclusive tree has no shelves: what it leaves out stays in Activity.
+  const shelved = (list: EnvironmentThreadShell[]) =>
+    exclusiveTree
+      ? EMPTY_THREADS
+      : treeLayout === null
+        ? inActivity(list)
+        : list.filter((thread) => !treeLayout.placedKeys.has(threadShellKey(thread)));
   const snoozedThreads = shelved(partition.snoozedThreads);
   const settledThreads = shelved(partition.settledThreads);
   // Older settled threads load in pages; the shelf lists them only as far as they are loaded.
@@ -631,8 +655,9 @@ function useSidebarThreads(input: {
   });
   const listedSettledThreads = settledThreads.filter(olderSettledShelf.isListed);
   useOlderSettledShelfGrowth(olderSettledShelf, listedSettledThreads);
-  const settledCount =
-    settledThreads.length + olderSettledShelf.unloadedCount(partition.visibleThreads);
+  const settledCount = exclusiveTree
+    ? 0
+    : settledThreads.length + olderSettledShelf.unloadedCount(partition.visibleThreads);
   const visibleSettledThreads = (() => {
     const visible = listedSettledThreads.slice(0, settledVisibleCount);
     if (
@@ -717,8 +742,12 @@ function useSidebarThreads(input: {
   return {
     snoozeWakeTick: snoozeWakeClock,
     ...partition,
+    pinnedThreads,
+    activeThreads,
+    workingThreads,
     snoozedThreads,
     settledThreads,
+    isHiddenFromActivity,
     threads,
     workingShelfEnabled,
     projectLayout,
@@ -1427,10 +1456,13 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       ? sidebarView.selected
       : null;
   const treeSources = usePluginTreeSources(selectedTree);
+  const treeOwners = usePluginTreeOwnerGrants();
   const treeConversationEnvironmentIds = new Set(
     treeSources?.flatMap((source) => (source.conversations ? [source.environmentId] : [])),
   );
   const treeNotice = usePluginTreeNotice(selectedTree);
+  const treeLoaded = usePluginTreeLoaded(selectedTree);
+  const exclusiveTree = treeSources !== null && isPluginTreeExclusive(treeSources);
   const projectViewRules =
     sidebarView.selected === null
       ? null
@@ -1477,11 +1509,13 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     pinnedKeysById,
     activeKeysById,
     snoozeWakeTick,
+    isHiddenFromActivity,
   } = useSidebarThreads({
     projectScopeKey,
     scopedProjectKeys,
     serverConfigs,
     optimisticDrop,
+    treeOwners,
     threads,
     delegatedUnderParent,
     routeRowThreadKey,
@@ -2092,9 +2126,12 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
         shelves.push({ kind: "marker", marker: "snoozed-header" });
         shelves.push(...rowsOf(visibleSnoozedThreads, "snoozed"));
       }
-      shelves.push({ kind: "marker", marker: "settled-header" });
-      shelves.push({ kind: "marker", marker: "settled-placeholder" });
-      shelves.push(...rowsOf(renderedSettledThreads, "settled"));
+      // An exclusive tree has no shelves; Activity keeps what it leaves out.
+      if (!exclusiveTree) {
+        shelves.push({ kind: "marker", marker: "settled-header" });
+        shelves.push({ kind: "marker", marker: "settled-placeholder" });
+        shelves.push(...rowsOf(renderedSettledThreads, "settled"));
+      }
       return [...projectRows, ...shelves];
     }
     const items: SidebarListItem[] = [{ kind: "marker", marker: "pinned-header" }];
@@ -2741,7 +2778,12 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   );
 
   const handleThreadContextMenu = useStableCallback(
-    (threadRef: ScopedThreadRef, position: { x: number; y: number }) => {
+    (
+      threadRef: ScopedThreadRef,
+      position: { x: number; y: number },
+      /** From a conversation's heading, whose settings open on the conversation's machine. */
+      fromHeading = false,
+    ) => {
       void (async () => {
         const api = readLocalApi();
         if (!api) return;
@@ -2851,10 +2893,11 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
             return;
           case "project-settings":
             if (threadProjectGroup)
-              openProjectSettings(threadProjectGroup, {
-                environmentId: threadRef.environmentId,
-                projectId: thread.projectId,
-              });
+              openProjectSettings(
+                threadProjectGroup,
+                { environmentId: threadRef.environmentId, projectId: thread.projectId },
+                fromHeading,
+              );
             return;
           case "new-thread-on-branch": {
             const result = await settlePromise(() =>
@@ -3440,6 +3483,9 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
               </p>
             )
           ) : null}
+          {!isSearchingThreads && selectedTree !== null ? (
+            <PluginTreeCreate choice={selectedTree} />
+          ) : null}
           {!isSearchingThreads && treeNotice !== null ? (
             <p role="status" className="px-2 pb-1.5 text-xs text-sidebar-muted-foreground">
               {treeNotice}
@@ -3702,6 +3748,9 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                                       : null
                                   }
                                   onThreadClick={handleThreadClick}
+                                  onThreadContextMenu={(threadRef, position) =>
+                                    handleThreadContextMenu(threadRef, position, true)
+                                  }
                                 />
                               ) : (
                                 <SidebarProjectSectionHeader
@@ -3945,14 +3994,21 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
           visibleDraftSessionCount === 0 &&
           (projectLayout === null ||
             projectLayout.sections.length + projectLayout.quietSections.length === 0) &&
-          pinnedThreads.length +
-            activeThreads.length +
-            workingThreads.length +
-            snoozedThreads.length +
-            settledCount ===
-            0 ? (
+          // An exclusive tree lists nothing else, so no section means it is empty.
+          (exclusiveTree ||
+            pinnedThreads.length +
+              activeThreads.length +
+              workingThreads.length +
+              snoozedThreads.length +
+              settledCount ===
+              0) ? (
             <div className="flex flex-col items-center gap-2 px-2 py-6 text-center text-xs text-muted-foreground/60">
-              {projects.length === 0 ? (
+              {exclusiveTree ? (
+                // Nothing yet while reading or after a failure, which the notice explains.
+                treeLoaded ? (
+                  (selectedTree?.tree.emptyText ?? "No threads yet")
+                ) : null
+              ) : projects.length === 0 ? (
                 <>
                   <span>No projects yet</span>
                   <button

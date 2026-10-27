@@ -6,6 +6,7 @@ import {
   pluginTreeConversationsGranted,
   pluginTreeConversationThreadKeys,
   pluginTreeNotice,
+  pluginTreeProjectsGranted,
   pluginTreeTopic,
   type PluginSidebarTreeOption,
   type PluginTreeSource,
@@ -41,7 +42,14 @@ interface TreeSnapshot {
   readonly failed: boolean;
   /** The installation currently holds ui.native-tree-conversations. */
   readonly conversations: boolean;
+  /**
+   * With ui.native-tree-projects it owns conversations, and declaring `unplaced: "omit"` makes the
+   * tree exclusive. Known from the catalogue, so owned conversations show before any read lands.
+   */
+  readonly projects: TreeProjects;
 }
+
+type TreeProjects = "none" | "owned" | "exclusive";
 
 interface PluginTreeSnapshotState {
   /** The tree the snapshots belong to; choosing another one starts empty. */
@@ -57,12 +65,14 @@ interface PluginTreeSnapshotState {
           readonly installationId: string;
           readonly generation: string;
           readonly conversations: boolean;
+          readonly projects: TreeProjects;
         }
       | {
           readonly kind: "ready";
           readonly installationId: string;
           readonly generation: string;
           readonly conversations: boolean;
+          readonly projects: TreeProjects;
           readonly nodes: ReadonlyArray<PluginTreeNode>;
         }
       | { readonly kind: "withdrawn" },
@@ -90,6 +100,7 @@ const usePluginTreeSnapshotStore = create<PluginTreeSnapshotState>()((set) => ({
         update.kind === "identity" &&
         sameIdentity &&
         previous.conversations === update.conversations &&
+        previous.projects === update.projects &&
         state.key === key
       )
         return state;
@@ -101,6 +112,7 @@ const usePluginTreeSnapshotStore = create<PluginTreeSnapshotState>()((set) => ({
         failed:
           update.kind === "identity" && sameIdentity ? previous.failed : update.kind === "failed",
         conversations: update.conversations,
+        projects: update.projects,
       });
       return { key, snapshots };
     }),
@@ -159,6 +171,12 @@ function PluginTreeSnapshotSource(props: {
   // A grant change re-reads, so a revoked grant never keeps showing conversations.
   const conversations = installation !== null && pluginTreeConversationsGranted(installation);
   const treeId = choice.tree.id;
+  const projects: TreeProjects =
+    installation === null || !pluginTreeProjectsGranted(installation)
+      ? "none"
+      : installation.manifest.nativeTrees?.find((tree) => tree.id === treeId)?.unplaced === "omit"
+        ? "exclusive"
+        : "owned";
   const revision = usePluginChangeRevision(
     installationId === null ? null : environmentId,
     installationId === null || generation === null
@@ -179,6 +197,7 @@ function PluginTreeSnapshotSource(props: {
       installationId,
       generation,
       conversations,
+      projects,
     });
     if (revision === undefined) return;
     let cancelled = false;
@@ -187,6 +206,7 @@ function PluginTreeSnapshotSource(props: {
       installationId,
       generation,
       conversations,
+      projects,
     });
     void latestRead
       .current({
@@ -204,9 +224,10 @@ function PluginTreeSnapshotSource(props: {
                 installationId,
                 generation,
                 conversations,
+                projects,
                 nodes: result.value.nodes,
               }
-            : { kind: "failed", installationId, generation, conversations },
+            : { kind: "failed", installationId, generation, conversations, projects },
         );
       });
     return () => {
@@ -221,6 +242,7 @@ function PluginTreeSnapshotSource(props: {
     known,
     revision,
     conversations,
+    projects,
     // oxlint-disable-next-line react/exhaustive-effect-dependencies -- A snooze ending reads again.
     snoozeWake,
     report,
@@ -257,15 +279,26 @@ export function usePluginTreeNotice(choice: PluginSidebarTreeOption | null): str
   const key = usePluginTreeSnapshotStore((state) => state.key);
   const snapshots = usePluginTreeSnapshotStore((state) => state.snapshots);
   if (choice === null || key !== choice.key) return null;
+  const shown = environments.flatMap(({ environmentId }) => {
+    const snapshot = snapshots.get(environmentId);
+    return snapshot === undefined ? [] : [snapshot];
+  });
   return pluginTreeNotice(
     choice.tree.title,
-    environments.flatMap(({ environmentId }) => {
-      const snapshot = snapshots.get(environmentId);
-      return snapshot === undefined
-        ? []
-        : [{ failed: snapshot.failed, hasNodes: snapshot.nodes !== null }];
-    }),
+    shown.map((snapshot) => ({ failed: snapshot.failed, hasNodes: snapshot.nodes !== null })),
+    shown.length > 0 && shown.every((snapshot) => snapshot.projects === "exclusive"),
   );
+}
+
+/**
+ * Whether every environment serving the chosen tree has answered its latest read, so a tree with
+ * nothing in it is really empty rather than still loading or failed.
+ */
+export function usePluginTreeLoaded(choice: PluginSidebarTreeOption | null): boolean {
+  const key = usePluginTreeSnapshotStore((state) => state.key);
+  const snapshots = usePluginTreeSnapshotStore((state) => state.snapshots);
+  if (choice === null || key !== choice.key || snapshots.size === 0) return false;
+  return [...snapshots.values()].every((snapshot) => snapshot.nodes !== null && !snapshot.failed);
 }
 
 /**
@@ -286,11 +319,28 @@ export function usePluginTreeSources(
       (left, right) =>
         Number(right === primaryEnvironmentId) - Number(left === primaryEnvironmentId),
     );
-  const sources = ordered.flatMap((environmentId) => {
+  const sources = ordered.flatMap((environmentId): PluginTreeSource[] => {
     const snapshot = snapshots.get(environmentId);
-    return snapshot === undefined || snapshot.nodes === null
-      ? []
-      : [{ environmentId, nodes: snapshot.nodes, conversations: snapshot.conversations }];
+    if (snapshot === undefined) return [];
+    // An exclusive tree is the only place its conversations show, so it lays out from the
+    // serving identity alone while the first read is pending or after it failed.
+    if (snapshot.nodes === null && snapshot.projects !== "exclusive") return [];
+    return [
+      {
+        environmentId,
+        nodes: snapshot.nodes ?? [],
+        conversations: snapshot.conversations,
+        ...(snapshot.projects === "none"
+          ? {}
+          : {
+              projects: {
+                installationId: snapshot.installationId,
+                treeId: choice.tree.id,
+                exclusive: snapshot.projects === "exclusive",
+              },
+            }),
+      },
+    ];
   });
   return sources.length === 0 ? null : sources;
 }

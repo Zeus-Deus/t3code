@@ -2,6 +2,7 @@ import {
   pluginRunnableInstallations,
   pluginSidebarTreeOptions,
   pluginSidebarViewOptions,
+  pluginTreeOwnerGrants,
   type PluginSidebarViewSource,
 } from "@t3tools/client-runtime/plugins";
 import type { EnvironmentId } from "@t3tools/contracts";
@@ -43,6 +44,7 @@ function PluginSidebarViewSource(props: { readonly environmentId: EnvironmentId 
             ...pluginSidebarViewOptions(environmentId, pluginRunnableInstallations(catalogue)),
             ...pluginSidebarTreeOptions(environmentId, pluginRunnableInstallations(catalogue)),
           ],
+          owners: pluginTreeOwnerGrants(pluginRunnableInstallations(catalogue)),
         };
   useEffect(() => {
     report(environmentId, source);

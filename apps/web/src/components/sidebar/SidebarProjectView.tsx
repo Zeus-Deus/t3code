@@ -205,6 +205,8 @@ interface SidebarProjectHeadingConversation {
   readonly environmentLabel: string | null;
   /** Shown while jump hints are, as on a thread row. */
   readonly jumpHint: ReactNode;
+  /** A thread's own menu, which keeps project settings; without it right-click opens those. */
+  readonly onContextMenu?: ((event: ReactMouseEvent) => void) | undefined;
 }
 
 /**
@@ -319,7 +321,7 @@ export function SidebarProjectSectionHeader(props: {
               event.stopPropagation();
               conversation.onOpen(event);
             }}
-            onContextMenu={openSettings}
+            onContextMenu={conversation.onContextMenu ?? openSettings}
             className={cn(
               headingClassName,
               "relative cursor-pointer disabled:cursor-default",

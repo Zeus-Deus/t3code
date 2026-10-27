@@ -3,6 +3,7 @@ import {
   resolvePluginSidebarView,
   togglePluginTreeFold,
   type PluginSidebarViewSource,
+  type PluginTreeOwnerGrant,
 } from "@t3tools/client-runtime/plugins";
 import type { EnvironmentId } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
@@ -78,6 +79,24 @@ export function useSidebarView() {
     selected,
     select: (option: PluginSidebarChoice | null) => setRemembered(option),
   };
+}
+
+/**
+ * Per environment, the trees whose owned conversations Activity leaves to them. An environment that
+ * has not reported its plugins has no entry, so its threads stay in Activity.
+ */
+export function usePluginTreeOwnerGrants(): ReadonlyMap<
+  EnvironmentId,
+  ReadonlyArray<PluginTreeOwnerGrant>
+> {
+  const reported = useSidebarViewSourceStore((state) => state.sources);
+  const grants = new Map<EnvironmentId, ReadonlyArray<PluginTreeOwnerGrant>>();
+  for (const [environmentId, source] of reported) {
+    if (source.status === "ready" && source.owners !== undefined) {
+      grants.set(environmentId, source.owners);
+    }
+  }
+  return grants;
 }
 
 /** "N more projects" stays open for the session, across Settings visits, but not relaunches. */

@@ -7,6 +7,7 @@ import {
   PluginTreeSnapshotSources,
   resetPluginTreeSnapshotsForTests,
   usePluginTreeConversationScope,
+  usePluginTreeLoaded,
   usePluginTreeNotice,
   usePluginTreeSources,
 } from "./pluginTreeSources";
@@ -83,12 +84,18 @@ const installation: PluginInstallation = {
   updatedAt: "2026-10-24T00:00:00.000Z",
 };
 const choice = pluginSidebarTreeOptions(EnvironmentId.make("env-laptop"), [installation])[0]!;
-const available = (generation: string, capabilities = installation.grants.capabilities) => ({
+const available = (
+  generation: string,
+  capabilities = installation.grants.capabilities,
+  manifest = installation.manifest,
+) => ({
   availability: "available",
   loaded: true,
   error: null,
   executionDisabled: false,
-  installations: [{ ...installation, generation, grants: { capabilities, projectIds: [] } }],
+  installations: [
+    { ...installation, manifest, generation, grants: { capabilities, projectIds: [] } },
+  ],
 });
 const disconnected = {
   availability: "disconnected",
@@ -110,13 +117,16 @@ function setup() {
   state.next = served;
 }
 
-function Probe() {
+function Probe(props: { readonly loaded?: boolean }) {
   const sources = usePluginTreeSources(choice);
   const notice = usePluginTreeNotice(choice);
+  const loaded = usePluginTreeLoaded(choice);
   return (
     <>
       <PluginTreeSnapshotSources choice={choice} snoozeWake={0} />
-      <output>{JSON.stringify({ sources, notice })}</output>
+      <output>
+        {JSON.stringify({ sources, notice, ...(props.loaded === true ? { loaded } : {}) })}
+      </output>
     </>
   );
 }
@@ -125,6 +135,7 @@ const shown = (screen: { container: HTMLElement }) =>
   JSON.parse(screen.container.querySelector("output")!.textContent!) as {
     sources: unknown;
     notice: string | null;
+    loaded?: boolean;
   };
 
 const staleGeneration = {
@@ -206,6 +217,65 @@ it("stops honouring project conversations as soon as the grant goes, even if the
     expect(shown(screen)).toEqual({ ...staleGeneration, notice: "Projects may be out of date." }),
   );
   expect(state.reads).toBe(2);
+});
+
+it("lays out an exclusive tree from its serving identity before and after a failed first read", async () => {
+  setup();
+  const owning = [
+    ...installation.grants.capabilities,
+    "ui.native-tree-conversations" as const,
+    "ui.native-tree-projects" as const,
+  ];
+  const exclusive = {
+    ...installation.manifest,
+    nativeTrees: [{ id: "projects", title: "Projects", unplaced: "omit" as const }],
+  };
+  let finish!: (result: unknown) => void;
+  state.next = new Promise((resolve) => {
+    finish = resolve;
+  });
+  state.update({ catalogue: available("gen-1", owning, exclusive) });
+  await using screen = await render(<Probe loaded />);
+  const identity = {
+    environmentId: "env-laptop",
+    conversations: true,
+    projects: { installationId: "inst-projects", treeId: "projects", exclusive: true },
+  };
+  // Still reading: owned conversations can already head the tree, which is not yet "empty".
+  await vi.waitFor(() =>
+    expect(shown(screen)).toEqual({
+      sources: [{ ...identity, nodes: [] }],
+      notice: null,
+      loaded: false,
+    }),
+  );
+  await act(() => finish(denied));
+  await vi.waitFor(() =>
+    expect(shown(screen)).toEqual({
+      sources: [{ ...identity, nodes: [] }],
+      notice: "Couldn't load Projects. It may be incomplete.",
+      loaded: false,
+    }),
+  );
+  state.next = served;
+  await act(() => state.update({ revision: 1 }));
+  await vi.waitFor(() =>
+    expect(shown(screen)).toEqual({
+      sources: [{ ...identity, nodes: mine }],
+      notice: null,
+      loaded: true,
+    }),
+  );
+
+  // Without the grant the same declaration is an ordinary tree again.
+  await act(() =>
+    state.update({
+      catalogue: available("gen-1", [...installation.grants.capabilities], exclusive),
+    }),
+  );
+  await vi.waitFor(() =>
+    expect(shown(screen)).toEqual({ ...staleGeneration, notice: null, loaded: true }),
+  );
 });
 
 it("tells a project conversation and its direct workers apart from any other thread", async () => {
