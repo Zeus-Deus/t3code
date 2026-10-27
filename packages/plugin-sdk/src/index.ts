@@ -18,6 +18,7 @@ export type PluginCapability =
   | "ui.sidebar-views"
   | "ui.native-trees"
   | "ui.native-tree-conversations"
+  | "ui.native-tree-projects"
   | "ui.conversation-cards"
   | "ui.changes"
   | "worktrees.create"
@@ -74,6 +75,9 @@ export interface PluginManifest {
     readonly id: string;
     readonly title: string;
     readonly description?: string;
+    readonly unplaced?: "omit";
+    readonly create?: { readonly actionId: string; readonly title: string };
+    readonly emptyText?: string;
   }[];
   readonly settings: readonly {
     readonly key: string;
@@ -163,6 +167,8 @@ export interface PluginModelSelection {
 }
 export type PluginRuntimeMode = "approval-required" | "auto-accept-edits" | "auto" | "full-access";
 interface PluginThreadCreateOptions {
+  /** Presentation only; requires ui.native-tree-projects and a declared native tree. */
+  readonly owner?: `tree:${string}`;
   readonly projectId: string;
   readonly title?: string;
   readonly idempotencyKey: string;
@@ -201,6 +207,7 @@ export interface PluginProjectMetadata {
   readonly updatedAt: string;
 }
 export interface PluginThreadMetadata {
+  readonly pluginOwner?: { readonly installationId: string; readonly treeId: string };
   /** Host-derived creation origin, for display grouping only. */
   readonly creationSource?: string;
   readonly isRunning?: boolean;
@@ -369,6 +376,15 @@ export interface PluginContext {
       readonly idempotencyKey: string;
     }) => Promise<{ readonly threadId: string }>;
     readonly create: (input: PluginThreadCreateInput) => Promise<{ readonly threadId: string }>;
+    /** Attach presentation ownership to a thread this installation created. Idempotent. */
+    readonly adopt: (input: {
+      readonly threadId: string;
+      readonly owner: `tree:${string}`;
+    }) => Promise<{ readonly threadId: string }>;
+    /** Restore an own thread only inside a person-triggered action, never a read or agent call. */
+    readonly unarchive: (input: {
+      readonly threadId: string;
+    }) => Promise<{ readonly threadId: string }>;
     readonly list: (input: PluginPageInput & { readonly projectId: string }) => Promise<{
       readonly threads: readonly PluginThreadMetadata[];
       readonly nextCursor: number | null;

@@ -253,6 +253,27 @@ control. The conversation must belong to that exact project and appears as the
 heading rather than a duplicate thread row. Workers can nest directly under
 the heading. Reading a tree never creates a conversation or runs an action.
 
+With optional `ui.native-tree-projects`, a tree may declare `unplaced: "omit"`,
+`create: { actionId, title }` and `emptyText`. Its header action opens T3's project
+picker; selecting a project explicitly grants only that project when needed,
+then invokes the action with `context.projectId`, without a thread context.
+It never approves staged plugin updates.
+
+Pass `owner: "tree:<id>"` to `threads.create` to keep that conversation in its
+owning tree rather than Activity. `threads.adopt({ threadId, owner })` attaches
+the same presentation ownership to an existing thread this installation created;
+the host verifies its creation receipt. Ownership gives no extra authority.
+Activity hides it only while this client can offer that installation's tree with
+current project access; disabling or removing the plugin restores normal shelves.
+Exclusive trees retain owned conversations even if a snapshot omits them.
+Search and native Archive remain available.
+
+`threads.unarchive({ threadId })` restores a thread this installation created,
+only inside a person-triggered action with current project access and operate
+authority. An already-live thread succeeds without changing its snooze or settled
+state. Reads, events and agent calls cannot restore threads. A replacement
+installation cannot adopt or restore its predecessor's threads.
+
 `collapsedByDefault` folds group and project headings. Native thread rows stay
 expanded; wrap a branch in a group when it needs a foldable heading.
 

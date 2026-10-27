@@ -44,7 +44,12 @@ choice and folds stay on this device. If the plugin becomes unavailable, T3
 returns to Activity and keeps your choice for when it comes back.
 
 T3 still draws the thread rows and handles search, the project filter, and thread
-actions. Your open thread and threads omitted by a tree remain reachable.
+actions. A plugin can keep its project conversations in its own view. They return
+to Activity when that view is unavailable, and search and Archive still find them.
+Such a view can show only its projects, with a New project action to pick an
+existing T3 project or add a folder. T3 asks before granting access to another
+project; that approval does not approve a pending plugin update.
+Your open thread and threads omitted by other trees remain reachable.
 Only environments where you installed and enabled the plugin contribute to it.
 
 An agent can leave a plugin card in a conversation for you to review and use.

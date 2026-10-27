@@ -37,6 +37,7 @@ export const PLUGIN_CAPABILITIES = [
   "ui.sidebar-views",
   "ui.native-trees",
   "ui.native-tree-conversations",
+  "ui.native-tree-projects",
   "ui.conversation-cards",
   "ui.changes",
   "worktrees.create",
@@ -116,10 +117,23 @@ export const PluginSidebarView = Schema.Struct({
 export type PluginSidebarView = typeof PluginSidebarView.Type;
 export const PLUGIN_SIDEBAR_VIEW_CAPABILITY: PluginCapability = "ui.sidebar-views";
 
+export const PluginThreadOwner = Schema.Struct({
+  installationId: identifier,
+  treeId: identifier,
+});
+export type PluginThreadOwner = typeof PluginThreadOwner.Type;
+const pluginTreeOwner = text(133).check(Schema.isPattern(/^tree:[a-zA-Z0-9][a-zA-Z0-9._-]*$/));
+export const PluginThreadAdoptInput = Schema.Struct({ threadId: ThreadId, owner: pluginTreeOwner });
+
 export const PluginNativeTree = Schema.Struct({
   id: identifier,
   title: text(40).check(Schema.isMinLength(1)),
   description: Schema.optionalKey(text(300)),
+  unplaced: Schema.optionalKey(Schema.Literal("omit")),
+  create: Schema.optionalKey(
+    Schema.Struct({ actionId: identifier, title: text(200).check(Schema.isMinLength(1)) }),
+  ),
+  emptyText: Schema.optionalKey(text(300)),
 });
 export type PluginNativeTree = typeof PluginNativeTree.Type;
 export const MAX_PLUGIN_TREE_NODES = 2_000;
@@ -150,6 +164,12 @@ export const PluginTreeSnapshot = Schema.Struct({
   nodes: Schema.Array(PluginTreeNode).check(Schema.isMaxLength(MAX_PLUGIN_TREE_NODES)),
 });
 export type PluginTreeSnapshot = typeof PluginTreeSnapshot.Type;
+export const PluginGrantProjectInput = Schema.Struct({
+  installationId: identifier,
+  generation: identifier,
+  projectId: ProjectId,
+});
+export type PluginGrantProjectInput = typeof PluginGrantProjectInput.Type;
 export const PluginTreeInput = Schema.Struct({
   installationId: identifier,
   generation: identifier,
@@ -205,6 +225,7 @@ export const PluginWorkspaceStrategy = Schema.Union([
   }),
 ]);
 export const PluginThreadCreateInput = Schema.Struct({
+  owner: Schema.optionalKey(pluginTreeOwner),
   idempotencyKey: identifier,
   projectId: ProjectId,
   title: Schema.optionalKey(text(200).check(Schema.isMinLength(1))),
@@ -235,6 +256,7 @@ export const PluginProjectMetadata = Schema.Struct({
 });
 export type PluginProjectMetadata = typeof PluginProjectMetadata.Type;
 export const PluginThreadMetadata = Schema.Struct({
+  pluginOwner: Schema.optionalKey(PluginThreadOwner),
   creationSource: Schema.optionalKey(text(128)),
   isRunning: Schema.optionalKey(Schema.Boolean),
   needsAttention: Schema.optionalKey(Schema.Boolean),

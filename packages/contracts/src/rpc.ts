@@ -1,5 +1,6 @@
 import {
   PluginTreeInput,
+  PluginGrantProjectInput,
   PluginTreeSnapshot,
   PluginChanged,
   PluginCardViewInput,
@@ -550,6 +551,7 @@ export const WS_METHODS = {
   pluginsRefresh: "plugins.refresh",
   pluginsDiscardPendingUpdate: "plugins.discardPendingUpdate",
   pluginsConsent: "plugins.consent",
+  pluginsGrantProject: "plugins.grantProject",
   pluginsSetEnabled: "plugins.setEnabled",
   pluginsRemove: "plugins.remove",
   pluginsUpdateSettings: "plugins.updateSettings",
@@ -1932,6 +1934,11 @@ const WsPluginsConsentRpc = Rpc.make(WS_METHODS.pluginsConsent, {
   success: PluginInstallation,
   error: pluginRpcError,
 });
+const WsPluginsGrantProjectRpc = Rpc.make(WS_METHODS.pluginsGrantProject, {
+  payload: PluginGrantProjectInput,
+  success: PluginInstallation,
+  error: pluginRpcError,
+});
 const WsPluginsSetEnabledRpc = Rpc.make(WS_METHODS.pluginsSetEnabled, {
   payload: Schema.Struct({
     installationId: PluginInstallation.fields.installationId,
@@ -2146,6 +2153,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsPluginsRefreshRpc,
   WsPluginsDiscardPendingUpdateRpc,
   WsPluginsConsentRpc,
+  WsPluginsGrantProjectRpc,
   WsPluginsSetEnabledRpc,
   WsPluginsRemoveRpc,
   WsPluginsUpdateSettingsRpc,

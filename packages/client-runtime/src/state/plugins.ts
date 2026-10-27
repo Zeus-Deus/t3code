@@ -45,6 +45,11 @@ export function createPluginEnvironmentAtoms<R, E>(
       tag: WS_METHODS.pluginsConsent,
       ...management,
     }),
+    grantProject: createEnvironmentRpcCommand(runtime, {
+      label: "environment-command:plugins:grant-project",
+      tag: WS_METHODS.pluginsGrantProject,
+      ...management,
+    }),
     setEnabled: createEnvironmentRpcCommand(runtime, {
       label: "environment-command:plugins:set-enabled",
       tag: WS_METHODS.pluginsSetEnabled,

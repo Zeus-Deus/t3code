@@ -230,6 +230,12 @@ const CAPABILITY_TEXT: Record<
       "Open a project conversation from its sidebar heading and attach a brief to its first message.",
     projectScoped: false,
   },
+  "ui.native-tree-projects": {
+    title: "Keep project conversations in its view",
+    detail:
+      "Own project conversations in its sidebar, choose projects to add, and restore its archived threads when you ask.",
+    projectScoped: false,
+  },
   "ui.conversation-cards": {
     title: "Show cards in chat",
     detail: "Show its own interactive cards in a conversation when an agent uses it.",

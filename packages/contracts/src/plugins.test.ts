@@ -61,6 +61,56 @@ const decodeCardReference = Schema.decodeUnknownSync(PluginCardReference);
 const decodeThreadMetadata = Schema.decodeUnknownSync(PluginThreadMetadata);
 const decodePluginError = Schema.decodeUnknownSync(Schema.toCodecJson(PluginError));
 
+it("keeps exclusive tree declarations and ownership additive in API 1", () => {
+  const tree = {
+    id: "projects",
+    title: "Projects",
+    unplaced: "omit",
+    create: { actionId: "open", title: "New project" },
+    emptyText: "Choose a project to begin.",
+  };
+  const author = {
+    ...manifest,
+    capabilities: ["ui.native-trees"],
+    actions: [],
+    views: [],
+    nativeTrees: [tree],
+  };
+  expect(decodeManifest(author).nativeTrees).toEqual([tree]);
+  expect(
+    decodeCatalogue({ installations: [{ ...installation, manifest: author }] }).installations[0]
+      ?.manifest.nativeTrees,
+  ).toEqual([tree]);
+  expect(pluginCompatibility({ capabilities: ["ui.native-tree-projects"] }).available).toBe(true);
+  expect(
+    decodeThreadCreate({
+      projectId: "p",
+      idempotencyKey: "one",
+      brief: "Help",
+      owner: "tree:projects",
+    }),
+  ).toHaveProperty("owner", "tree:projects");
+  for (const owner of ["projects", "tree:", "tree:bad/ref", 1]) {
+    expect(() =>
+      decodeThreadCreate({ projectId: "p", idempotencyKey: "one", brief: "Help", owner }),
+    ).toThrow();
+  }
+  for (const invalid of [
+    { ...tree, unplaced: "hide" },
+    { ...tree, create: { actionId: "", title: "New project" } },
+    { ...tree, emptyText: "x".repeat(301) },
+  ]) {
+    expect(() => decodeManifest({ ...author, nativeTrees: [invalid] })).toThrow();
+  }
+});
+
+it("requires management authority to add exactly one project grant", () => {
+  expect(clientRpcRequiredScopes("plugins.grantProject", {})).toEqual([
+    AuthAccessWriteScope,
+    AuthTerminalOperateScope,
+  ]);
+});
+
 it("keeps optional project conversations in API 1 trees with only one opening target", () => {
   const project = { id: "project", kind: "project", projectId: "p" };
   expect(decodeTreeSnapshot({ nodes: [project] }).nodes).toEqual([project]);
