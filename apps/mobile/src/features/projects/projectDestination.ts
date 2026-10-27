@@ -51,3 +51,16 @@ export const projectDestinationOffers = (
   destination: ProjectDestination | null,
   environmentId: EnvironmentId,
 ) => destination === null || destination.environmentIds.includes(environmentId);
+
+/**
+ * Takes the destination for a project created on the route `routeKey`, only while that route is
+ * still open: a create that finishes after its screen was left hands over nothing, and the
+ * chooser's destination stays live for another pick.
+ */
+export function takeProjectDestinationFrom(
+  param: string | ReadonlyArray<string> | undefined,
+  routes: ReadonlyArray<{ readonly key: string }>,
+  routeKey: string,
+): ProjectDestination | null {
+  return routes.some((route) => route.key === routeKey) ? takeProjectDestination(param) : null;
+}

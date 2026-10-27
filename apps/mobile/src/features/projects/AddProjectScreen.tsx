@@ -61,6 +61,7 @@ import {
 import {
   StackActions,
   useNavigation,
+  useRoute,
   type NavigationState,
   type ParamListBase,
 } from "@react-navigation/native";
@@ -91,7 +92,7 @@ import { uuidv4 } from "../../lib/uuid";
 import {
   projectDestinationOffers,
   readProjectDestination,
-  takeProjectDestination,
+  takeProjectDestinationFrom,
   type ProjectDestination,
 } from "./projectDestination";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -712,18 +713,22 @@ function useOpenNewTaskDraft() {
   };
 }
 
-/** Hands the project to the destination and closes the chooser it was opened from. */
+/**
+ * Hands the project to the destination and closes the chooser it was opened from, unless the
+ * screen that created it (`routeKey`) was left meanwhile.
+ */
 function finishAtProjectDestination(
   navigation: {
     dispatch: (action: ReturnType<typeof StackActions.pop>) => void;
     getState: () => NavigationState<ParamListBase> | undefined;
   },
   projectDestination: string | string[] | undefined,
+  routeKey: string,
   project: ScopedProjectRef,
 ) {
-  const destination = takeProjectDestination(projectDestination);
-  if (destination === null) return;
   const routes = navigation.getState()?.routes ?? [];
+  const destination = takeProjectDestinationFrom(projectDestination, routes, routeKey);
+  if (destination === null) return;
   const chooser = routes.findLastIndex((route) => route.name === "NewTaskProject");
   if (chooser > 0) navigation.dispatch(StackActions.pop(routes.length - chooser));
   destination.choose(project);
@@ -746,6 +751,7 @@ function useCreateProject(
 ) {
   const openNewTaskDraft = useOpenNewTaskDraft();
   const navigation = useNavigation();
+  const routeKey = useRoute().key;
   const createProject = useAtomCommand(projectEnvironment.create, { reportFailure: false });
   const projects = useProjects();
 
@@ -773,6 +779,7 @@ function useCreateProject(
       finishAtProjectDestination(
         navigation,
         projectDestination,
+        routeKey,
         scopeProjectRef(existing.environmentId, existing.id),
       );
       return;
@@ -807,6 +814,7 @@ function useCreateProject(
       finishAtProjectDestination(
         navigation,
         projectDestination,
+        routeKey,
         scopeProjectRef(environment.environmentId, projectId),
       );
       return result;

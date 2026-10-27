@@ -7,6 +7,7 @@ import {
   registerProjectDestination,
   releaseProjectDestination,
   takeProjectDestination,
+  takeProjectDestinationFrom,
 } from "./projectDestination";
 
 const local = EnvironmentId.make("environment-local");
@@ -43,5 +44,17 @@ describe("project destinations", () => {
     expect(projectDestinationOffers(destination, local)).toBe(true);
     expect(projectDestinationOffers(destination, remote)).toBe(false);
     expect(projectDestinationOffers(null, remote)).toBe(true);
+  });
+
+  it("hands over nothing from a screen left while its create ran, keeping the chooser live", () => {
+    const choose = vi.fn();
+    const token = registerProjectDestination({ environmentIds: [local], choose });
+    const chooser = [{ key: "home" }, { key: "chooser" }, { key: "add-project" }];
+    expect(takeProjectDestinationFrom(token, chooser, "local-folder")).toBeNull();
+    expect(readProjectDestination(token)).not.toBeNull();
+    const retried = [...chooser, { key: "local-folder-2" }];
+    takeProjectDestinationFrom(token, retried, "local-folder-2")?.choose(project);
+    expect(choose).toHaveBeenCalledTimes(1);
+    expect(readProjectDestination(token)).toBeNull();
   });
 });

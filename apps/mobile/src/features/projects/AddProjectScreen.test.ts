@@ -84,6 +84,7 @@ vi.mock("@react-navigation/native", () => ({
         ],
       },
   }),
+  useRoute: () => ({ key: "local" }),
   CommonActions: { reset: (input: unknown) => input },
   StackActions: {
     push: (name: string, params: unknown) => ({ type: "PUSH", payload: { name, params } }),
