@@ -88,6 +88,7 @@ export function HomeRouteScreen() {
 
   const {
     archiveThread,
+    archiveConversation,
     confirmDeleteThread,
     settleThread,
     snoozeThread,
@@ -234,6 +235,7 @@ export function HomeRouteScreen() {
           environments={environments}
           onAddConnection={() => openSettings(navigation, "SettingsEnvironmentNew")}
           onArchiveThread={archiveThread}
+          onArchiveConversation={archiveConversation}
           onDeleteThread={confirmDeleteThread}
           onSettleThread={settleThread}
           onSnoozeThread={snoozeThread}

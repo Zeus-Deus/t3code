@@ -119,6 +119,8 @@ interface HomeScreenProps {
   readonly onStartNewTask: () => void;
   readonly onSelectThread: (thread: EnvironmentThreadShell) => void;
   readonly onArchiveThread: (thread: EnvironmentThreadShell) => void;
+  /** A plugin tree heading's conversation: archived with Undo. */
+  readonly onArchiveConversation: (thread: EnvironmentThreadShell) => void;
   readonly onDeleteThread: (thread: EnvironmentThreadShell) => void;
   readonly onSettleThread: (thread: EnvironmentThreadShell) => Promise<boolean>;
   readonly onSnoozeThread: (
@@ -536,7 +538,7 @@ export function HomeScreen(props: HomeScreenProps) {
   const conversationHeadingProps = usePluginTreeConversationOpener(
     pluginTree.installationFor,
     selectThread,
-    props.onArchiveThread,
+    props.onArchiveConversation,
   );
   const threadListV2Items = withPluginTreeItems(
     treeList?.items ?? null,

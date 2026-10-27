@@ -167,6 +167,7 @@ function ThreadNavigationSidebarPane(
   const sidebarScrollGesture = useNativeGesture();
   const {
     archiveThread,
+    archiveConversation,
     confirmDeleteThread,
     settleThread,
     snoozeThread,
@@ -532,7 +533,7 @@ function ThreadNavigationSidebarPane(
   const conversationHeadingProps = usePluginTreeConversationOpener(
     pluginTree.installationFor,
     handleSelectThread,
-    archiveThread,
+    archiveConversation,
   );
   const handleOpenThreadPullRequests = (
     thread: EnvironmentThreadShell,

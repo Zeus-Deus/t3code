@@ -463,6 +463,39 @@ describe("thread action undo", () => {
   });
 });
 
+describe("plugin tree conversation archive", () => {
+  it("archives only the conversation and restores only it through Undo", async () => {
+    const main = makeThread({ id: ThreadId.make("main") });
+    expect(await useThreadListActions().archiveConversation(main)).toBe(true);
+    expect(readThreadUndoNotice()?.action).toBe("Archived");
+    await readThreadUndoNotice()!.undo();
+    // Its workers are never touched; Undo uses the real unarchive command.
+    expect(state.requests.map(({ action, input }) => [action, input.threadId])).toEqual([
+      ["archive", "main"],
+      ["unarchive", "main"],
+    ]);
+    expect(readThreadUndoNotice()).toBeNull();
+  });
+
+  it("keeps the running and permission guards, and offers no Undo when nothing was archived", async () => {
+    const running = makeThread({
+      runtime: {
+        status: "running",
+        activeRunId: RunId.make("active-run"),
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        providerName: "codex",
+        lastError: null,
+        updatedAt: "2026-09-02T00:00:00.000Z",
+      },
+    });
+    expect(await useThreadListActions().archiveConversation(running)).toBe(false);
+    const readOnly = makeThread({ environmentId: otherEnvironmentId });
+    expect(await useThreadListActions().archiveConversation(readOnly)).toBe(false);
+    expect(state.requests).toEqual([]);
+    expect(readThreadUndoNotice()).toBeNull();
+  });
+});
+
 describe("thread archive guard", () => {
   it("keeps active provider runs out of the archive", async () => {
     const thread = makeThread({

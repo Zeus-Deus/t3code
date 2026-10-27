@@ -190,6 +190,8 @@ function confirmThreadDeletion(
 
 export function useThreadListActions(): {
   readonly archiveThread: (thread: EnvironmentThreadShell) => Promise<boolean>;
+  /** Archives a plugin tree heading's conversation, offering Undo that restores only it. */
+  readonly archiveConversation: (thread: EnvironmentThreadShell) => Promise<boolean>;
   readonly confirmDeleteThread: (thread: EnvironmentThreadShell) => void;
   readonly settleThread: (thread: EnvironmentThreadShell) => Promise<boolean>;
   readonly snoozeThread: (thread: EnvironmentThreadShell, snoozedUntil: string) => Promise<boolean>;
@@ -223,6 +225,25 @@ export function useThreadListActions(): {
   const titleRegenerationInFlightThreadKeys = useRef(new Set<string>());
 
   const archiveThread = (thread: EnvironmentThreadShell) => executeAction("archive", thread);
+  const archiveConversation = async (thread: EnvironmentThreadShell) => {
+    const key = scopedThreadKey(thread.environmentId, thread.id);
+    let claim: ReturnType<typeof ThreadUndo.begin> | undefined;
+    const succeeded = await executeAction("archive", thread, () => {
+      claim = ThreadUndo.begin("archive", key);
+    });
+    if (claim) {
+      if (succeeded) {
+        showThreadUndoNotice({
+          action: "Archived",
+          claim,
+          undo: async () => {
+            await executeAction("unarchive", thread);
+          },
+        });
+      } else claim.finish();
+    }
+    return succeeded;
+  };
   const offerUndo = (
     thread: EnvironmentThreadShell,
     action: "Settled" | "Snoozed" | "Unpinned",
@@ -703,6 +724,7 @@ export function useThreadListActions(): {
 
   return {
     archiveThread,
+    archiveConversation,
     confirmDeleteThread,
     settleThread,
     snoozeThread,
