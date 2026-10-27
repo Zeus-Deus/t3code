@@ -173,6 +173,8 @@ const LEGACY_MENU_ACTIONS: MenuAction[] = [
   { id: "delete", title: "Delete", image: "trash", attributes: { destructive: true } },
 ];
 
+const HEADING_MENU_ACTIONS: MenuAction[] = [LEGACY_MENU_ACTIONS[0]!];
+
 function ThreadListV2Section(props: {
   readonly label: string;
   readonly pane?: "screen" | "sidebar";
@@ -189,6 +191,11 @@ function ThreadListV2Section(props: {
     readonly onPress: () => void;
     readonly accessibilityLabel: string;
     readonly selected: boolean;
+    /** Long-press actions on what it opens. */
+    readonly menu?: {
+      readonly actions: MenuAction[];
+      readonly onPressAction: (event: { readonly nativeEvent: { readonly event: string } }) => void;
+    };
   };
 }) {
   const snoozed = props.tone === "snoozed";
@@ -248,20 +255,33 @@ function ThreadListV2Section(props: {
   );
 
   if (props.open) {
-    const { disclosure } = props;
+    const { disclosure, open } = props;
+    const opener = (
+      <Pressable
+        accessibilityLabel={open.accessibilityLabel}
+        accessibilityRole="button"
+        accessibilityState={{ selected: open.selected }}
+        className="max-w-[80%] shrink"
+        hitSlop={{ top: 10, bottom: 10, left: 8, right: 8 }}
+        onPress={open.onPress}
+        style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1 })}
+      >
+        {label}
+      </Pressable>
+    );
     return (
       <View className={className}>
-        <Pressable
-          accessibilityLabel={props.open.accessibilityLabel}
-          accessibilityRole="button"
-          accessibilityState={{ selected: props.open.selected }}
-          className="max-w-[80%] shrink"
-          hitSlop={{ top: 10, bottom: 10, left: 8, right: 8 }}
-          onPress={props.open.onPress}
-          style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1 })}
-        >
-          {label}
-        </Pressable>
+        {open.menu === undefined ? (
+          opener
+        ) : (
+          <Menu
+            actions={open.menu.actions}
+            onPressAction={open.menu.onPressAction}
+            shouldOpenOnLongPress
+          >
+            {opener}
+          </Menu>
+        )}
         {rule}
         {disclosure ? (
           <Pressable
@@ -323,7 +343,10 @@ export const ThreadListV2TreeHeading = memo(function ThreadListV2TreeHeading(pro
   readonly pane?: "screen" | "sidebar";
   /** A project conversation: the title opens it. */
   readonly open?: { readonly onPress: () => void; readonly selected: boolean };
+  /** Archives the conversation alone, as a thread row's Archive does. */
+  readonly onArchive?: () => void;
 }) {
+  const { onArchive } = props;
   return (
     <View style={threadListTreeIndent(props.depth)}>
       <ThreadListV2Section
@@ -331,7 +354,22 @@ export const ThreadListV2TreeHeading = memo(function ThreadListV2TreeHeading(pro
         pane={props.pane}
         {...(props.open === undefined
           ? {}
-          : { open: { ...props.open, accessibilityLabel: `Open ${props.title}` } })}
+          : {
+              open: {
+                ...props.open,
+                accessibilityLabel: `Open ${props.title}`,
+                ...(onArchive === undefined
+                  ? {}
+                  : {
+                      menu: {
+                        actions: HEADING_MENU_ACTIONS,
+                        onPressAction: ({ nativeEvent }) => {
+                          if (nativeEvent.event === "archive") onArchive();
+                        },
+                      },
+                    }),
+              },
+            })}
         disclosure={
           props.foldable && props.count > 0
             ? {

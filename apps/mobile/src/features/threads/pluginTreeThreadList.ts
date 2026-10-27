@@ -5,6 +5,7 @@ import {
 } from "@t3tools/client-runtime/plugins";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import { effectiveSnoozed } from "@t3tools/client-runtime/state/thread-settled";
+import { threadActivityTimestampMs } from "@t3tools/client-runtime/state/thread-sort";
 import type { EnvironmentId } from "@t3tools/contracts";
 
 import type { HomeProjectScope } from "../home/homeThreadList";
@@ -64,6 +65,7 @@ export function buildPluginTreeThreadListItems(input: {
       input.selectedProjectKey === null || scope.key === input.selectedProjectKey,
     folds: input.folds,
     routeThreadKey: input.selectedThreadKey,
+    activityAt: threadActivityTimestampMs,
   });
 
   // Trees that opted into project conversations mark every finished worker Done.
@@ -209,7 +211,10 @@ export function earliestSnoozeWakeAt(list: string | null, tree: string | null): 
 export function withPluginTreeItems<T extends { readonly type: string }>(
   tree: ReadonlyArray<ThreadListV2ListItem> | null,
   activity: ReadonlyArray<T>,
+  /** An exclusive tree lists only its own: Activity keeps every other row and shelf. */
+  exclusive = false,
 ): ReadonlyArray<T | ThreadListV2ListItem> {
+  if (exclusive && tree !== null) return tree;
   if (tree === null || tree.length === 0) return activity;
   const liveCount = activity.findIndex(
     (item) => item.type !== "v2-thread" && item.type !== "v2-pending",

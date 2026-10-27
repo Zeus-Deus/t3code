@@ -3,7 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { AsyncResult } from "effect/reactivity";
 import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
 import type { PluginSidebarViewSource } from "@t3tools/client-runtime/plugins";
-import { EnvironmentId, PluginError, type PluginTreeNode } from "@t3tools/contracts";
+import { EnvironmentId, PluginError, ProjectId, type PluginTreeNode } from "@t3tools/contracts";
 
 import { pluginInstallationFixture } from "../../../../../packages/client-runtime/src/plugins/testFixtures";
 
@@ -31,6 +31,8 @@ const harness = vi.hoisted(() => ({
   revision: 0 as number | undefined,
   generation: "gen-1",
   conversations: false,
+  // Holds ui.native-tree-projects for a tree declaring `unplaced: "omit"`, with access to p1.
+  exclusive: false,
   connected: true,
   // A read for this environment stays in flight until the test settles it.
   pending: new Map<string, Promise<unknown>>(),
@@ -39,6 +41,8 @@ const harness = vi.hoisted(() => ({
     readonly sources: unknown;
     readonly notice: string | null;
     readonly selected: unknown;
+    readonly loaded?: boolean;
+    readonly owned?: boolean;
   },
 }));
 
@@ -59,7 +63,21 @@ vi.mock("../../state/plugins", () => ({
       new Map<string, PluginSidebarViewSource>(
         environmentIds.map((environmentId) => [
           environmentId,
-          { status: "ready", options: [{ ...choice, environmentId }] },
+          {
+            status: "ready",
+            options: [{ ...choice, environmentId }],
+            ...(harness.exclusive
+              ? {
+                  owners: [
+                    {
+                      installationId: "inst-1",
+                      treeId: "projects",
+                      projectIds: [ProjectId.make("p1")],
+                    },
+                  ],
+                }
+              : {}),
+          },
         ]),
       ),
   }),
@@ -71,13 +89,19 @@ vi.mock("../../state/plugins", () => ({
       ? [
           {
             ...installation,
+            manifest: {
+              ...installation.manifest,
+              nativeTrees: [harness.exclusive ? { ...tree, unplaced: "omit" as const } : tree],
+            },
             generation: harness.generation,
             grants: {
               ...installation.grants,
               capabilities: [
                 ...installation.grants.capabilities,
                 ...(harness.conversations ? ["ui.native-tree-conversations" as const] : []),
+                ...(harness.exclusive ? ["ui.native-tree-projects" as const] : []),
               ],
+              projectIds: harness.exclusive ? [ProjectId.make("p1")] : [],
             },
           },
         ]
@@ -109,7 +133,18 @@ let root: Root | null = null;
 
 function Consumer(props: { readonly environmentIds: ReadonlyArray<EnvironmentId> }) {
   const list = usePluginTreeList(props.environmentIds);
-  harness.result = { sources: list.sources, notice: list.notice, selected: list.selected };
+  harness.result = {
+    sources: list.sources,
+    notice: list.notice,
+    selected: list.selected,
+    loaded: list.loaded,
+    owned: list.isOwnedByTree({
+      environmentId: laptop,
+      projectId: ProjectId.make("p1"),
+      lineage: { parentThreadId: null },
+      pluginOwner: { installationId: "inst-1", treeId: "projects" },
+    }),
+  };
   return list.fetchers as ReactNode;
 }
 
@@ -133,6 +168,7 @@ beforeEach(() => {
   harness.revision = 0;
   harness.generation = "gen-1";
   harness.conversations = false;
+  harness.exclusive = false;
   harness.connected = true;
   harness.pending = new Map();
   harness.reads = [];
@@ -276,4 +312,39 @@ it("stops honouring project conversations as soon as the grant goes, even if the
     notice: "Projects may be out of date.",
   });
   expect(harness.reads).toEqual([laptop, laptop]);
+});
+
+it("lays out an exclusive tree from its serving identity until a read succeeds", async () => {
+  harness.exclusive = true;
+  await renderList([laptop]);
+  const projects = {
+    installationId: "inst-1",
+    treeId: "projects",
+    exclusive: true,
+    projectIds: ["p1"],
+  };
+  // The first read failed: owned conversations still head the tree, which is not "empty".
+  expect(harness.result).toMatchObject({
+    sources: [{ environmentId: laptop, nodes: [], projects }],
+    notice: "Couldn't load Projects. It may be incomplete.",
+    loaded: false,
+    owned: true,
+  });
+
+  harness.served.set(laptop, [group("mine")]);
+  harness.revision = 1;
+  await renderList([laptop]);
+  expect(harness.result).toMatchObject({
+    sources: [{ environmentId: laptop, nodes: [group("mine")], projects }],
+    notice: null,
+    loaded: true,
+  });
+
+  // Without the grant it is an ordinary tree, and Activity keeps the conversation.
+  harness.exclusive = false;
+  await renderList([laptop]);
+  expect(harness.result).toMatchObject({ owned: false });
+  expect(harness.result?.sources).toEqual([
+    expect.not.objectContaining({ projects: expect.anything() }),
+  ]);
 });

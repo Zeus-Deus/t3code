@@ -4,7 +4,8 @@ import { describe, expect, it } from "vite-plus/test";
 
 import { makeThreadShellFixture } from "../../test-fixtures";
 import type { HomeProjectScope } from "../home/homeThreadList";
-import { buildPluginTreeThreadListItems } from "./pluginTreeThreadList";
+import { buildPluginTreeThreadListItems, withPluginTreeItems } from "./pluginTreeThreadList";
+import { filterThreadListV2Threads } from "./threadListV2";
 
 const laptop = EnvironmentId.make("env-laptop");
 const NOW = "2026-10-23T12:00:00.000Z";
@@ -189,5 +190,66 @@ describe("buildPluginTreeThreadListItems", () => {
     const plain = build([heading(laptop, { threadId: coordinator.id })], [coordinator, worker]);
     expect(outline(plain)).toEqual(["0#App"]);
     expect(plain.placedKeys).toEqual(new Set());
+  });
+
+  it("keeps an owned conversation's T3 workers in its exclusive tree and nothing else", () => {
+    const main = {
+      ...thread("main"),
+      pluginOwner: { installationId: "inst-1", treeId: "projects" },
+    };
+    const subagent = (id: string, creationSource: "mcp" | "provider") =>
+      thread(id, {
+        source: { ...main.source, creationSource },
+        lineage: {
+          parentThreadId: main.id,
+          rootThreadId: main.id,
+          relationshipToParent: "subagent",
+        },
+      });
+    const delegated = subagent("delegated", "mcp");
+    const internal = subagent("internal", "provider");
+    const all = [main, delegated, internal, thread("loose")];
+    // Activity's own filter still hides every subagent.
+    expect(
+      filterThreadListV2Threads({ threads: all, environmentId: null }).map((entry) => entry.id),
+    ).toEqual(["main", "loose"]);
+    const result = buildPluginTreeThreadListItems({
+      sources: [
+        {
+          environmentId: laptop,
+          // Its first read has not landed: the owned conversation heads its project anyway.
+          nodes: [],
+          conversations: true,
+          projects: {
+            installationId: "inst-1",
+            treeId: "projects",
+            exclusive: true,
+            projectIds: [ProjectId.make("p1")],
+          },
+        },
+      ],
+      threads: filterThreadListV2Threads({
+        threads: all,
+        environmentId: null,
+        showDelegatedThreads: true,
+      }),
+      projectScopes: [scope],
+      selectedProjectKey: null,
+      folds: new Set(),
+      selectedThreadKey: null,
+      now: NOW,
+      snoozeLabelNow: NOW,
+    });
+    expect(outline(result)).toEqual(["0#App", "1:delegated:card"]);
+    // An exclusive tree replaces the list: no "Other threads", rows, pending tasks or shelves.
+    const activity = [{ type: "v2-thread" }, { type: "v2-settled-shelf" }];
+    expect(withPluginTreeItems(result.items, activity, true)).toEqual(result.items);
+    expect(withPluginTreeItems(result.items, activity).map((item) => item.type)).toEqual([
+      "v2-tree-heading",
+      "v2-thread",
+      "v2-tree-heading",
+      "v2-thread",
+      "v2-settled-shelf",
+    ]);
   });
 });

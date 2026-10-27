@@ -647,6 +647,8 @@ export function filterThreadListV2Threads(input: {
     readonly environmentId: EnvironmentId;
     readonly projectId: ProjectId;
   }> | null;
+  /** Keep T3's own delegations, so a plugin tree can nest workers under their conversation. */
+  readonly showDelegatedThreads?: boolean;
 }): EnvironmentThreadShell[] {
   const projectKeys = input.projectRefs
     ? new Set(input.projectRefs.map((ref) => `${ref.environmentId}:${ref.projectId}`))
@@ -654,7 +656,8 @@ export function filterThreadListV2Threads(input: {
   return input.threads.filter(
     (thread) =>
       thread.archivedAt === null &&
-      thread.lineage.relationshipToParent !== "subagent" &&
+      (thread.lineage.relationshipToParent !== "subagent" ||
+        (input.showDelegatedThreads === true && thread.source.creationSource === "mcp")) &&
       (input.environmentId === null || thread.environmentId === input.environmentId) &&
       (projectKeys === null || projectKeys.has(`${thread.environmentId}:${thread.projectId}`)),
   );

@@ -9,6 +9,7 @@ import {
   pluginChangeKey,
   pluginChangesSupported,
   pluginSidebarTreeOptions,
+  pluginTreeOwnerGrants,
   type PluginSidebarViewSource,
   pluginAttentionNotice,
   pluginRunnableInstallations,
@@ -213,19 +214,21 @@ const pluginTreeViewSourcesFamily = Atom.family((key: string) =>
         continue;
       }
       const data = Option.getOrNull(AsyncResult.value(catalogue.result));
+      const runnable =
+        data === null
+          ? []
+          : pluginRunnableInstallations({
+              installations: data.installations,
+              executionDisabled: pluginExecutionDisabled(catalogue.capabilities, data),
+            });
       sources.set(
         environmentId,
         data === null
           ? PENDING_SOURCE
           : {
               status: "ready",
-              options: pluginSidebarTreeOptions(
-                environmentId,
-                pluginRunnableInstallations({
-                  installations: data.installations,
-                  executionDisabled: pluginExecutionDisabled(catalogue.capabilities, data),
-                }),
-              ),
+              options: pluginSidebarTreeOptions(environmentId, runnable),
+              owners: pluginTreeOwnerGrants(runnable),
             },
       );
     }

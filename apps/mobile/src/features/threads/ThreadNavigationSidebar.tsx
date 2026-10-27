@@ -50,6 +50,7 @@ import { useThreadListSearchMatches } from "./useThreadListSearchMatches";
 import { useHomeListOptions } from "../home/home-list-options";
 import { buildHomeListFilterMenu } from "../home/home-list-filter-menu";
 import { buildHomeProjectScopes } from "../home/homeThreadList";
+import { PluginTreeCreate } from "../plugins/PluginTreeCreate";
 import { PluginTreeNotice } from "../plugins/PluginTreeNotice";
 import { usePluginTreeConversationOpener, usePluginTreeList } from "../plugins/usePluginTreeList";
 import {
@@ -313,6 +314,7 @@ function ThreadNavigationSidebarPane(
           sources: pluginTree.sources,
           threads: filterThreadListV2Threads({
             threads: listThreads,
+            showDelegatedThreads: true,
             environmentId: options.selectedEnvironmentId,
             projectRefs: selectedProjectScope === null ? null : selectedProjectScope.projectRefs,
           }),
@@ -328,6 +330,7 @@ function ThreadNavigationSidebarPane(
           environmentLabel: (environmentId) =>
             savedConnectionsById[environmentId]?.environmentLabel ?? null,
         });
+  const exclusiveTree = treeList !== null && pluginTree.exclusive;
   const {
     layout: threadListV2Layout,
     items: activityListItems,
@@ -336,7 +339,10 @@ function ThreadNavigationSidebarPane(
   } = useThreadListV2({
     threads:
       treeList === null
-        ? threads
+        ? props.searchQuery.trim().length > 0
+          ? threads
+          : // Activity leaves owned conversations to their tree; search still finds them.
+            threads.filter((thread) => !pluginTree.isOwnedByTree(thread))
         : threads.filter(
             (thread) => !treeList.placedKeys.has(scopedThreadKey(thread.environmentId, thread.id)),
           ),
@@ -360,9 +366,13 @@ function ThreadNavigationSidebarPane(
     settledShelfExpanded,
     selectedThreadKey: props.selectedThreadKey ?? null,
   });
-  const threadListV2Items = withPluginTreeItems(treeList?.items ?? null, activityListItems);
+  const threadListV2Items = withPluginTreeItems(
+    treeList?.items ?? null,
+    activityListItems,
+    exclusiveTree,
+  );
   const listItems: readonly SidebarListItem[] =
-    settledShelfExpanded && threadListV2Layout.hiddenSettledCount > 0
+    !exclusiveTree && settledShelfExpanded && threadListV2Layout.hiddenSettledCount > 0
       ? [
           ...threadListV2Items,
           {
@@ -521,6 +531,7 @@ function ThreadNavigationSidebarPane(
   const conversationHeadingProps = usePluginTreeConversationOpener(
     pluginTree.installationFor,
     handleSelectThread,
+    archiveThread,
   );
   const handleOpenThreadPullRequests = (
     thread: EnvironmentThreadShell,
@@ -777,9 +788,19 @@ function ThreadNavigationSidebarPane(
     onOpenSettings: props.onOpenSettings,
   });
   const treeNotice = (
-    <PluginTreeNotice notice={props.searchQuery.trim().length > 0 ? null : pluginTree.notice} />
+    <>
+      {pluginTree.selected === null || props.searchQuery.trim().length > 0 ? null : (
+        <PluginTreeCreate choice={pluginTree.selected} />
+      )}
+      <PluginTreeNotice notice={props.searchQuery.trim().length > 0 ? null : pluginTree.notice} />
+    </>
   );
-  const listEmpty = (
+  // Nothing while an exclusive tree reads or after a failure, which the notice explains.
+  const listEmpty = exclusiveTree ? (
+    pluginTree.loaded ? (
+      <PluginTreeNotice notice={pluginTree.selected?.tree.emptyText ?? "No threads yet"} />
+    ) : null
+  ) : (
     <Text
       className={
         Platform.OS === "android"

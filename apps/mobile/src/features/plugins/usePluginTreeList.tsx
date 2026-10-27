@@ -2,9 +2,12 @@ import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import {
   findPluginTreeInstallation,
   isPluginSidebarTreeOption,
+  isPluginTreeExclusive,
+  isPluginTreeOwnedThread,
   pluginRunnableInstallations,
   pluginTreeConversationsGranted,
   pluginTreeNotice,
+  pluginTreeProjectsGranted,
   pluginTreeTopic,
   resolvePluginSidebarView,
   togglePluginTreeFold,
@@ -36,6 +39,14 @@ interface TreeSnapshot {
   readonly failed: boolean;
   /** The installation as last reported; its grants decide whether headings are conversations. */
   readonly installation: PluginInstallation;
+}
+
+/** What an installation's grants make of the tree; a change is a new identity. */
+function treeProjects(installation: PluginInstallation, treeId: string): string {
+  if (!pluginTreeProjectsGranted(installation)) return "";
+  const exclusive =
+    installation.manifest.nativeTrees?.find((tree) => tree.id === treeId)?.unplaced === "omit";
+  return `${exclusive ? "exclusive" : "owned"}:${installation.grants.projectIds.join(",")}`;
 }
 
 type SnapshotUpdate =
@@ -79,6 +90,7 @@ function PluginTreeSnapshotFetcher(props: {
   // A grant change re-reads, so a revoked grant never keeps showing conversations.
   const conversations = installation !== null && pluginTreeConversationsGranted(installation);
   const treeId = choice.tree.id;
+  const projects = installation === null ? "" : treeProjects(installation, treeId);
   const revision = usePluginChangeRevision(
     installationId === null ? null : environmentId,
     installationId === null || generation === null
@@ -122,6 +134,8 @@ function PluginTreeSnapshotFetcher(props: {
     generation,
     // oxlint-disable-next-line react/exhaustive-effect-dependencies -- A grant change reads again.
     conversations,
+    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- So does a projects grant.
+    projects,
     treeId,
     known,
     revision,
@@ -149,6 +163,16 @@ export function usePluginTreeList(
   readonly sources: ReadonlyArray<PluginTreeSource> | null;
   /** One line when a read of the chosen tree failed; null otherwise. */
   readonly notice: string | null;
+  /** The chosen tree lists only its own conversations; Activity keeps everything else. */
+  readonly exclusive: boolean;
+  /** Every environment serving the chosen tree answered its latest read successfully. */
+  readonly loaded: boolean;
+  /** A main conversation Activity leaves to the tree that owns it. */
+  readonly isOwnedByTree: (
+    thread: { readonly environmentId: EnvironmentId } & Parameters<
+      typeof isPluginTreeOwnedThread
+    >[0],
+  ) => boolean;
   readonly folds: ReadonlySet<string>;
   readonly toggleFold: (sectionKey: string, collapsedByDefault: boolean) => void;
   /** The installation that served an environment's shown snapshot, for its heading actions. */
@@ -170,7 +194,12 @@ export function usePluginTreeList(
     readonly key: string | null;
     readonly byEnvironment: ReadonlyMap<EnvironmentId, TreeSnapshot>;
   }>({ key: null, byEnvironment: new Map() });
-  const report = (key: string, environmentId: EnvironmentId, update: SnapshotUpdate) =>
+  const report = (
+    key: string,
+    treeId: string,
+    environmentId: EnvironmentId,
+    update: SnapshotUpdate,
+  ) =>
     setSnapshots((current) => {
       const previous = current.key === key ? current.byEnvironment.get(environmentId) : undefined;
       // A new installation or generation may have other grants; its predecessor's rows go.
@@ -183,7 +212,8 @@ export function usePluginTreeList(
         update?.kind === "identity" &&
         sameIdentity &&
         pluginTreeConversationsGranted(previous.installation) ===
-          pluginTreeConversationsGranted(update.installation)
+          pluginTreeConversationsGranted(update.installation) &&
+        treeProjects(previous.installation, treeId) === treeProjects(update.installation, treeId)
       )
         return current;
       const byEnvironment = new Map(current.key === key ? current.byEnvironment : []);
@@ -203,33 +233,50 @@ export function usePluginTreeList(
       }
       return { key, byEnvironment };
     });
-  const sources =
+  const shown =
     selectedTree === null || snapshots.key !== selectedTree.key
       ? []
       : environmentIds.flatMap((environmentId) => {
           const snapshot = snapshots.byEnvironment.get(environmentId);
-          return snapshot === undefined || snapshot.nodes === null
-            ? []
-            : [
-                {
-                  environmentId,
-                  nodes: snapshot.nodes,
-                  conversations: pluginTreeConversationsGranted(snapshot.installation),
-                },
-              ];
+          return snapshot === undefined ? [] : [{ environmentId, snapshot }];
         });
+  const sources = shown.flatMap(({ environmentId, snapshot }): PluginTreeSource[] => {
+    const projects =
+      selectedTree === null || !pluginTreeProjectsGranted(snapshot.installation)
+        ? null
+        : {
+            installationId: snapshot.installationId,
+            treeId: selectedTree.tree.id,
+            exclusive:
+              snapshot.installation.manifest.nativeTrees?.find(
+                (tree) => tree.id === selectedTree.tree.id,
+              )?.unplaced === "omit",
+            projectIds: snapshot.installation.grants.projectIds,
+          };
+    // An exclusive tree is the only place its conversations show, so it lays out from the
+    // serving identity alone while the first read is pending or after it failed.
+    if (snapshot.nodes === null && projects?.exclusive !== true) return [];
+    return [
+      {
+        environmentId,
+        nodes: snapshot.nodes ?? [],
+        conversations: pluginTreeConversationsGranted(snapshot.installation),
+        ...(projects === null ? {} : { projects }),
+      },
+    ];
+  });
+  const exclusive = isPluginTreeExclusive(sources);
 
   const notice =
     selectedTree === null || snapshots.key !== selectedTree.key
       ? null
       : pluginTreeNotice(
           selectedTree.tree.title,
-          environmentIds.flatMap((environmentId) => {
-            const snapshot = snapshots.byEnvironment.get(environmentId);
-            return snapshot === undefined
-              ? []
-              : [{ failed: snapshot.failed, hasNodes: snapshot.nodes !== null }];
-          }),
+          shown.map(({ snapshot }) => ({
+            failed: snapshot.failed,
+            hasNodes: snapshot.nodes !== null,
+          })),
+          exclusive,
         );
 
   const folds = new Set(preferences?.threadListTreeFolds ?? []);
@@ -239,6 +286,17 @@ export function usePluginTreeList(
     select: (choice) => savePreferences({ threadListPluginTree: choice }),
     sources: sources.length === 0 ? null : sources,
     notice,
+    exclusive,
+    loaded:
+      shown.length > 0 &&
+      shown.every(({ snapshot }) => snapshot.nodes !== null && !snapshot.failed),
+    isOwnedByTree: (thread) => {
+      const source = viewSources.get(thread.environmentId);
+      return isPluginTreeOwnedThread(
+        thread,
+        source?.status === "ready" ? source.owners : undefined,
+      );
+    },
     folds,
     toggleFold: (sectionKey, collapsedByDefault) =>
       savePreferences({
@@ -263,7 +321,7 @@ export function usePluginTreeList(
               environmentId={environmentId}
               choice={selectedTree}
               snoozeWake={snoozeWake}
-              onReport={(id, update) => report(selectedTree.key, id, update)}
+              onReport={(id, update) => report(selectedTree.key, selectedTree.tree.id, id, update)}
             />
           )),
   };
@@ -276,10 +334,15 @@ export function usePluginTreeList(
 export function usePluginTreeConversationOpener(
   installationFor: (environmentId: EnvironmentId) => PluginInstallation | null,
   onSelectThread: (thread: EnvironmentThreadShell) => void,
+  /** The list's own archive, with its guards; a thread heading offers it on long press. */
+  onArchiveThread: (thread: EnvironmentThreadShell) => void,
 ): (heading: {
   readonly conversation?: PluginTreeConversation<EnvironmentThreadShell>;
   readonly selected?: boolean;
-}) => { readonly open?: { readonly onPress: () => void; readonly selected: boolean } } {
+}) => {
+  readonly open?: { readonly onPress: () => void; readonly selected: boolean };
+  readonly onArchive?: () => void;
+} {
   const runAction = usePluginActionRunner();
   const running = useRef(false);
   const open = (conversation: PluginTreeConversation<EnvironmentThreadShell>) => {
@@ -304,5 +367,10 @@ export function usePluginTreeConversationOpener(
   return ({ conversation, selected }) =>
     conversation === undefined
       ? {}
-      : { open: { onPress: () => open(conversation), selected: selected === true } };
+      : {
+          open: { onPress: () => open(conversation), selected: selected === true },
+          ...(conversation.kind === "thread"
+            ? { onArchive: () => onArchiveThread(conversation.thread) }
+            : {}),
+        };
 }

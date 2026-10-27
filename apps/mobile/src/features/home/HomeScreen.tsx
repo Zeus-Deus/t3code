@@ -56,6 +56,7 @@ import { usePendingThreadOrder } from "../../state/thread-order";
 import { threadListEnvironmentsAtom } from "../../state/server";
 import type { PendingNewTask } from "../../state/use-pending-new-tasks";
 import { useQueuedThreadKeys } from "../../state/use-thread-outbox";
+import { PluginTreeCreate } from "../plugins/PluginTreeCreate";
 import { PluginTreeNotice } from "../plugins/PluginTreeNotice";
 import { usePluginTreeConversationOpener, usePluginTreeList } from "../plugins/usePluginTreeList";
 import {
@@ -464,6 +465,7 @@ export function HomeScreen(props: HomeScreenProps) {
           sources: pluginTree.sources,
           threads: filterThreadListV2Threads({
             threads: listThreads,
+            showDelegatedThreads: true,
             environmentId: props.selectedEnvironmentId,
             projectRefs: v2ScopedProjectGroup === null ? null : v2ScopedProjectGroup.projectRefs,
           }),
@@ -479,6 +481,7 @@ export function HomeScreen(props: HomeScreenProps) {
           environmentLabel: (environmentId) =>
             props.savedConnectionsById[environmentId]?.environmentLabel ?? null,
         });
+  const exclusiveTree = treeList !== null && pluginTree.exclusive;
   const {
     layout: threadListV2Layout,
     items: activityListItems,
@@ -487,7 +490,10 @@ export function HomeScreen(props: HomeScreenProps) {
   } = useThreadListV2({
     threads:
       treeList === null
-        ? props.threads
+        ? hasSearchQuery
+          ? props.threads
+          : // Activity leaves owned conversations to their tree; search still finds them.
+            props.threads.filter((thread) => !pluginTree.isOwnedByTree(thread))
         : props.threads.filter(
             (thread) => !treeList.placedKeys.has(scopedThreadKey(thread.environmentId, thread.id)),
           ),
@@ -529,8 +535,13 @@ export function HomeScreen(props: HomeScreenProps) {
   const conversationHeadingProps = usePluginTreeConversationOpener(
     pluginTree.installationFor,
     selectThread,
+    props.onArchiveThread,
   );
-  const threadListV2Items = withPluginTreeItems(treeList?.items ?? null, activityListItems);
+  const threadListV2Items = withPluginTreeItems(
+    treeList?.items ?? null,
+    activityListItems,
+    exclusiveTree,
+  );
   useThreadJumpShortcuts(threadListV2Items, selectThread);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- reads the list's visible range after commit to enable swipe gestures on those rows
   useEffect(() => {
@@ -709,6 +720,8 @@ export function HomeScreen(props: HomeScreenProps) {
   };
 
   const hasAnyThreads =
+    // An exclusive tree keeps its header, with its create action, even with nothing in it.
+    exclusiveTree ||
     props.threads.some((thread) => thread.archivedAt === null) ||
     props.pendingTasks.length > 0 ||
     threadListV2Layout.settledCount > 0;
@@ -784,38 +797,45 @@ export function HomeScreen(props: HomeScreenProps) {
           onProjectChange={props.onProjectChange}
         />
       ) : null}
+      {pluginTree.selected === null || hasSearchQuery ? null : (
+        <PluginTreeCreate choice={pluginTree.selected} />
+      )}
       <PluginTreeNotice notice={hasSearchQuery ? null : pluginTree.notice} />
     </>
   );
 
-  const v2ListEmpty =
-    hasSearchQuery && threadSearch.isPending ? undefined : hasSearchQuery ? (
-      <EmptyState
-        title="No results"
-        detail={`No threads matching "${props.searchQuery}".`}
-        variant={Platform.OS === "android" ? "plain" : undefined}
-      />
-    ) : v2ScopedProjectGroup !== null ? (
-      <EmptyState
-        title={`No threads in ${v2ScopedProjectGroup.title}`}
-        detail="Choose another project or create a new task."
-        variant={Platform.OS === "android" ? "plain" : undefined}
-      />
-    ) : selectedEnvironmentLabel ? (
-      <EmptyState
-        title={`No threads in ${selectedEnvironmentLabel}`}
-        detail="Choose another environment or create a new task."
-        variant={Platform.OS === "android" ? "plain" : undefined}
-      />
-    ) : (
-      <EmptyState
-        title="No threads yet"
-        detail="Create a task to start a new coding session."
-        variant={Platform.OS === "android" ? "plain" : undefined}
-      />
-    );
+  const v2ListEmpty = exclusiveTree ? (
+    // Nothing while reading or after a failure, which the notice explains.
+    pluginTree.loaded ? (
+      <PluginTreeNotice notice={pluginTree.selected?.tree.emptyText ?? "No threads yet"} />
+    ) : undefined
+  ) : hasSearchQuery && threadSearch.isPending ? undefined : hasSearchQuery ? (
+    <EmptyState
+      title="No results"
+      detail={`No threads matching "${props.searchQuery}".`}
+      variant={Platform.OS === "android" ? "plain" : undefined}
+    />
+  ) : v2ScopedProjectGroup !== null ? (
+    <EmptyState
+      title={`No threads in ${v2ScopedProjectGroup.title}`}
+      detail="Choose another project or create a new task."
+      variant={Platform.OS === "android" ? "plain" : undefined}
+    />
+  ) : selectedEnvironmentLabel ? (
+    <EmptyState
+      title={`No threads in ${selectedEnvironmentLabel}`}
+      detail="Choose another environment or create a new task."
+      variant={Platform.OS === "android" ? "plain" : undefined}
+    />
+  ) : (
+    <EmptyState
+      title="No threads yet"
+      detail="Create a task to start a new coding session."
+      variant={Platform.OS === "android" ? "plain" : undefined}
+    />
+  );
 
-  if (Platform.OS === "android" && threadListV2Items.length === 0) {
+  if (Platform.OS === "android" && threadListV2Items.length === 0 && !exclusiveTree) {
     return (
       <View className="flex-1 bg-header">
         <View
@@ -859,7 +879,9 @@ export function HomeScreen(props: HomeScreenProps) {
               extraData={v2ExtraData}
               ListHeaderComponent={v2ListHeader}
               ListFooterComponent={
-                settledShelfExpanded && threadListV2Layout.hiddenSettledCount > 0 ? (
+                !exclusiveTree &&
+                settledShelfExpanded &&
+                threadListV2Layout.hiddenSettledCount > 0 ? (
                   <ThreadListV2ShowMoreRow
                     hiddenCount={threadListV2Layout.hiddenSettledCount}
                     {...(olderSettledShelf.loading
