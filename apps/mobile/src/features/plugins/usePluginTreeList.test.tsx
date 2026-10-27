@@ -30,6 +30,7 @@ const harness = vi.hoisted(() => ({
   // Undefined while the change subscription has not reported its first count.
   revision: 0 as number | undefined,
   generation: "gen-1",
+  conversations: false,
   connected: true,
   // A read for this environment stays in flight until the test settles it.
   pending: new Map<string, Promise<unknown>>(),
@@ -66,7 +67,21 @@ vi.mock("../../state/plugins", () => ({
     availability: harness.connected ? "available" : "disconnected",
     loaded: harness.connected,
     error: null,
-    installations: harness.connected ? [{ ...installation, generation: harness.generation }] : [],
+    installations: harness.connected
+      ? [
+          {
+            ...installation,
+            generation: harness.generation,
+            grants: {
+              ...installation.grants,
+              capabilities: [
+                ...installation.grants.capabilities,
+                ...(harness.conversations ? ["ui.native-tree-conversations" as const] : []),
+              ],
+            },
+          },
+        ]
+      : [],
     executionDisabled: false,
   }),
   usePluginChangeRevision: () => harness.revision,
@@ -117,6 +132,7 @@ beforeEach(() => {
   harness.served = new Map();
   harness.revision = 0;
   harness.generation = "gen-1";
+  harness.conversations = false;
   harness.connected = true;
   harness.pending = new Map();
   harness.reads = [];
@@ -241,4 +257,23 @@ it("keeps the same generation's rows while disconnected or resubscribing", async
   await renderList([laptop]);
   expect(harness.result).toMatchObject({ notice: null });
   expect(harness.reads).toEqual([laptop, laptop, laptop]);
+});
+
+it("stops honouring project conversations as soon as the grant goes, even if the re-read fails", async () => {
+  harness.conversations = true;
+  harness.served.set(laptop, [group("mine")]);
+  await renderList([laptop]);
+  expect(harness.result).toMatchObject({
+    sources: [{ environmentId: laptop, nodes: [group("mine")], conversations: true }],
+  });
+
+  // Same generation, grant revoked: the tree reads again and the server refuses it.
+  harness.conversations = false;
+  harness.served.delete(laptop);
+  await renderList([laptop]);
+  expect(harness.result).toMatchObject({
+    sources: [{ environmentId: laptop, nodes: [group("mine")], conversations: false }],
+    notice: "Projects may be out of date.",
+  });
+  expect(harness.reads).toEqual([laptop, laptop]);
 });

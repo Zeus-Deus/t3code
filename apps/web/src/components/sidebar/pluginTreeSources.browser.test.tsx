@@ -1,11 +1,12 @@
 import { pluginSidebarTreeOptions } from "@t3tools/client-runtime/plugins";
-import { EnvironmentId, PluginError, type PluginInstallation } from "@t3tools/contracts";
+import { EnvironmentId, PluginError, ThreadId, type PluginInstallation } from "@t3tools/contracts";
 import { expect, it, vi } from "vite-plus/test";
 
 import { act, render } from "../../../test/render";
 import {
   PluginTreeSnapshotSources,
   resetPluginTreeSnapshotsForTests,
+  usePluginTreeConversationScope,
   usePluginTreeNotice,
   usePluginTreeSources,
 } from "./pluginTreeSources";
@@ -82,12 +83,12 @@ const installation: PluginInstallation = {
   updatedAt: "2026-10-24T00:00:00.000Z",
 };
 const choice = pluginSidebarTreeOptions(EnvironmentId.make("env-laptop"), [installation])[0]!;
-const available = (generation: string) => ({
+const available = (generation: string, capabilities = installation.grants.capabilities) => ({
   availability: "available",
   loaded: true,
   error: null,
   executionDisabled: false,
-  installations: [{ ...installation, generation }],
+  installations: [{ ...installation, generation, grants: { capabilities, projectIds: [] } }],
 });
 const disconnected = {
   availability: "disconnected",
@@ -126,7 +127,9 @@ const shown = (screen: { container: HTMLElement }) =>
     notice: string | null;
   };
 
-const staleGeneration = { sources: [{ environmentId: "env-laptop", nodes: mine }] };
+const staleGeneration = {
+  sources: [{ environmentId: "env-laptop", nodes: mine, conversations: false }],
+};
 
 it("drops the previous generation's rows and failure as soon as the catalogue names a new one", async () => {
   setup();
@@ -184,3 +187,82 @@ it("keeps the same generation's rows while disconnected or resubscribing, until 
   await vi.waitFor(() => expect(shown(screen)).toEqual({ ...staleGeneration, notice: null }));
   expect(state.reads).toBe(3);
 });
+
+it("stops honouring project conversations as soon as the grant goes, even if the re-read fails", async () => {
+  setup();
+  const granted = [...installation.grants.capabilities, "ui.native-tree-conversations" as const];
+  state.update({ catalogue: available("gen-1", granted) });
+  await using screen = await render(<Probe />);
+  const withConversations = {
+    sources: [{ environmentId: "env-laptop", nodes: mine, conversations: true }],
+    notice: null,
+  };
+  await vi.waitFor(() => expect(shown(screen)).toEqual(withConversations));
+
+  // Same generation, grant revoked: the tree reads again and the server refuses it.
+  state.next = denied;
+  await act(() => state.update({ catalogue: available("gen-1") }));
+  await vi.waitFor(() =>
+    expect(shown(screen)).toEqual({ ...staleGeneration, notice: "Projects may be out of date." }),
+  );
+  expect(state.reads).toBe(2);
+});
+
+it("tells a project conversation and its direct workers apart from any other thread", async () => {
+  setup();
+  window.localStorage.setItem(SIDEBAR_VIEW_KEY, JSON.stringify(choice));
+  using _view = { [Symbol.dispose]: () => window.localStorage.removeItem(SIDEBAR_VIEW_KEY) };
+  const granted = [...installation.grants.capabilities, "ui.native-tree-conversations" as const];
+  state.update({ catalogue: available("gen-1", granted) });
+  state.next = {
+    _tag: "Success",
+    value: {
+      nodes: [
+        { id: "p", kind: "project", projectId: "p1", threadId: "coordinator" },
+        // Placed under the heading without being the coordinator's child.
+        { id: "w", kind: "thread", threadId: "placed", parentId: "p" },
+      ],
+    },
+  };
+  const laptop = EnvironmentId.make("env-laptop");
+  const cases = [
+    ["coordinator", laptop, null],
+    ["worker", laptop, "coordinator"],
+    ["grandchild", laptop, "worker"],
+    ["placed", laptop, null],
+    ["remote", EnvironmentId.make("env-server"), "coordinator"],
+  ] as const;
+  await using screen = await render(
+    <>
+      <PluginTreeSnapshotSources choice={choice} snoozeWake={0} />
+      {cases.map(([threadId, environmentId, parent]) => (
+        <ScopeCase
+          key={threadId}
+          threadId={threadId}
+          environmentId={environmentId}
+          parent={parent}
+        />
+      ))}
+    </>,
+  );
+  await vi.waitFor(() =>
+    expect(
+      [...screen.container.querySelectorAll("[data-scoped=true]")].map((node) => node.id),
+    ).toEqual(["coordinator", "worker"]),
+  );
+});
+
+const SIDEBAR_VIEW_KEY = "t3code:sidebar:view";
+
+function ScopeCase(props: {
+  readonly threadId: string;
+  readonly environmentId: EnvironmentId;
+  readonly parent: string | null;
+}) {
+  const scoped = usePluginTreeConversationScope(
+    props.environmentId,
+    ThreadId.make(props.threadId),
+    props.parent === null ? null : ThreadId.make(props.parent),
+  );
+  return <i id={props.threadId} data-scoped={scoped} />;
+}

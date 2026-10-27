@@ -57,7 +57,7 @@ import { threadListEnvironmentsAtom } from "../../state/server";
 import type { PendingNewTask } from "../../state/use-pending-new-tasks";
 import { useQueuedThreadKeys } from "../../state/use-thread-outbox";
 import { PluginTreeNotice } from "../plugins/PluginTreeNotice";
-import { usePluginTreeList } from "../plugins/usePluginTreeList";
+import { usePluginTreeConversationOpener, usePluginTreeList } from "../plugins/usePluginTreeList";
 import {
   buildPluginTreeThreadListItems,
   earliestSnoozeWakeAt,
@@ -476,6 +476,8 @@ export function HomeScreen(props: HomeScreenProps) {
           settlementEnvironmentIds,
           snoozeEnvironmentIds,
           queuedThreadKeys,
+          environmentLabel: (environmentId) =>
+            props.savedConnectionsById[environmentId]?.environmentLabel ?? null,
         });
   const {
     layout: threadListV2Layout,
@@ -524,6 +526,10 @@ export function HomeScreen(props: HomeScreenProps) {
     }
     onSelectThread(thread);
   };
+  const conversationHeadingProps = usePluginTreeConversationOpener(
+    pluginTree.installationFor,
+    selectThread,
+  );
   const threadListV2Items = withPluginTreeItems(treeList?.items ?? null, activityListItems);
   useThreadJumpShortcuts(threadListV2Items, selectThread);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- reads the list's visible range after commit to enable swipe gestures on those rows
@@ -580,6 +586,7 @@ export function HomeScreen(props: HomeScreenProps) {
           foldable={item.foldable}
           onToggle={pluginTree.toggleFold}
           pane={primaryColumn ? "sidebar" : "screen"}
+          {...conversationHeadingProps(item)}
         />
       );
     }
@@ -682,6 +689,7 @@ export function HomeScreen(props: HomeScreenProps) {
         simultaneousSwipeGesture={homeScrollGesture}
         activationKey={item.key}
         depth={item.depth}
+        markSettledDone={item.markSettledDone}
       />
     );
   };

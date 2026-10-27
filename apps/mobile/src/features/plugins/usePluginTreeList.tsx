@@ -3,14 +3,17 @@ import {
   findPluginTreeInstallation,
   isPluginSidebarTreeOption,
   pluginRunnableInstallations,
+  pluginTreeConversationsGranted,
   pluginTreeNotice,
   pluginTreeTopic,
   resolvePluginSidebarView,
   togglePluginTreeFold,
   type PluginSidebarTreeOption,
+  type PluginTreeConversation,
   type PluginTreeSource,
 } from "@t3tools/client-runtime/plugins";
-import type { EnvironmentId, PluginTreeNode } from "@t3tools/contracts";
+import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
+import type { EnvironmentId, PluginInstallation, PluginTreeNode } from "@t3tools/contracts";
 import { AsyncResult } from "effect/reactivity";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
@@ -22,7 +25,7 @@ import {
   usePluginChangeRevision,
 } from "../../state/plugins";
 import { useAtomCommand } from "../../state/use-atom-command";
-import { newPluginOperationId } from "./usePluginActions";
+import { newPluginOperationId, usePluginActionRunner } from "./usePluginActions";
 
 interface TreeSnapshot {
   readonly installationId: string;
@@ -31,19 +34,19 @@ interface TreeSnapshot {
   readonly nodes: ReadonlyArray<PluginTreeNode> | null;
   /** The latest read failed. */
   readonly failed: boolean;
+  /** The installation as last reported; its grants decide whether headings are conversations. */
+  readonly installation: PluginInstallation;
 }
 
 type SnapshotUpdate =
   | {
       /** The catalogue names this installation and generation; nothing was read yet. */
       readonly kind: "identity";
-      readonly installationId: string;
-      readonly generation: string;
+      readonly installation: PluginInstallation;
     }
   | {
       readonly kind: "result";
-      readonly installationId: string;
-      readonly generation: string;
+      readonly installation: PluginInstallation;
       readonly nodes: ReadonlyArray<PluginTreeNode> | null;
       readonly failed: boolean;
     }
@@ -63,16 +66,18 @@ function PluginTreeSnapshotFetcher(props: {
   const { environmentId, choice, snoozeWake, onReport } = props;
   const catalogue = usePluginCatalogue(environmentId);
   const readTree = useAtomCommand(pluginEnvironment.readTree, { reportFailure: false });
-  const latest = useRef({ readTree, onReport });
-  useEffect(() => {
-    latest.current = { readTree, onReport };
-  });
   const known = catalogue.availability === "available" && catalogue.loaded;
   const installation = known
     ? findPluginTreeInstallation(pluginRunnableInstallations(catalogue), choice)
     : null;
+  const latest = useRef({ readTree, onReport, installation });
+  useEffect(() => {
+    latest.current = { readTree, onReport, installation };
+  });
   const installationId = installation?.installationId ?? null;
   const generation = installation?.generation ?? null;
+  // A grant change re-reads, so a revoked grant never keeps showing conversations.
+  const conversations = installation !== null && pluginTreeConversationsGranted(installation);
   const treeId = choice.tree.id;
   const revision = usePluginChangeRevision(
     installationId === null ? null : environmentId,
@@ -83,13 +88,14 @@ function PluginTreeSnapshotFetcher(props: {
   useEffect(() => {
     // Unknown while disconnected or loading: the last snapshot stays until the catalogue answers.
     if (!known) return;
-    if (installationId === null || generation === null) {
+    const current = latest.current.installation;
+    if (installationId === null || generation === null || current === null) {
       latest.current.onReport(environmentId, null);
       return;
     }
     // Before waiting on the change subscription, so a new generation never shows its
     // predecessor's rows or failure.
-    latest.current.onReport(environmentId, { kind: "identity", installationId, generation });
+    latest.current.onReport(environmentId, { kind: "identity", installation: current });
     // Read after the change subscription first reports, not before it and again at its first count.
     if (revision === undefined) return;
     let cancelled = false;
@@ -102,8 +108,7 @@ function PluginTreeSnapshotFetcher(props: {
         if (cancelled) return;
         latest.current.onReport(environmentId, {
           kind: "result",
-          installationId,
-          generation,
+          installation: current,
           nodes: result._tag === "Success" ? result.value.nodes : null,
           failed: result._tag !== "Success",
         });
@@ -111,8 +116,17 @@ function PluginTreeSnapshotFetcher(props: {
     return () => {
       cancelled = true;
     };
-    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- A new change count or snooze end reads again.
-  }, [environmentId, installationId, generation, treeId, known, revision, snoozeWake]);
+  }, [
+    environmentId,
+    installationId,
+    generation,
+    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- A grant change reads again.
+    conversations,
+    treeId,
+    known,
+    revision,
+    snoozeWake,
+  ]);
   return null;
 }
 
@@ -137,6 +151,8 @@ export function usePluginTreeList(
   readonly notice: string | null;
   readonly folds: ReadonlySet<string>;
   readonly toggleFold: (sectionKey: string, collapsedByDefault: boolean) => void;
+  /** The installation that served an environment's shown snapshot, for its heading actions. */
+  readonly installationFor: (environmentId: EnvironmentId) => PluginInstallation | null;
   readonly fetchers: ReactNode;
 } {
   const preferencesResult = useAtomValue(mobilePreferencesAtom);
@@ -160,19 +176,29 @@ export function usePluginTreeList(
       // A new installation or generation may have other grants; its predecessor's rows go.
       const sameIdentity =
         update !== null &&
-        previous?.installationId === update.installationId &&
-        previous.generation === update.generation;
+        previous?.installationId === update.installation.installationId &&
+        previous.generation === update.installation.generation;
       // Knowing the same identity again (a reconnect) keeps its last rows and failure.
-      if (update?.kind === "identity" && sameIdentity) return current;
+      if (
+        update?.kind === "identity" &&
+        sameIdentity &&
+        pluginTreeConversationsGranted(previous.installation) ===
+          pluginTreeConversationsGranted(update.installation)
+      )
+        return current;
       const byEnvironment = new Map(current.key === key ? current.byEnvironment : []);
       if (update === null) byEnvironment.delete(environmentId);
       else {
         const kept = sameIdentity ? (previous?.nodes ?? null) : null;
         byEnvironment.set(environmentId, {
-          installationId: update.installationId,
-          generation: update.generation,
+          installationId: update.installation.installationId,
+          generation: update.installation.generation,
           nodes: update.kind === "result" ? (update.nodes ?? kept) : kept,
-          failed: update.kind === "result" && update.failed,
+          failed:
+            update.kind === "result"
+              ? update.failed
+              : sameIdentity && previous !== undefined && previous.failed,
+          installation: update.installation,
         });
       }
       return { key, byEnvironment };
@@ -181,8 +207,16 @@ export function usePluginTreeList(
     selectedTree === null || snapshots.key !== selectedTree.key
       ? []
       : environmentIds.flatMap((environmentId) => {
-          const nodes = snapshots.byEnvironment.get(environmentId)?.nodes ?? null;
-          return nodes === null ? [] : [{ environmentId, nodes }];
+          const snapshot = snapshots.byEnvironment.get(environmentId);
+          return snapshot === undefined || snapshot.nodes === null
+            ? []
+            : [
+                {
+                  environmentId,
+                  nodes: snapshot.nodes,
+                  conversations: pluginTreeConversationsGranted(snapshot.installation),
+                },
+              ];
         });
 
   const notice =
@@ -216,6 +250,10 @@ export function usePluginTreeList(
           ),
         }),
       }),
+    installationFor: (environmentId) =>
+      selectedTree === null || snapshots.key !== selectedTree.key
+        ? null
+        : (snapshots.byEnvironment.get(environmentId)?.installation ?? null),
     fetchers:
       selectedTree === null
         ? null
@@ -229,4 +267,42 @@ export function usePluginTreeList(
             />
           )),
   };
+}
+
+/**
+ * A tree heading's props for opening its project conversation: its thread, or the declared action
+ * that starts one, run with only that project's id. Its results apply as any action's do.
+ */
+export function usePluginTreeConversationOpener(
+  installationFor: (environmentId: EnvironmentId) => PluginInstallation | null,
+  onSelectThread: (thread: EnvironmentThreadShell) => void,
+): (heading: {
+  readonly conversation?: PluginTreeConversation<EnvironmentThreadShell>;
+  readonly selected?: boolean;
+}) => { readonly open?: { readonly onPress: () => void; readonly selected: boolean } } {
+  const runAction = usePluginActionRunner();
+  const running = useRef(false);
+  const open = (conversation: PluginTreeConversation<EnvironmentThreadShell>) => {
+    if (conversation.kind === "thread") {
+      onSelectThread(conversation.thread);
+      return;
+    }
+    const installation = installationFor(conversation.environmentId);
+    const declared = installation?.manifest.actions.find(
+      (action) => action.id === conversation.actionId,
+    );
+    if (installation == null || declared === undefined || running.current) return;
+    running.current = true;
+    void runAction(
+      { environmentId: conversation.environmentId, installation, threadId: null },
+      declared,
+      { projectId: conversation.projectId },
+    ).finally(() => {
+      running.current = false;
+    });
+  };
+  return ({ conversation, selected }) =>
+    conversation === undefined
+      ? {}
+      : { open: { onPress: () => open(conversation), selected: selected === true } };
 }

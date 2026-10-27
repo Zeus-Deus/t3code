@@ -275,6 +275,8 @@ vi.mock("./sidebar/SidebarThreadRow", () => ({
     </li>
   ),
   SidebarSearchResultRow: () => null,
+  SidebarThreadStatusIcon: () => null,
+  JumpHintBadge: (props: { label: string }) => <kbd>{props.label}</kbd>,
 }));
 
 const project = (environmentId: EnvironmentId, id: string, title: string) => ({
@@ -665,8 +667,13 @@ function treePlugin(enabled = true): PluginInstallation {
   };
 }
 
-function treeActionPlugin(): PluginInstallation {
-  const capabilities = ["ui.native-trees", "ui.native-tree-actions", "threads.read", "ui"] as const;
+function treeConversationPlugin(): PluginInstallation {
+  const capabilities = [
+    "ui.native-trees",
+    "ui.native-tree-conversations",
+    "threads.read",
+    "ui",
+  ] as const;
   const base = treePlugin();
   return {
     ...base,
@@ -1082,9 +1089,76 @@ describe("Sidebar plugin tree", () => {
     );
   });
 
-  it("runs a project heading's declared action only on click, per environment and never for the open thread", async () => {
-    const a = thread("a", laptop, "p1");
+  it("makes a project heading its conversation: the name opens it, the chevron folds it", async () => {
+    const coordinator = thread("coordinator", laptop, "p1");
+    const asWorker = (id: string) =>
+      thread(id, laptop, "p1", {
+        source: { ...coordinator.source, creationSource: "mcp" },
+        lineage: {
+          rootThreadId: coordinator.id,
+          parentThreadId: coordinator.id,
+          relationshipToParent: "subagent",
+        },
+      });
+    const placed = asWorker("placed");
+    // Not in the snapshot yet: it follows its coordinator, never "Other threads".
+    const fresh = asWorker("fresh");
     const elsewhere = thread("elsewhere", server, "p1");
+    const app: PluginTreeNode = {
+      id: "app",
+      kind: "project",
+      projectId: ProjectId.make("p1"),
+      threadId: coordinator.id,
+    };
+    setupTree({
+      threads: [coordinator, placed, fresh, elsewhere],
+      route: elsewhere,
+      trees: new Map([
+        [laptop, [app, treeThread("w", "placed", "app")]],
+        [server, [treeProject("docs", "p1"), treeThread("e", "elsewhere", "docs")]],
+      ]),
+    });
+    data.update({ installations: [treeConversationPlugin()] });
+    await using screen = await renderSidebar();
+    using navigate = vi.spyOn(screen.router!, "navigate").mockResolvedValue(undefined);
+
+    const open = page.getByRole("button", { name: "Open App", exact: true });
+    await expect.element(open).toBeVisible();
+    await expect.poll(rowTitles).toEqual(["placed", "fresh", "elsewhere"]);
+    await expect.element(open).not.toHaveAttribute("aria-current");
+
+    await userEvent.click(open);
+    expect(navigate).toHaveBeenLastCalledWith(
+      expect.objectContaining({ params: { environmentId: laptop, threadId: coordinator.id } }),
+    );
+    await act(() => data.update({ route: routeTo(coordinator) }));
+    await expect.element(open).toHaveAttribute("aria-current", "page");
+    // The heading's thread is once in keyboard order, ahead of its workers.
+    await act(() =>
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "]", ctrlKey: true, shiftKey: true, bubbles: true }),
+      ),
+    );
+    expect(navigate).toHaveBeenLastCalledWith(
+      expect.objectContaining({ params: { environmentId: laptop, threadId: placed.id } }),
+    );
+
+    const calls = navigate.mock.calls.length;
+    await userEvent.click(page.getByRole("button", { name: "Collapse App, 2 active" }));
+    await expect.poll(rowTitles).toEqual(["elsewhere"]);
+    await expect.element(open).toHaveAttribute("aria-current", "page");
+    expect(navigate).toHaveBeenCalledTimes(calls);
+    await userEvent.click(page.getByRole("button", { name: "Expand App, 2 active" }));
+    await expect.poll(rowTitles).toEqual(["placed", "fresh", "elsewhere"]);
+
+    // Without the grant the heading only folds, and its thread is an ordinary row again.
+    await act(() => data.update({ installations: [treePlugin()], treeRevision: 1 }));
+    await expect.element(open).not.toBeInTheDocument();
+    await expect.poll(rowTitles).toEqual(["placed", "elsewhere", "coordinator", "fresh"]);
+  });
+
+  it("runs a heading's action with only its project, naming each environment's heading", async () => {
+    const a = thread("a", laptop, "p1");
     const actionable = (projectId: string): PluginTreeNode => ({
       id: "app",
       kind: "project",
@@ -1092,18 +1166,16 @@ describe("Sidebar plugin tree", () => {
       actionId: "coordinate",
     });
     setupTree({
-      threads: [a, elsewhere],
-      route: elsewhere,
+      threads: [a],
+      route: a,
       trees: new Map([
         [laptop, [actionable("p1"), treeThread("t", "a", "app")]],
         [server, [actionable("p9")]],
       ]),
     });
-    const base = treePlugin();
-    const withAction = treeActionPlugin();
     let release!: () => void;
     data.update({
-      installations: [withAction],
+      installations: [treeConversationPlugin()],
       invokes: [],
       answerInvoke: () =>
         new Promise((resolve) => {
@@ -1113,12 +1185,15 @@ describe("Sidebar plugin tree", () => {
     });
     await using _screen = await renderSidebar();
 
-    // The merged App heading keeps one action per environment, each named.
-    const onServer = page.getByRole("button", { name: "Start coordinator in App on Server" });
-    await expect.element(onServer).toBeInTheDocument();
+    // Both environments give App a conversation, so neither heading picks for the other.
+    const onServer = page.getByRole("button", { name: "App on Server, Start coordinator" });
+    await expect.element(onServer).toBeVisible();
     await expect
-      .element(page.getByRole("button", { name: "Start coordinator in App on Laptop" }))
-      .toBeInTheDocument();
+      .element(page.getByRole("button", { name: "App on Laptop, Start coordinator" }))
+      .toBeVisible();
+    await expect
+      .poll(sectionNames)
+      .toEqual([`project:repo:app\0${laptop}`, `project:repo:app\0${server}`]);
     expect(data.read().invokes).toEqual([]);
 
     await userEvent.click(onServer);
@@ -1143,111 +1218,16 @@ describe("Sidebar plugin tree", () => {
         scopeThreadRef(server, ThreadId.make("coordinator")),
       ),
     ).toEqual(expect.objectContaining({ kind: "plugin", installationId: "inst-projects" }));
-    expect(data.read().invokes).toHaveLength(1);
 
-    // Without the grant, or once the action is no longer declared, no control is offered.
-    await act(() =>
-      data.update({
-        installations: [
-          {
-            ...withAction,
-            grants: { capabilities: [...base.grants.capabilities], projectIds: [] },
-          },
-        ],
-      }),
-    );
-    await expect.element(onServer).not.toBeInTheDocument();
+    // Once the action is no longer declared, the heading only folds.
+    const withAction = treeConversationPlugin();
     await act(() =>
       data.update({
         installations: [{ ...withAction, manifest: { ...withAction.manifest, actions: [] } }],
       }),
     );
+    await expect.element(onServer).not.toBeInTheDocument();
     await expect.element(page.getByText("a", { exact: true })).toBeVisible();
-    expect(page.getByRole("button", { name: /Start coordinator/ }).query()).toBeNull();
     expect(data.read().invokes).toHaveLength(1);
-  });
-
-  it("lists a project's action as a row under its heading, folded or not, until the tree drops it", async () => {
-    const a = thread("a", laptop, "p1");
-    const coordinator = thread("coordinator", laptop, "p1");
-    const app: PluginTreeNode = {
-      id: "app",
-      kind: "project",
-      projectId: ProjectId.make("p1"),
-      actionId: "coordinate",
-    };
-    setupTree({
-      threads: [a],
-      route: null,
-      trees: new Map([[laptop, [app, treeThread("n-a", "a", "app")]]]),
-    });
-    const releases: Array<() => void> = [];
-    data.update({
-      installations: [treeActionPlugin()],
-      invokes: [],
-      answerInvoke: () => new Promise((resolve) => releases.push(() => resolve({}))),
-    });
-    await using _screen = await renderSidebar();
-
-    const action = page.getByRole("button", { name: "Start coordinator in App", exact: true });
-    await expect.element(action).toBeVisible();
-    await expect.element(action).toHaveTextContent("Start coordinator");
-    await vi.waitFor(() => expect(rowTitles()).toEqual(["a"]));
-    // Directly under the heading and ahead of its threads.
-    const heading = page.getByTestId("sidebar-project-section").element();
-    const below = (element: Element) => element.nextElementSibling;
-    expect(below(heading)?.contains(action.element())).toBe(true);
-    expect(below(below(heading)!)).toBe(page.getByTestId("thread-row").element());
-    expect(data.read().invokes).toEqual([]);
-
-    const expectedInvoke = {
-      environmentId: laptop,
-      input: expect.objectContaining({
-        handler: "action:coordinate",
-        context: { projectId: "p1" },
-      }),
-    };
-    (action.element() as HTMLElement).focus();
-    await userEvent.keyboard("{Enter}");
-    await expect.element(action).toBeDisabled();
-    await expect.element(action).toHaveAttribute("aria-busy", "true");
-    expect(data.read().invokes).toEqual([expectedInvoke]);
-    releases[0]!();
-    await expect.element(action).toBeEnabled();
-    (action.element() as HTMLElement).focus();
-    await userEvent.keyboard(" ");
-    await expect.element(action).toBeDisabled();
-    expect(data.read().invokes).toEqual([expectedInvoke, expectedInvoke]);
-    releases[1]!();
-    await expect.element(action).toBeEnabled();
-
-    // Folding hides the threads, not the action.
-    await userEvent.click(page.getByRole("button", { name: "App, 1 active" }));
-    await vi.waitFor(() => expect(rowTitles()).toEqual([]));
-    await expect.element(action).toBeVisible();
-    await userEvent.click(page.getByRole("button", { name: "App, 1 active" }));
-    await vi.waitFor(() => expect(rowTitles()).toEqual(["a"]));
-
-    // Once the plugin stops naming the action, its coordinator thread sits where the row was.
-    await act(() =>
-      data.update({
-        threads: [a, coordinator],
-        trees: new Map([
-          [
-            laptop,
-            [
-              treeProject("app", "p1"),
-              treeThread("n-coordinator", "coordinator", "app"),
-              treeThread("n-a", "a", "app"),
-            ],
-          ],
-        ]),
-        treeRevision: 1,
-      }),
-    );
-    await vi.waitFor(() => expect(rowTitles()).toEqual(["coordinator", "a"]));
-    expect(page.getByRole("button", { name: /Start coordinator/ }).query()).toBeNull();
-    expect(below(heading)).toBe(page.getByTestId("thread-row").first().element());
-    expect(data.read().invokes).toHaveLength(2);
   });
 });

@@ -264,7 +264,7 @@ import {
   usePluginTreeNotice,
   usePluginTreeSources,
 } from "./sidebar/pluginTreeSources";
-import { PluginTreeProjectActions } from "./sidebar/PluginTreeProjectActions";
+import { PluginTreeProjectHeading } from "./sidebar/PluginTreeProjectHeading";
 import {
   SidebarProjectSectionHeader,
   SidebarQuietProjectsToggle,
@@ -413,10 +413,12 @@ function resolveDraggedOrders(input: {
 type SidebarProjectSection = ProjectViewSection<SidebarProjectSnapshot, EnvironmentThreadShell> & {
   /** Set on a plugin tree's sections: their heading, nesting and the plugin's initial fold. */
   readonly tree?: {
-    readonly heading: PluginTreeHeading<SidebarProjectSnapshot> | null;
+    readonly heading: PluginTreeHeading<SidebarProjectSnapshot, EnvironmentThreadShell> | null;
     readonly depth: number;
     readonly rowDepth: number;
     readonly collapsedByDefault: boolean;
+    /** The heading's own thread: in keyboard and selection order, but never a row. */
+    readonly conversationThread: EnvironmentThreadShell | null;
   };
 };
 
@@ -428,10 +430,16 @@ interface SidebarProjectLayout {
 function treeSectionAsProjectSection(
   section: PluginTreeSection<SidebarProjectSnapshot, EnvironmentThreadShell>,
 ): SidebarProjectSection {
+  const conversation =
+    section.heading?.kind === "project" ? section.heading.conversation : undefined;
+  const conversationThread = conversation?.kind === "thread" ? conversation.thread : null;
   return {
     key: section.key,
     group: section.heading?.kind === "project" ? section.heading.project : null,
-    threads: section.threads,
+    threads:
+      conversationThread === null
+        ? section.threads
+        : section.threads.filter((thread) => thread !== conversationThread),
     rows: section.rows,
     liveCount: section.count,
     lastActivityAt: null,
@@ -441,6 +449,7 @@ function treeSectionAsProjectSection(
       depth: section.depth,
       rowDepth: section.rowDepth,
       collapsedByDefault: section.collapsedByDefault,
+      conversationThread,
     },
   };
 }
@@ -689,7 +698,7 @@ function useSidebarThreads(input: {
       ? activeThreads
       : projectFolders.flatMap((folder) => folder.threads)),
     ...visibleWorkingThreads
-    ] : projectLayout.sections.flatMap((section) => section.threads)),
+    ] : projectLayout.sections.flatMap((section) => section.tree?.conversationThread ? [section.tree.conversationThread, ...section.threads] : section.threads)),
     ...visibleSnoozedThreads,
     ...renderedSettledThreads,
   ];
@@ -1411,6 +1420,9 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       ? sidebarView.selected
       : null;
   const treeSources = usePluginTreeSources(selectedTree);
+  const treeConversationEnvironmentIds = new Set(
+    treeSources?.flatMap((source) => (source.conversations ? [source.environmentId] : [])),
+  );
   const treeNotice = usePluginTreeNotice(selectedTree);
   const projectViewRules =
     sidebarView.selected === null
@@ -3455,9 +3467,11 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                       const renderThreadRow = (
                         thread: EnvironmentThreadShell,
                         section: SidebarSection,
-                        // The tree row of the project folder this row sits in.
-                        folderRow?: string,
+                        folderRowOrDone?: string | boolean,
                       ) => {
+                        const folderRow = typeof folderRowOrDone === "string" ? folderRowOrDone : undefined;
+                        const markSettledDone = folderRowOrDone === true;
+
                         const threadKey = scopedThreadKey(
                           scopeThreadRef(thread.environmentId, thread.id),
                         );
@@ -3569,6 +3583,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                             onUnpin={attemptUnpin}
                             onAcknowledgeWoke={acknowledgeWoke}
                             onFileDropThreads={handleThreadFileDrop}
+                            markSettledDone={markSettledDone}
                           />
                         );
                       };
@@ -3594,46 +3609,54 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                           const tree = section.tree;
                           const heading = tree === undefined ? undefined : tree.heading;
                           if (heading !== null) {
+                            const header = {
+                              project: section.group,
+                              title: heading?.kind === "group" ? heading.title : undefined,
+                              depth: tree?.depth ?? 0,
+                              sectionKey: section.key,
+                              liveCount: section.liveCount,
+                              lastActivityAt: section.lastActivityAt,
+                              folded: section.folded,
+                              onToggleFold:
+                                tree === undefined
+                                  ? toggleProjectFold
+                                  : (key: string) => toggleTreeFold(key, tree.collapsedByDefault),
+                              onNewThread: startThreadInProject,
+                              onOpenSettings: openProjectSettingsFromHeader,
+                            };
                             items.push(
-                              <SidebarProjectSectionHeader
-                                key={`project:${section.key}`}
-                                project={section.group}
-                                title={heading?.kind === "group" ? heading.title : undefined}
-                                depth={tree?.depth ?? 0}
-                                sectionKey={section.key}
-                                liveCount={section.liveCount}
-                                lastActivityAt={section.lastActivityAt}
-                                folded={section.folded}
-                                onToggleFold={
-                                  tree === undefined
-                                    ? toggleProjectFold
-                                    : (key) => toggleTreeFold(key, tree.collapsedByDefault)
-                                }
-                                onNewThread={startThreadInProject}
-                                onOpenSettings={openProjectSettingsFromHeader}
-                              />,
+                              selectedTree !== null &&
+                                heading?.kind === "project" &&
+                                heading.conversation !== undefined ? (
+                                <PluginTreeProjectHeading
+                                  key={`project:${section.key}`}
+                                  {...header}
+                                  choice={selectedTree}
+                                  conversation={heading.conversation}
+                                  environmentLabel={
+                                    heading.environmentId === undefined
+                                      ? null
+                                      : (environmentLabelById.get(heading.environmentId) ??
+                                        heading.environmentId)
+                                  }
+                                  routeThreadKey={routeRowThreadKey}
+                                  jumpLabel={
+                                    showJumpHints && heading.conversation.kind === "thread"
+                                      ? (jumpLabelByKey.get(heading.conversation.key) ?? null)
+                                      : null
+                                  }
+                                  onThreadClick={handleThreadClick}
+                                />
+                              ) : (
+                                <SidebarProjectSectionHeader
+                                  key={`project:${section.key}`}
+                                  {...header}
+                                />
+                              ),
                             );
                           }
                           // A heading's rows sit flush with it, as in the project view.
                           const rowDepth = tree === undefined ? 0 : Math.max(tree.rowDepth - 1, 0);
-                          // Not thread content, so a folded heading still offers its actions.
-                          if (
-                            selectedTree !== null &&
-                            section.group !== null &&
-                            heading?.kind === "project" &&
-                            heading.actions !== undefined
-                          ) {
-                            items.push(
-                              <PluginTreeProjectActions
-                                key={`actions:${section.key}`}
-                                choice={selectedTree}
-                                actions={heading.actions}
-                                projectName={section.group.displayName}
-                                environmentLabels={environmentLabelById}
-                                depth={rowDepth}
-                              />,
-                            );
-                          }
                           items.push(
                             <SidebarProjectThreadTree
                               key={`tree:${section.key}`}
@@ -3643,6 +3666,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                                 renderThreadRow(
                                   thread,
                                   sectionByThreadKey.get(threadShellKey(thread)) ?? "active",
+                                  treeConversationEnvironmentIds.has(thread.environmentId),
                                 )
                               }
                             />,

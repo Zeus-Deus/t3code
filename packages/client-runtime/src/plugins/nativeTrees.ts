@@ -1,5 +1,7 @@
 import type {
   EnvironmentId,
+  PluginCapability,
+  PluginInstallation,
   PluginTreeNode,
   ProjectId,
   ScopedThreadRef,
@@ -26,20 +28,42 @@ export interface PluginTreeRow<TThread> {
   readonly children: ReadonlyArray<PluginTreeRow<TThread>>;
 }
 
-/** A declared action a project node offers, run for the environment and project it named. */
-export interface PluginTreeProjectAction {
-  readonly environmentId: EnvironmentId;
-  readonly projectId: ProjectId;
-  readonly actionId: string;
-}
+const TREE_CONVERSATIONS_CAPABILITY: PluginCapability = "ui.native-tree-conversations";
 
-export type PluginTreeHeading<TProject> =
+/** Whether a tree served by this installation may make project headings conversations. */
+export const pluginTreeConversationsGranted = (installation: PluginInstallation) =>
+  installation.grants.capabilities.includes(TREE_CONVERSATIONS_CAPABILITY);
+
+/**
+ * What a project heading opens: the thread it stands for, or a declared action that starts one,
+ * run with only this project's id.
+ */
+export type PluginTreeConversation<TThread> =
+  | {
+      readonly kind: "thread";
+      readonly environmentId: EnvironmentId;
+      readonly thread: TThread;
+      readonly key: string;
+    }
+  | {
+      readonly kind: "action";
+      readonly environmentId: EnvironmentId;
+      readonly projectId: ProjectId;
+      readonly actionId: string;
+    };
+
+export type PluginTreeHeading<TProject, TThread> =
   | { readonly kind: "group"; readonly title: string }
   | {
       readonly kind: "project";
       readonly project: TProject;
-      /** Every merged node's action, kept per environment and project; absent when none offer one. */
-      readonly actions?: ReadonlyArray<PluginTreeProjectAction>;
+      /** The heading's thread is never also a row; its unplaced children follow under it. */
+      readonly conversation?: PluginTreeConversation<TThread>;
+      /**
+       * Set when several environments give the same project a conversation: each gets its own
+       * heading, named by environment, rather than one heading picking among them.
+       */
+      readonly environmentId?: EnvironmentId;
     }
   /** Live threads the tree does not place. */
   | { readonly kind: "other" };
@@ -47,7 +71,7 @@ export type PluginTreeHeading<TProject> =
 export interface PluginTreeSection<TProject, TThread> {
   readonly key: string;
   /** Null for threads the tree places at its root. */
-  readonly heading: PluginTreeHeading<TProject> | null;
+  readonly heading: PluginTreeHeading<TProject, TThread> | null;
   /** Headings above this one. */
   readonly depth: number;
   /**
@@ -58,16 +82,41 @@ export interface PluginTreeSection<TProject, TThread> {
   readonly folded: boolean;
   /** The plugin's initial fold, for toggling; the person's choice is kept against it. */
   readonly collapsedByDefault: boolean;
-  /** Threads under this heading, nested headings included. */
+  /** Threads under this heading, nested headings included; never its conversation's own thread. */
   readonly count: number;
   /** Rows to render: all of them, or only the open thread while folded. */
   readonly rows: ReadonlyArray<PluginTreeRow<TThread>>;
+  /** In tree order: the heading's conversation thread first, then its rows. */
   readonly threads: ReadonlyArray<TThread>;
 }
 
 export interface PluginTreeSource {
   readonly environmentId: EnvironmentId;
   readonly nodes: ReadonlyArray<PluginTreeNode>;
+  /**
+   * The serving installation holds ui.native-tree-conversations. Without it a project node's
+   * thread or action is ignored and it lays out as a plain heading.
+   */
+  readonly conversations?: boolean;
+}
+
+const conversationThreadId = (source: PluginTreeSource, node: PluginTreeNode) =>
+  node.kind === "project" && source.conversations === true ? node.threadId : undefined;
+
+/** Threads that project headings stand for, so a thread can tell it is a project's conversation. */
+export function pluginTreeConversationThreadKeys(
+  sources: ReadonlyArray<PluginTreeSource>,
+): ReadonlySet<string> {
+  const keys = new Set<string>();
+  for (const source of sources) {
+    for (const node of source.nodes) {
+      const threadId = conversationThreadId(source, node);
+      if (threadId !== undefined) {
+        keys.add(scopedThreadKey(scopeThreadRef(source.environmentId, threadId)));
+      }
+    }
+  }
+  return keys;
 }
 
 /** Families needed for placed references the shell omitted, anchored by listed ancestors. */
@@ -100,9 +149,11 @@ export function pluginTreeFamilyRoots(input: {
         seen.add(parentId);
         const parent = nodesById.get(parentId);
         if (parent === undefined) break;
-        if (parent.kind === "thread") {
+        const ancestorId =
+          parent.kind === "thread" ? parent.threadId : conversationThreadId(source, parent);
+        if (ancestorId !== undefined) {
           const ancestor = threadsByKey.get(
-            scopedThreadKey(scopeThreadRef(source.environmentId, parent.threadId)),
+            scopedThreadKey(scopeThreadRef(source.environmentId, ancestorId)),
           );
           if (ancestor !== undefined) {
             const ref = scopeThreadRef(source.environmentId, ancestor.lineage.rootThreadId);
@@ -157,10 +208,17 @@ const collapsedByDefault = (node: PluginTreeNode) =>
 interface HeadingNode<TProject, TThread> {
   readonly kind: "heading";
   readonly key: string;
-  readonly heading: PluginTreeHeading<TProject>;
+  readonly heading:
+    | { readonly kind: "group"; readonly title: string }
+    | {
+        readonly kind: "project";
+        readonly project: TProject;
+        readonly environmentId?: EnvironmentId;
+      };
   readonly collapsedByDefault: boolean;
   readonly children: Array<TreeEntry<TProject, TThread>>;
-  readonly actions: Array<PluginTreeProjectAction>;
+  /** The first conversation among the nodes it took in. */
+  conversation: PluginTreeConversation<TThread> | null;
   /** Root project headings that took in another node of the same logical project. */
   merged: boolean;
 }
@@ -178,7 +236,8 @@ type TreeEntry<TProject, TThread> = HeadingNode<TProject, TThread> | ThreadNode<
 
 // Merge root project headings only through host grouping; node ids remain environment-local.
 // Missing references promote children, and unplaced threads remain reachable on host shelves.
-// Thread nesting is display only; only group/project headings fold.
+// Thread nesting is display only; only group/project headings fold. A project heading's
+// conversation thread is placed by the heading itself, so it is never a row.
 export function buildPluginTreeLayout<TProject, TThread extends PluginTreeThread>(input: {
   readonly sources: ReadonlyArray<PluginTreeSource>;
   /** Every thread the host lists, in its order. */
@@ -205,10 +264,44 @@ export function buildPluginTreeLayout<TProject, TThread extends PluginTreeThread
   const placedKeys = new Set<string>();
   const roots: Array<TreeEntry<TProject, TThread>> = [];
   const rootProjects = new Map<string, Heading>();
+  // Logical projects whose conversations come from more than one environment.
+  const conversationEnvironments = new Map<string, Set<EnvironmentId>>();
+  for (const source of input.sources) {
+    if (source.conversations !== true) continue;
+    for (const node of source.nodes) {
+      if (node.kind !== "project" || (node.threadId ?? node.actionId) === undefined) continue;
+      const project = input.project(source.environmentId, node.projectId);
+      if (project === null) continue;
+      const environments = conversationEnvironments.get(project.key) ?? new Set();
+      environments.add(source.environmentId);
+      conversationEnvironments.set(project.key, environments);
+    }
+  }
+  const isSplit = (projectKey: string) => (conversationEnvironments.get(projectKey)?.size ?? 0) > 1;
 
   for (const source of input.sources) {
     const { environmentId } = source;
     const nodesById = new Map(source.nodes.map((node) => [node.id, node]));
+    /** Claims the node's conversation; a thread the host does not list, or already placed, has none. */
+    const conversationOf = (
+      node: PluginTreeNode & { readonly kind: "project" },
+    ): PluginTreeConversation<TThread> | null => {
+      if (source.conversations !== true) return null;
+      if (node.actionId !== undefined) {
+        return {
+          kind: "action",
+          environmentId,
+          projectId: node.projectId,
+          actionId: node.actionId,
+        };
+      }
+      if (node.threadId === undefined) return null;
+      const key = scopedThreadKey(scopeThreadRef(environmentId, node.threadId));
+      const thread = threadsByKey.get(key);
+      if (thread === undefined || placedKeys.has(key)) return null;
+      placedKeys.add(key);
+      return { kind: "thread", environmentId, thread, key };
+    };
     interface Resolved {
       /** The node's own heading or row; null when it is skipped or merged into another. */
       readonly entry: TreeEntry<TProject, TThread> | null;
@@ -255,50 +348,43 @@ export function buildPluginTreeLayout<TProject, TThread extends PluginTreeThread
             heading: { kind: "group", title: node.title },
             collapsedByDefault: collapsedByDefault(node),
             children: [],
-            actions: [],
+            conversation: null,
             merged: false,
           };
           return { entry, attachTo: headingParent, container: entry };
         }
         const project = input.project(environmentId, node.projectId);
         if (project === null) return { entry: null, attachTo: null, container: headingParent };
-        const action =
-          node.actionId === undefined
-            ? null
-            : { environmentId, projectId: node.projectId, actionId: node.actionId };
-        const merged = headingParent === null ? rootProjects.get(project.key) : undefined;
+        const split = isSplit(project.key);
+        const rootKey = split ? `${project.key}\0${environmentId}` : project.key;
+        const merged = headingParent === null ? rootProjects.get(rootKey) : undefined;
         if (merged !== undefined) {
           merged.merged = true;
-          if (
-            action !== null &&
-            !merged.actions.some(
-              (other) =>
-                other.environmentId === action.environmentId &&
-                other.projectId === action.projectId &&
-                other.actionId === action.actionId,
-            )
-          ) {
-            merged.actions.push(action);
-          }
+          merged.conversation ??= conversationOf(node);
           return { entry: null, attachTo: null, container: merged };
         }
         const entry: Heading = {
           kind: "heading",
-          key:
-            headingParent === null ? `project:${project.key}` : `tree:${environmentId}:${node.id}`,
-          heading: { kind: "project", project: project.project },
+          key: headingParent === null ? `project:${rootKey}` : `tree:${environmentId}:${node.id}`,
+          heading: {
+            kind: "project",
+            project: project.project,
+            ...(split ? { environmentId } : {}),
+          },
           collapsedByDefault: collapsedByDefault(node),
           children: [],
-          actions: action === null ? [] : [action],
+          conversation: conversationOf(node),
           merged: false,
         };
-        if (headingParent === null) rootProjects.set(project.key, entry);
+        if (headingParent === null) rootProjects.set(rootKey, entry);
         return { entry, attachTo: headingParent, container: entry };
       })();
       resolving.delete(node.id);
       resolved.set(node.id, result);
       return result;
     };
+    // A heading's conversation claims its thread before any row naming the same thread can.
+    for (const node of source.nodes) if (node.kind === "project") resolve(node);
     for (const node of source.nodes) {
       const { entry, attachTo } = resolve(node);
       if (entry === null) continue;
@@ -377,7 +463,7 @@ export function buildPluginTreeLayout<TProject, TThread extends PluginTreeThread
   };
   const section = (
     key: string,
-    heading: PluginTreeHeading<TProject> | null,
+    heading: PluginTreeHeading<TProject, TThread> | null,
     depth: number,
     rowDepth: number,
     rows: ReadonlyArray<PluginTreeRow<TThread>>,
@@ -393,7 +479,10 @@ export function buildPluginTreeLayout<TProject, TThread extends PluginTreeThread
     collapsedByDefault,
     count,
     rows,
-    threads: flatten(rows),
+    threads:
+      heading?.kind === "project" && heading.conversation?.kind === "thread"
+        ? [heading.conversation.thread, ...flatten(rows)]
+        : flatten(rows),
   });
 
   interface Laid {
@@ -437,10 +526,22 @@ export function buildPluginTreeLayout<TProject, TThread extends PluginTreeThread
           ]
         : entry.children;
       const inner = lay(children, depth + 1, entry.key);
+      const anchor = entry.conversation?.kind === "thread" ? entry.conversation : null;
+      if (anchor !== null) {
+        // Its children the tree left out lead the heading's own rows, ahead of nested headings.
+        const seen = new Set([anchor.key]);
+        const followed = (followers.get(anchor.key) ?? []).map((thread) =>
+          followerRow(thread, seen),
+        );
+        inner.rows.push(...followed);
+        inner.allRows.push(...followed);
+        inner.count += flatten(followed).length;
+      }
       laid.count += inner.count;
       laid.allRows.push(...inner.allRows);
       if (
         inner.count === 0 &&
+        anchor === null &&
         !(entry.heading.kind === "project" && input.showsEmptyProject(entry.heading.project))
       )
         continue;
@@ -450,8 +551,8 @@ export function buildPluginTreeLayout<TProject, TThread extends PluginTreeThread
       laid.sections.push(
         section(
           entry.key,
-          entry.heading.kind === "project" && entry.actions.length > 0
-            ? { ...entry.heading, actions: entry.actions }
+          entry.heading.kind === "project" && entry.conversation !== null
+            ? { ...entry.heading, conversation: entry.conversation }
             : entry.heading,
           depth,
           depth + 1,

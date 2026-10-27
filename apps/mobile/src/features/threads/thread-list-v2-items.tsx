@@ -139,6 +139,12 @@ const DONE_STATUS_LABEL: StatusLabel = {
   className: "text-adaptive-emerald-700-300",
   iconTintClassName: "accent-adaptive-emerald-700-300",
 };
+// Seen and finished, in a plugin tree that marks every finished worker alike.
+const SEEN_DONE_STATUS_LABEL: StatusLabel = {
+  ...DONE_STATUS_LABEL,
+  className: "text-foreground-muted",
+  iconTintClassName: "accent-foreground-muted",
+};
 
 function ThreadListV2Duration(props: { readonly startedAt: string | null }) {
   const startedAtMs = Date.parse(props.startedAt ?? "");
@@ -178,6 +184,12 @@ function ThreadListV2Section(props: {
     readonly accessibilityLabel: string;
     readonly accessibilityHint: string;
   };
+  /** The label opens something of its own; only the chevron folds. */
+  readonly open?: {
+    readonly onPress: () => void;
+    readonly accessibilityLabel: string;
+    readonly selected: boolean;
+  };
 }) {
   const snoozed = props.tone === "snoozed";
   const sidebarPane = props.pane === "sidebar";
@@ -185,43 +197,89 @@ function ThreadListV2Section(props: {
     "mb-1.5 mt-4 flex-row items-center gap-2.5",
     props.pane === "sidebar" ? "px-3" : "px-5",
   );
-  const content = (
-    <>
-      <Text
-        className={cn(
-          "text-xs font-t3-medium",
-          sidebarPane
+  const label = (
+    <Text
+      numberOfLines={props.open ? 1 : undefined}
+      className={cn(
+        "text-xs font-t3-medium",
+        props.open?.selected
+          ? sidebarPane
+            ? "text-drawer-foreground"
+            : "text-foreground"
+          : sidebarPane
             ? "text-drawer-foreground-muted"
             : snoozed
               ? "text-foreground-secondary"
               : "text-foreground-tertiary",
-        )}
-      >
-        {props.label}
-      </Text>
-      <View
-        className={cn(
-          "h-px flex-1",
-          snoozed ? "bg-primary/20" : sidebarPane ? "bg-drawer-border" : "bg-border",
-        )}
-      />
-      {props.disclosure ? (
-        <SymbolView
-          name="chevron.down"
-          size={10}
-          tintColorClassName={
-            sidebarPane
-              ? "accent-drawer-foreground-muted"
-              : snoozed
-                ? "accent-icon-muted"
-                : "accent-foreground-muted"
-          }
-          type="monochrome"
-          style={{ transform: [{ rotate: props.disclosure.expanded ? "180deg" : "0deg" }] }}
-        />
-      ) : null}
+      )}
+    >
+      {props.label}
+    </Text>
+  );
+  const rule = (
+    <View
+      className={cn(
+        "h-px flex-1",
+        snoozed ? "bg-primary/20" : sidebarPane ? "bg-drawer-border" : "bg-border",
+      )}
+    />
+  );
+  const chevron = props.disclosure ? (
+    <SymbolView
+      name="chevron.down"
+      size={10}
+      tintColorClassName={
+        sidebarPane
+          ? "accent-drawer-foreground-muted"
+          : snoozed
+            ? "accent-icon-muted"
+            : "accent-foreground-muted"
+      }
+      type="monochrome"
+      style={{ transform: [{ rotate: props.disclosure.expanded ? "180deg" : "0deg" }] }}
+    />
+  ) : null;
+  const content = (
+    <>
+      {label}
+      {rule}
+      {chevron}
     </>
   );
+
+  if (props.open) {
+    const { disclosure } = props;
+    return (
+      <View className={className}>
+        <Pressable
+          accessibilityLabel={props.open.accessibilityLabel}
+          accessibilityRole="button"
+          accessibilityState={{ selected: props.open.selected }}
+          className="max-w-[80%] shrink"
+          hitSlop={{ top: 10, bottom: 10, left: 8, right: 8 }}
+          onPress={props.open.onPress}
+          style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1 })}
+        >
+          {label}
+        </Pressable>
+        {rule}
+        {disclosure ? (
+          <Pressable
+            accessibilityHint={disclosure.accessibilityHint}
+            accessibilityLabel={disclosure.accessibilityLabel}
+            accessibilityRole="button"
+            accessibilityState={{ disabled: disclosure.disabled, expanded: disclosure.expanded }}
+            disabled={disclosure.disabled}
+            hitSlop={12}
+            onPress={disclosure.onToggle}
+            style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1 })}
+          >
+            {chevron}
+          </Pressable>
+        ) : null}
+      </View>
+    );
+  }
 
   return props.disclosure ? (
     <Pressable
@@ -263,12 +321,17 @@ export const ThreadListV2TreeHeading = memo(function ThreadListV2TreeHeading(pro
   readonly foldable: boolean;
   readonly onToggle: (sectionKey: string, collapsedByDefault: boolean) => void;
   readonly pane?: "screen" | "sidebar";
+  /** A project conversation: the title opens it. */
+  readonly open?: { readonly onPress: () => void; readonly selected: boolean };
 }) {
   return (
     <View style={threadListTreeIndent(props.depth)}>
       <ThreadListV2Section
         label={props.folded ? `${props.title} (${props.count})` : props.title}
         pane={props.pane}
+        {...(props.open === undefined
+          ? {}
+          : { open: { ...props.open, accessibilityLabel: `Open ${props.title}` } })}
         disclosure={
           props.foldable && props.count > 0
             ? {
@@ -674,6 +737,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   readonly simultaneousSwipeGesture?: ComponentProps<typeof ThreadSwipeable>["simultaneousWith"];
   /** Headings above the row in a plugin's tree. */
   readonly depth?: number;
+  readonly markSettledDone?: boolean;
 }) {
   const { width: windowWidth, fontScale } = useWindowDimensions();
   const titleTypography = useScaledTextRole("body");
@@ -736,7 +800,14 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   const statusLabel =
     (status === "working" && workingLabel !== undefined && thread.goal?.status === "active"
       ? { ...workingLabel, label: "Goal" }
-      : workingLabel) ?? (isUnread ? DONE_STATUS_LABEL : undefined);
+      : workingLabel) ??
+    (isUnread
+      ? DONE_STATUS_LABEL
+      : props.markSettledDone === true &&
+          status === "ready" &&
+          thread.latestRun?.status === "completed"
+        ? SEEN_DONE_STATUS_LABEL
+        : undefined);
   const recede = shouldRecedeThreadRow({ status, selected });
   const timeLabel = props.timeLabel;
 

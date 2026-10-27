@@ -18,6 +18,7 @@ import {
   resolveSidebarSweepKeys,
   resolveSidebarThreadStatus,
   resolveThreadStatusPill,
+  sidebarRowTopStatus,
   resolveWorkingStartedAt,
   searchSidebarThreads,
   shouldRecedeSidebarThread,
@@ -258,6 +259,52 @@ function makeLatestRun(overrides?: {
       overrides?.completedAt !== undefined ? overrides.completedAt : "2026-03-09T10:05:00.000Z",
   };
 }
+
+describe("sidebarRowTopStatus", () => {
+  const finished = {
+    goal: null,
+    latestRun: {
+      runId: RunId.make("run-1"),
+      status: "completed" as const,
+      requestedAt: "2026-10-27T10:00:00.000Z",
+      startedAt: "2026-10-27T10:00:00.000Z",
+      completedAt: "2026-10-27T10:05:00.000Z",
+      assistantMessageId: null,
+    },
+  };
+  const seen = { status: "ready" as const, isWoke: false, isUnread: false };
+
+  it("marks a seen finished thread Done, muted, only where the plugin tree opted in", () => {
+    expect(sidebarRowTopStatus({ ...seen, thread: finished, markSettledDone: false })).toBeNull();
+    expect(sidebarRowTopStatus({ ...seen, thread: finished, markSettledDone: true })).toEqual({
+      label: "Done",
+      icon: "done",
+      className: "text-sidebar-muted-foreground",
+    });
+    // Unseen stays the green check; a higher status, or no finished run, wins.
+    expect(
+      sidebarRowTopStatus({ ...seen, isUnread: true, thread: finished, markSettledDone: true }),
+    ).toEqual(expect.objectContaining({ label: "Done", className: "text-success-foreground" }));
+    expect(
+      sidebarRowTopStatus({ ...seen, status: "failed", thread: finished, markSettledDone: true })
+        ?.label,
+    ).toBe("Failed");
+    expect(
+      sidebarRowTopStatus({
+        ...seen,
+        thread: { goal: null, latestRun: { ...finished.latestRun, status: "interrupted" } },
+        markSettledDone: true,
+      }),
+    ).toBeNull();
+    expect(
+      sidebarRowTopStatus({
+        ...seen,
+        thread: { goal: null, latestRun: null },
+        markSettledDone: true,
+      }),
+    ).toBeNull();
+  });
+});
 
 describe("orderItemsByPreferredIds", () => {
   it("resolves legacy preference aliases without materializing project state", () => {

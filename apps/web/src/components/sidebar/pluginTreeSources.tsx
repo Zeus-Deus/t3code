@@ -1,12 +1,21 @@
+import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
   findPluginTreeInstallation,
+  isPluginSidebarTreeOption,
   pluginRunnableInstallations,
+  pluginTreeConversationsGranted,
+  pluginTreeConversationThreadKeys,
   pluginTreeNotice,
   pluginTreeTopic,
   type PluginSidebarTreeOption,
   type PluginTreeSource,
 } from "@t3tools/client-runtime/plugins";
-import type { EnvironmentId, PluginInstallation, PluginTreeNode } from "@t3tools/contracts";
+import type {
+  EnvironmentId,
+  PluginInstallation,
+  PluginTreeNode,
+  ThreadId,
+} from "@t3tools/contracts";
 import { useEffect, useRef } from "react";
 import { create } from "zustand";
 
@@ -22,6 +31,7 @@ import {
 } from "../../state/plugins";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { newPluginOperationId } from "../plugins/usePluginActions";
+import { useSidebarView } from "./sidebarView";
 
 interface TreeSnapshot {
   readonly installationId: string;
@@ -29,6 +39,8 @@ interface TreeSnapshot {
   /** The last snapshot this generation served; kept while a refresh fails or the link drops. */
   readonly nodes: ReadonlyArray<PluginTreeNode> | null;
   readonly failed: boolean;
+  /** The installation currently holds ui.native-tree-conversations. */
+  readonly conversations: boolean;
 }
 
 interface PluginTreeSnapshotState {
@@ -44,11 +56,13 @@ interface PluginTreeSnapshotState {
           readonly kind: "identity" | "loading" | "failed";
           readonly installationId: string;
           readonly generation: string;
+          readonly conversations: boolean;
         }
       | {
           readonly kind: "ready";
           readonly installationId: string;
           readonly generation: string;
+          readonly conversations: boolean;
           readonly nodes: ReadonlyArray<PluginTreeNode>;
         }
       | { readonly kind: "withdrawn" },
@@ -72,13 +86,21 @@ const usePluginTreeSnapshotStore = create<PluginTreeSnapshotState>()((set) => ({
         previous?.installationId === update.installationId &&
         previous.generation === update.generation;
       // Knowing the same identity again (a reconnect) keeps its last rows and failure.
-      if (update.kind === "identity" && sameIdentity && state.key === key) return state;
+      if (
+        update.kind === "identity" &&
+        sameIdentity &&
+        previous.conversations === update.conversations &&
+        state.key === key
+      )
+        return state;
       const kept = sameIdentity ? previous.nodes : null;
       snapshots.set(environmentId, {
         installationId: update.installationId,
         generation: update.generation,
         nodes: update.kind === "ready" ? update.nodes : kept,
-        failed: update.kind === "failed",
+        failed:
+          update.kind === "identity" && sameIdentity ? previous.failed : update.kind === "failed",
+        conversations: update.conversations,
       });
       return { key, snapshots };
     }),
@@ -134,6 +156,8 @@ function PluginTreeSnapshotSource(props: {
     : null;
   const installationId = installation?.installationId ?? null;
   const generation = installation?.generation ?? null;
+  // A grant change re-reads, so a revoked grant never keeps showing conversations.
+  const conversations = installation !== null && pluginTreeConversationsGranted(installation);
   const treeId = choice.tree.id;
   const revision = usePluginChangeRevision(
     installationId === null ? null : environmentId,
@@ -150,10 +174,20 @@ function PluginTreeSnapshotSource(props: {
     }
     // Before waiting on the change subscription, so a new generation never shows its
     // predecessor's rows or failure.
-    report(choice.key, environmentId, { kind: "identity", installationId, generation });
+    report(choice.key, environmentId, {
+      kind: "identity",
+      installationId,
+      generation,
+      conversations,
+    });
     if (revision === undefined) return;
     let cancelled = false;
-    report(choice.key, environmentId, { kind: "loading", installationId, generation });
+    report(choice.key, environmentId, {
+      kind: "loading",
+      installationId,
+      generation,
+      conversations,
+    });
     void latestRead
       .current({
         environmentId,
@@ -165,8 +199,14 @@ function PluginTreeSnapshotSource(props: {
           choice.key,
           environmentId,
           result._tag === "Success"
-            ? { kind: "ready", installationId, generation, nodes: result.value.nodes }
-            : { kind: "failed", installationId, generation },
+            ? {
+                kind: "ready",
+                installationId,
+                generation,
+                conversations,
+                nodes: result.value.nodes,
+              }
+            : { kind: "failed", installationId, generation, conversations },
         );
       });
     return () => {
@@ -180,6 +220,7 @@ function PluginTreeSnapshotSource(props: {
     treeId,
     known,
     revision,
+    conversations,
     // oxlint-disable-next-line react/exhaustive-effect-dependencies -- A snooze ending reads again.
     snoozeWake,
     report,
@@ -246,8 +287,29 @@ export function usePluginTreeSources(
         Number(right === primaryEnvironmentId) - Number(left === primaryEnvironmentId),
     );
   const sources = ordered.flatMap((environmentId) => {
-    const nodes = snapshots.get(environmentId)?.nodes ?? null;
-    return nodes === null ? [] : [{ environmentId, nodes }];
+    const snapshot = snapshots.get(environmentId);
+    return snapshot === undefined || snapshot.nodes === null
+      ? []
+      : [{ environmentId, nodes: snapshot.nodes, conversations: snapshot.conversations }];
   });
   return sources.length === 0 ? null : sources;
+}
+
+/**
+ * Whether a thread is the conversation a project heading of the chosen sidebar tree stands for,
+ * or one of its direct workers: their breadcrumb need not repeat the project.
+ */
+export function usePluginTreeConversationScope(
+  environmentId: EnvironmentId,
+  threadId: ThreadId,
+  parentThreadId: ThreadId | null,
+): boolean {
+  const { selected } = useSidebarView();
+  const sources = usePluginTreeSources(
+    selected !== null && isPluginSidebarTreeOption(selected) ? selected : null,
+  );
+  if (sources === null) return false;
+  const keys = pluginTreeConversationThreadKeys(sources);
+  const has = (id: ThreadId) => keys.has(scopedThreadKey(scopeThreadRef(environmentId, id)));
+  return has(threadId) || (parentThreadId !== null && has(parentThreadId));
 }

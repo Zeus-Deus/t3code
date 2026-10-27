@@ -79,7 +79,9 @@ import {
   hasUnseenCompletion,
   resolveSidebarRowAccessibility,
   type SidebarDropVerb,
+  type SidebarRowTopStatus,
   resolveSidebarThreadStatus,
+  sidebarRowTopStatus,
   resolveThreadLastVisitedAt,
   shouldRecedeSidebarThread,
   resolveWorkingStartedAt,
@@ -148,7 +150,7 @@ function threadTimeTimestamp(thread: SidebarThreadSummary): string {
   return thread.latestUserMessageAt ?? thread.updatedAt;
 }
 
-function JumpHintBadge(props: { label: string }) {
+export function JumpHintBadge(props: { label: string }) {
   return (
     <span
       aria-hidden
@@ -564,6 +566,58 @@ function TopStatusIcon(props: { icon: keyof typeof TOP_STATUS_ICONS; className: 
   return <Icon aria-hidden className={cn("shrink-0", props.className)} />;
 }
 
+function SidebarRowStatusGlyph(props: { readonly icon: SidebarRowTopStatus["icon"] }) {
+  const Icon =
+    props.icon === "working"
+      ? CircleDashedIcon
+      : props.icon === "waiting"
+        ? CircleDotDashedIcon
+        : props.icon === "input"
+          ? MessageCircleQuestionIcon
+          : props.icon === "approval"
+            ? ShieldQuestionIcon
+            : props.icon === "failed"
+              ? CircleAlertIcon
+              : props.icon === "done"
+                ? CircleCheckIcon
+                : AlarmClockIcon;
+  return <Icon aria-hidden className="size-3.5" />;
+}
+
+/** A thread's status in the compact rows' icon column, for a heading that stands for the thread. */
+export function SidebarThreadStatusIcon(props: {
+  readonly thread: SidebarThreadSummary;
+  readonly markSettledDone: boolean;
+}) {
+  const { thread } = props;
+  const localLastVisitedAt = useUiStateStore(
+    (state) =>
+      state.threadLastVisitedAtById[
+        scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id))
+      ],
+  );
+  const topStatus = sidebarRowTopStatus({
+    thread,
+    status: resolveSidebarThreadStatus(thread),
+    isWoke: false,
+    isUnread: hasUnseenCompletion({
+      ...thread,
+      lastVisitedAt: resolveThreadLastVisitedAt(thread.lastVisitedAt, localLastVisitedAt),
+    }),
+    markSettledDone: props.markSettledDone,
+  });
+  if (topStatus === null) return null;
+  return (
+    <span
+      role="status"
+      aria-label={topStatus.label}
+      className={cn("inline-flex shrink-0", topStatus.className)}
+    >
+      <SidebarRowStatusGlyph icon={topStatus.icon} />
+    </span>
+  );
+}
+
 type SidebarThreadRowProps = {
   thread: SidebarThreadSummary;
   // "folder" is a one-line row inside a boring sidebar project folder;
@@ -618,6 +672,8 @@ type SidebarThreadRowProps = {
   onUnpin: (threadRef: ScopedThreadRef) => void;
   onAcknowledgeWoke: (threadRef: ScopedThreadRef, visitedAt: string) => void;
   onFileDropThreads?: ((threadRef: ScopedThreadRef, files: File[]) => void) | undefined;
+  /** Rows in a plugin tree that opted into project conversations. */
+  markSettledDone?: boolean | undefined;
 };
 
 // Mounted only while renaming, so each rename starts uncommitted.
@@ -753,77 +809,14 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     isActive: props.isActive,
     isSelected,
   });
-  const topStatus =
-    status === "working"
-      ? {
-          label: thread.goal?.status === "active" ? "Goal" : "Working",
-          icon: "working" as const,
-          className: "text-info-foreground",
-        }
-      : status === "waiting"
-        ? {
-            label: "Waiting",
-            icon: "waiting" as const,
-            className: "text-muted-foreground",
-          }
-        : status === "approval"
-          ? {
-              label: "Approval",
-              icon: "approval" as const,
-              className: "text-warning-foreground",
-            }
-          : status === "input"
-            ? {
-                label: "Input",
-                icon: "input" as const,
-                className: "text-indigo-600 dark:text-indigo-300",
-              }
-            : status === "request"
-              ? {
-                  label: "Request",
-                  icon: "request" as const,
-                  className: "text-guest-foreground",
-                }
-              : status === "limited"
-                ? {
-                    label: "Limited",
-                    icon: "failed" as const,
-                    className: "text-warning-foreground",
-                  }
-                : status === "failed"
-                  ? {
-                      label: "Failed",
-                      icon: "failed" as const,
-                      className: "text-error-foreground",
-                    }
-                  : isWoke
-                    ? {
-                        label: "Woke",
-                        icon: "woke" as const,
-                        className: "text-warning-foreground",
-                      }
-                    : isUnread
-                      ? {
-                          label: "Done",
-                          icon: "done" as const,
-                          className: "text-success-foreground",
-                        }
-                      : null;
+  const topStatus = sidebarRowTopStatus({
+    thread,
+    status,
+    isWoke,
+    isUnread,
+    markSettledDone: props.markSettledDone === true,
+  });
   const isWokeStatus = topStatus?.icon === "woke";
-  const StatusIcon =
-    topStatus?.icon === "working"
-      ? CircleDashedIcon
-      : topStatus?.icon === "waiting"
-        ? CircleDotDashedIcon
-        : topStatus?.icon === "input"
-          ? MessageCircleQuestionIcon
-          : topStatus?.icon === "approval"
-            ? ShieldQuestionIcon
-            : topStatus?.icon === "failed"
-              ? CircleAlertIcon
-              : topStatus?.icon === "done"
-                ? CircleCheckIcon
-                : AlarmClockIcon;
 
   const branchMismatch = resolveLocalCheckoutBranchMismatch({
     effectiveEnvMode: thread.worktreePath === null ? "local" : "worktree",

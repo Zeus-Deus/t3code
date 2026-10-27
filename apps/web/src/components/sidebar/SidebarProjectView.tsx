@@ -122,7 +122,7 @@ export function SidebarViewSwitch(props: {
 
 // Plugin trees nest headings; deeper levels stop indenting so rows keep room for their titles.
 const DEPTH_INDENT = ["", "pl-4", "pl-8", "pl-12"] as const;
-export const depthIndent = (depth: number) => DEPTH_INDENT[Math.min(Math.max(depth, 0), 3)];
+const depthIndent = (depth: number) => DEPTH_INDENT[Math.min(Math.max(depth, 0), 3)];
 
 export function SidebarProjectThreadTree<TThread>(props: {
   rows: ReadonlyArray<ProjectViewRow<TThread>>;
@@ -167,6 +167,22 @@ function ProjectAge(props: { timestamp: string }) {
 const headingClassName =
   "flex h-8 min-w-0 flex-1 items-center gap-2.5 rounded-md px-2.5 text-left text-sm text-sidebar-foreground/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70";
 
+/** A plugin tree's project heading that stands for a conversation instead of only folding. */
+interface SidebarProjectHeadingConversation {
+  /** The thread, or the action that starts one; folding moves to the chevron. */
+  readonly onOpen: (event: ReactMouseEvent) => void;
+  readonly label: string;
+  /** Its thread is the open one. */
+  readonly selected: boolean;
+  readonly busy: boolean;
+  /** The thread's status, in the icon column its worker rows use. */
+  readonly status: ReactNode;
+  /** Named when several environments each give this project a conversation. */
+  readonly environmentLabel: string | null;
+  /** Shown while jump hints are, as on a thread row. */
+  readonly jumpHint: ReactNode;
+}
+
 /**
  * One heading in a project view or plugin tree: folds its rows, and for a project starts a thread
  * there. Without a project it is a plugin's group, or the threads nothing else placed.
@@ -185,37 +201,65 @@ export function SidebarProjectSectionHeader(props: {
   onNewThread: (project: SidebarProjectSnapshot) => void;
   /** Right-click opens project settings, as it does in the project filter. */
   onOpenSettings: (event: ReactMouseEvent, project: SidebarProjectSnapshot) => void;
+  conversation?: SidebarProjectHeadingConversation | undefined;
 }) {
-  const { project } = props;
+  const { project, conversation } = props;
   const name = project?.displayName ?? props.title ?? "Other threads";
   const foldable = props.liveCount > 0;
   const openSettings = (event: ReactMouseEvent) => {
     if (project) props.onOpenSettings(event, project);
   };
+  const icon = (
+    <span
+      className={cn(
+        "flex",
+        foldable &&
+          "group-hover/project-section:opacity-0 group-focus-within/project-section:opacity-0 pointer-coarse:opacity-0",
+      )}
+    >
+      {project ? (
+        <ProjectFavicon project={project} className="size-4 shrink-0" />
+      ) : (
+        <FolderIcon aria-hidden className="size-4 shrink-0 text-sidebar-muted-foreground" />
+      )}
+    </span>
+  );
+  const chevron = (
+    <ChevronRightIcon
+      aria-hidden
+      className={cn(
+        "size-3.5 text-sidebar-muted-foreground/70 transition-transform duration-150",
+        !props.folded && "rotate-90",
+      )}
+    />
+  );
+  const trailing = (
+    <span
+      className={cn(
+        "shrink-0 text-xs tabular-nums text-sidebar-muted-foreground/70 group-hover/project-section:opacity-0 group-focus-within/project-section:opacity-0 pointer-coarse:opacity-0",
+        // Sized like a row's trailing cell, so the status icon sits in the rows' column.
+        conversation && "-mr-1.5 min-w-12 pr-1.5 text-right",
+      )}
+    >
+      {foldable ? (
+        props.liveCount
+      ) : props.lastActivityAt !== null ? (
+        <ProjectAge timestamp={props.lastActivityAt} />
+      ) : null}
+    </span>
+  );
   const heading = (
     <>
       <span className="relative flex size-4 shrink-0 items-center justify-center">
-        <ChevronRightIcon
-          aria-hidden
-          className={cn(
-            "absolute size-3.5 text-sidebar-muted-foreground/70 opacity-0 transition-transform duration-150 group-hover/project-section:opacity-100 group-focus-within/project-section:opacity-100 pointer-coarse:opacity-100",
-            !props.folded && "rotate-90",
-            !foldable && "invisible",
-          )}
-        />
         <span
           className={cn(
-            "flex",
-            foldable &&
-              "group-hover/project-section:opacity-0 group-focus-within/project-section:opacity-0 pointer-coarse:opacity-0",
+            "absolute flex opacity-0 group-hover/project-section:opacity-100 group-focus-within/project-section:opacity-100 pointer-coarse:opacity-100",
+            !foldable && "invisible",
           )}
         >
-          {project ? (
-            <ProjectFavicon project={project} className="size-4 shrink-0" />
-          ) : (
-            <FolderIcon aria-hidden className="size-4 shrink-0 text-sidebar-muted-foreground" />
-          )}
+          {chevron}
         </span>
+        {icon}
       </span>
       <span
         className={cn(
@@ -225,13 +269,7 @@ export function SidebarProjectSectionHeader(props: {
       >
         {name}
       </span>
-      <span className="shrink-0 text-xs tabular-nums text-sidebar-muted-foreground/70 group-hover/project-section:opacity-0 group-focus-within/project-section:opacity-0 pointer-coarse:opacity-0">
-        {foldable ? (
-          props.liveCount
-        ) : props.lastActivityAt !== null ? (
-          <ProjectAge timestamp={props.lastActivityAt} />
-        ) : null}
-      </span>
+      {trailing}
     </>
   );
   return (
@@ -244,7 +282,52 @@ export function SidebarProjectSectionHeader(props: {
       data-testid="sidebar-project-section"
       data-project-key={props.sectionKey}
     >
-      {foldable ? (
+      {conversation ? (
+        <div className="relative flex min-w-0 flex-1">
+          <button
+            type="button"
+            aria-label={conversation.label}
+            aria-current={conversation.selected ? "page" : undefined}
+            aria-busy={conversation.busy || undefined}
+            disabled={conversation.busy}
+            onClick={conversation.onOpen}
+            onContextMenu={openSettings}
+            className={cn(
+              headingClassName,
+              "relative cursor-pointer disabled:cursor-default",
+              conversation.selected
+                ? "bg-sidebar-row-active text-sidebar-foreground light:shadow-xs light:ring-1 light:ring-inset light:ring-sidebar-border/70"
+                : "hover:bg-sidebar-row-hover",
+            )}
+          >
+            <span className="flex size-4 shrink-0 items-center justify-center">{icon}</span>
+            <span className="min-w-0 flex-1 truncate font-medium">{name}</span>
+            {conversation.environmentLabel === null ? null : (
+              <span className="shrink-0 truncate text-xs text-sidebar-muted-foreground">
+                {conversation.environmentLabel}
+              </span>
+            )}
+            {conversation.status}
+            {trailing}
+            {conversation.jumpHint}
+          </button>
+          {foldable ? (
+            // Over the icon, with room for a fingertip; never opens the conversation.
+            <button
+              type="button"
+              aria-expanded={!props.folded}
+              aria-label={`${props.folded ? "Expand" : "Collapse"} ${name}, ${props.liveCount} active`}
+              onClick={(event) => {
+                event.stopPropagation();
+                props.onToggleFold(props.sectionKey);
+              }}
+              className="absolute top-1 left-1.5 flex size-6 cursor-pointer items-center justify-center rounded-sm opacity-0 group-hover/project-section:opacity-100 group-focus-within/project-section:opacity-100 pointer-coarse:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70"
+            >
+              {chevron}
+            </button>
+          ) : null}
+        </div>
+      ) : foldable ? (
         <button
           type="button"
           aria-expanded={!props.folded}

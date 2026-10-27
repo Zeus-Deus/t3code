@@ -30,6 +30,7 @@ import { useAtomValue } from "@effect/atom-react";
 import { useOrchestrationCommand } from "../../state/use-orchestration-command";
 import { readEnvironmentScope, useEnvironmentScope } from "../../state/session";
 import { PluginThreadStatuses } from "../plugins/PluginThreadStatuses";
+import { usePluginTreeConversationScope } from "../sidebar/pluginTreeSources";
 import { ProjectFavicon } from "../ProjectFavicon";
 import {
   WorkspaceBreadcrumb,
@@ -86,6 +87,12 @@ export const ChatHeader = memo(function ChatHeader({
   onOpenProjectSettings,
 }: ChatHeaderProps) {
   const activeProjectName = activeProject?.isScratch ? "No project" : activeProject?.title;
+  // A project heading's conversation is the project, so the crumb would only repeat it.
+  const inProjectConversation = usePluginTreeConversationScope(
+    activeThreadEnvironmentId,
+    activeThreadId,
+    parentThreadLink?.threadId ?? null,
+  );
   const activeProjectCwd = activeProject?.workspaceRoot ?? null;
   const interfaceFont = useClientSettings((settings) => settings.fontFamilySans);
   const breadcrumbContainerRef = useRef<HTMLDivElement>(null);
@@ -289,7 +296,7 @@ export const ChatHeader = memo(function ChatHeader({
         ariaLabel="Thread breadcrumb"
         className="flex-1 overflow-clip [overflow-clip-margin:2px]"
       >
-        {activeProject ? (
+        {activeProject && !inProjectConversation ? (
           <>
             <WorkspaceBreadcrumbItem className="shrink">
               <Tooltip>

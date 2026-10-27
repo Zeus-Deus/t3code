@@ -957,6 +957,95 @@ export function groupSidebarThreadsByProject<
   return keepEmpty ? folders : folders.filter((folder) => folder.threads.length > 0);
 }
 
+export type SidebarRowTopStatus = {
+  readonly label: string;
+  readonly icon:
+    | "working"
+    | "waiting"
+    | "approval"
+    | "input"
+    | "request"
+    | "failed"
+    | "woke"
+    | "done";
+  readonly className: string;
+};
+
+/**
+ * The status a row leads with. Plugin trees that opt in mark every finished thread Done, muted
+ * once seen, so finished workers look alike whether or not they were opened.
+ */
+export function sidebarRowTopStatus(input: {
+  readonly thread: Pick<SidebarThreadSummary, "goal" | "latestRun">;
+  readonly status: SidebarThreadStatus;
+  readonly isWoke: boolean;
+  readonly isUnread: boolean;
+  readonly markSettledDone: boolean;
+}): SidebarRowTopStatus | null {
+  const { thread, status, isWoke, isUnread } = input;
+  return status === "working"
+    ? {
+        label: thread.goal?.status === "active" ? "Goal" : "Working",
+        icon: "working" as const,
+        className: "text-info-foreground",
+      }
+    : status === "waiting"
+      ? {
+          label: "Waiting",
+          icon: "waiting" as const,
+          className: "text-muted-foreground",
+        }
+      : status === "approval"
+        ? {
+            label: "Approval",
+            icon: "approval" as const,
+            className: "text-warning-foreground",
+          }
+        : status === "input"
+          ? {
+              label: "Input",
+              icon: "input" as const,
+              className: "text-indigo-600 dark:text-indigo-300",
+            }
+          : status === "request"
+            ? {
+                label: "Request",
+                icon: "request" as const,
+                className: "text-guest-foreground",
+              }
+            : status === "limited"
+              ? {
+                  label: "Limited",
+                  icon: "failed" as const,
+                  className: "text-warning-foreground",
+                }
+              : status === "failed"
+                ? {
+                    label: "Failed",
+                    icon: "failed" as const,
+                    className: "text-error-foreground",
+                  }
+                : isWoke
+                  ? {
+                      label: "Woke",
+                      icon: "woke" as const,
+                      className: "text-warning-foreground",
+                    }
+                  : isUnread
+                    ? {
+                        label: "Done",
+                        icon: "done" as const,
+                        className: "text-success-foreground",
+                      }
+                    : input.markSettledDone && thread.latestRun?.status === "completed"
+                      ? {
+                          label: "Done",
+                          icon: "done" as const,
+                          className: "text-sidebar-muted-foreground",
+                        }
+                      : null;
+}
+
 export type SidebarV2TopStatusKind =
   | "approval"
   | "done"

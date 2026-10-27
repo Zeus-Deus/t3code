@@ -51,7 +51,7 @@ import { useHomeListOptions } from "../home/home-list-options";
 import { buildHomeListFilterMenu } from "../home/home-list-filter-menu";
 import { buildHomeProjectScopes } from "../home/homeThreadList";
 import { PluginTreeNotice } from "../plugins/PluginTreeNotice";
-import { usePluginTreeList } from "../plugins/usePluginTreeList";
+import { usePluginTreeConversationOpener, usePluginTreeList } from "../plugins/usePluginTreeList";
 import {
   buildPluginTreeThreadListItems,
   earliestSnoozeWakeAt,
@@ -325,6 +325,8 @@ function ThreadNavigationSidebarPane(
           settlementEnvironmentIds,
           snoozeEnvironmentIds,
           queuedThreadKeys,
+          environmentLabel: (environmentId) =>
+            savedConnectionsById[environmentId]?.environmentLabel ?? null,
         });
   const {
     layout: threadListV2Layout,
@@ -516,6 +518,10 @@ function ThreadNavigationSidebarPane(
     onSelectThread(thread);
     openSwipeableRef.current?.close();
   };
+  const conversationHeadingProps = usePluginTreeConversationOpener(
+    pluginTree.installationFor,
+    handleSelectThread,
+  );
   const handleOpenThreadPullRequests = (
     thread: EnvironmentThreadShell,
     pr: ThreadPrPresentation,
@@ -682,6 +688,7 @@ function ThreadNavigationSidebarPane(
             onSwipeableWillOpen={handleSwipeableWillOpen}
             simultaneousSwipeGesture={sidebarScrollGesture}
             depth={item.depth}
+            markSettledDone={item.markSettledDone}
           />
         );
       }
@@ -697,6 +704,7 @@ function ThreadNavigationSidebarPane(
             foldable={item.foldable}
             onToggle={pluginTree.toggleFold}
             pane="sidebar"
+            {...conversationHeadingProps(item)}
           />
         );
       case "v2-working-shelf":

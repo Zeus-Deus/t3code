@@ -37,6 +37,8 @@ export function buildPluginTreeThreadListItems(input: {
   readonly settlementEnvironmentIds?: ReadonlySet<EnvironmentId>;
   readonly snoozeEnvironmentIds?: ReadonlySet<EnvironmentId>;
   readonly queuedThreadKeys?: ReadonlySet<string>;
+  /** Names an environment whose project heading is split from the others' conversations. */
+  readonly environmentLabel?: (environmentId: EnvironmentId) => string | null;
 }): {
   readonly items: ReadonlyArray<ThreadListV2ListItem>;
   readonly placedKeys: ReadonlySet<string>;
@@ -64,13 +66,21 @@ export function buildPluginTreeThreadListItems(input: {
     routeThreadKey: input.selectedThreadKey,
   });
 
+  // Trees that opted into project conversations mark every finished worker Done.
+  const conversationEnvironmentIds = new Set(
+    input.sources.flatMap((source) => (source.conversations ? [source.environmentId] : [])),
+  );
   const parked = (thread: EnvironmentThreadShell) =>
     ((input.snoozeEnvironmentIds?.has(thread.environmentId) ?? true) &&
       effectiveSnoozed(thread, { now: input.now })) ||
     ((input.settlementEnvironmentIds?.has(thread.environmentId) ?? true) &&
       thread.settledOverride === "settled" &&
       input.queuedThreadKeys?.has(threadKey(thread)) !== true);
-  const rows: Array<{ readonly item: ThreadListV2Item; readonly depth: number }> = [];
+  const rows: Array<{
+    readonly item: ThreadListV2Item;
+    readonly depth: number;
+    readonly markSettledDone: boolean;
+  }> = [];
   // Headings by the row they precede; a folded or empty heading shares its index with the next.
   const headings = new Map<number, ThreadListV2ListItem[]>();
   const addRows = (
@@ -92,6 +102,7 @@ export function buildPluginTreeThreadListItems(input: {
           wokeAt: slim ? null : resolveThreadListV2WokeAt(row.thread, { now: input.now }),
           isLast: false,
         },
+        markSettledDone: conversationEnvironmentIds.has(row.thread.environmentId),
       });
       addRows(row.children, depth + 1);
     }
@@ -101,6 +112,11 @@ export function buildPluginTreeThreadListItems(input: {
     if (heading !== null) {
       const before = headings.get(rows.length) ?? [];
       headings.set(rows.length, before);
+      const conversation = heading.kind === "project" ? heading.conversation : undefined;
+      const environment =
+        heading.kind === "project" && heading.environmentId !== undefined
+          ? (input.environmentLabel?.(heading.environmentId) ?? heading.environmentId)
+          : null;
       before.push({
         type: "v2-tree-heading",
         key: `v2-tree:${section.key}`,
@@ -109,13 +125,22 @@ export function buildPluginTreeThreadListItems(input: {
           heading.kind === "group"
             ? heading.title
             : heading.kind === "project"
-              ? heading.project.title
+              ? environment === null
+                ? heading.project.title
+                : `${heading.project.title} · ${environment}`
               : "Other threads",
         depth: section.depth,
         count: section.count,
         folded: section.folded,
         collapsedByDefault: section.collapsedByDefault,
         foldable: true,
+        ...(conversation === undefined
+          ? {}
+          : {
+              conversation,
+              selected:
+                conversation.kind === "thread" && conversation.key === input.selectedThreadKey,
+            }),
       });
     }
     addRows(section.rows, section.rowDepth);
@@ -133,7 +158,16 @@ export function buildPluginTreeThreadListItems(input: {
   threadItems.forEach((item, index) => {
     items.push(...(headings.get(index) ?? []));
     const depth = rows[index]?.depth ?? 0;
-    items.push(item.type === "v2-thread" && depth > 0 ? { ...item, depth } : item);
+    const markSettledDone = rows[index]?.markSettledDone === true;
+    items.push(
+      item.type === "v2-thread" && (depth > 0 || markSettledDone)
+        ? {
+            ...item,
+            ...(depth > 0 ? { depth } : {}),
+            ...(markSettledDone ? { markSettledDone } : {}),
+          }
+        : item,
+    );
   });
   items.push(...(headings.get(threadItems.length) ?? []));
   // A row divides from the next row only; a heading brings its own rule.

@@ -122,4 +122,72 @@ describe("buildPluginTreeThreadListItems", () => {
       "0:d:card",
     ]);
   });
+  it("makes a granted project heading its conversation, workers under it and marked alike", () => {
+    const remote = EnvironmentId.make("env-remote");
+    const coordinator = thread("coordinator");
+    const worker = thread("worker", {
+      lineage: { ...coordinator.lineage, parentThreadId: coordinator.id },
+    });
+    const heading = (environmentId: EnvironmentId, conversation: object) =>
+      ({
+        id: "app",
+        kind: "project",
+        projectId: ProjectId.make(environmentId === laptop ? "p1" : "p9"),
+        ...conversation,
+      }) as PluginTreeNode;
+    const result = buildPluginTreeThreadListItems({
+      sources: [
+        {
+          environmentId: laptop,
+          conversations: true,
+          nodes: [heading(laptop, { threadId: coordinator.id })],
+        },
+        {
+          environmentId: remote,
+          conversations: true,
+          nodes: [heading(remote, { actionId: "open-project" })],
+        },
+      ],
+      threads: [coordinator, worker],
+      projectScopes: [
+        {
+          ...scope,
+          projectRefs: [...scope.projectRefs, { environmentId: remote, projectId: "p9" }],
+        } as unknown as HomeProjectScope,
+      ],
+      selectedProjectKey: null,
+      folds: new Set(),
+      selectedThreadKey: `${laptop}:coordinator`,
+      now: NOW,
+      snoozeLabelNow: NOW,
+      environmentLabel: (environmentId) => (environmentId === remote ? "Server" : "Laptop"),
+    });
+    // Two environments each give App a conversation, so each gets its own named heading.
+    expect(outline(result)).toEqual(["0#App · Laptop", "1:worker:card", "0#App · Server"]);
+    const [onLaptop, workerRow, onServer] = result.items;
+    expect(onLaptop).toEqual(
+      expect.objectContaining({
+        selected: true,
+        conversation: expect.objectContaining({ kind: "thread", thread: coordinator }),
+      }),
+    );
+    expect(onServer).toEqual(
+      expect.objectContaining({
+        selected: false,
+        conversation: {
+          kind: "action",
+          environmentId: remote,
+          projectId: "p9",
+          actionId: "open-project",
+        },
+      }),
+    );
+    expect(workerRow).toEqual(expect.objectContaining({ markSettledDone: true }));
+    expect(result.placedKeys).toEqual(new Set([`${laptop}:coordinator`, `${laptop}:worker`]));
+
+    // Without the grant: a plain heading, and the coordinator is the caller's again.
+    const plain = build([heading(laptop, { threadId: coordinator.id })], [coordinator, worker]);
+    expect(outline(plain)).toEqual(["0#App"]);
+    expect(plain.placedKeys).toEqual(new Set());
+  });
 });

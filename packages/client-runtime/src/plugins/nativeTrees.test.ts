@@ -8,8 +8,10 @@ import {
   PLUGIN_TREE_OTHER_SECTION_KEY,
   pluginTreeNotice,
   pluginTreeFamilyRoots,
+  pluginTreeConversationThreadKeys,
   pluginTreeThreadKeys,
   togglePluginTreeFold,
+  type PluginTreeSource,
 } from "./nativeTrees.ts";
 
 const local = EnvironmentId.make("env-local");
@@ -42,6 +44,16 @@ const project = (id: string, projectId: string, parentId?: string): PluginTreeNo
   projectId: ProjectId.make(projectId),
   ...(parentId === undefined ? {} : { parentId }),
 });
+const conversation = (
+  id: string,
+  projectId: string,
+  target: { readonly threadId: string } | { readonly actionId: string },
+): PluginTreeNode => ({
+  id,
+  kind: "project",
+  projectId: ProjectId.make(projectId),
+  ...("threadId" in target ? { threadId: ThreadId.make(target.threadId) } : target),
+});
 const placed = (id: string, threadId: string, parentId?: string): PluginTreeNode => ({
   id,
   kind: "thread",
@@ -50,10 +62,7 @@ const placed = (id: string, threadId: string, parentId?: string): PluginTreeNode
 });
 
 function layout(input: {
-  readonly sources: ReadonlyArray<{
-    readonly environmentId: EnvironmentId;
-    readonly nodes: ReadonlyArray<PluginTreeNode>;
-  }>;
+  readonly sources: ReadonlyArray<PluginTreeSource>;
   readonly threads: ReadonlyArray<Thread>;
   readonly parked?: ReadonlyArray<Thread>;
   readonly folds?: ReadonlyArray<string>;
@@ -172,6 +181,29 @@ describe("pluginTreeFamilyRoots", () => {
     expect(pluginTreeFamilyRoots({ sources: [], threads: [listed("root", "root")] })).toEqual([]);
   });
 
+  it("anchors missing workers on a granted project heading's conversation thread", () => {
+    const nodes = [
+      conversation("p", "web", { threadId: "coordinator" }),
+      placed("w", "worker", "p"),
+    ];
+    const threads = [listed("coordinator", "family-root")];
+    expect(
+      pluginTreeFamilyRoots({
+        sources: [{ environmentId: local, conversations: true, nodes }],
+        threads,
+      }),
+    ).toEqual([scopeThreadRef(local, ThreadId.make("family-root"))]);
+    expect(pluginTreeFamilyRoots({ sources: [{ environmentId: local, nodes }], threads })).toEqual(
+      [],
+    );
+    expect(
+      pluginTreeConversationThreadKeys([
+        { environmentId: local, conversations: true, nodes },
+        { environmentId: remote, nodes },
+      ]),
+    ).toEqual(new Set([`${local}:coordinator`]));
+  });
+
   it("keeps a loaded family mounted while its placed workers are still missing from the shell", () => {
     const root = listed("root", "root");
     const parent = listed("parent", "root");
@@ -265,52 +297,132 @@ describe("buildPluginTreeLayout", () => {
     ]);
   });
 
-  it("keeps each environment's project action on merged and nested headings, once each", () => {
-    const withAction = (id: string, projectId: string, parentId?: string): PluginTreeNode => ({
-      id,
-      kind: "project",
-      projectId: ProjectId.make(projectId),
-      actionId: "coordinate",
-      ...(parentId === undefined ? {} : { parentId }),
+  it("makes a project heading its conversation: never a row, first in order, workers under it", () => {
+    const coordinator = thread("coordinator");
+    const placedWorker = thread("placed", local, "coordinator");
+    const newWorker = thread("new", local, "coordinator");
+    const doneWorker = thread("done", local, "coordinator");
+    const sources = [
+      {
+        environmentId: local,
+        conversations: true,
+        nodes: [
+          // A row naming the heading's thread first still leaves it to the heading.
+          placed("dup", "coordinator"),
+          conversation("p", "web", { threadId: "coordinator" }),
+          placed("w", "placed", "p"),
+          group("done", "Done", "p", true),
+          placed("d", "done", "done"),
+        ],
+      },
+    ];
+    const threads = [newWorker, coordinator, placedWorker, doneWorker];
+    const result = layout({ sources, threads });
+    expect(outline(result)).toEqual(['web 3: ["placed","new"]', "  Done (folded) 1: []"]);
+    const heading = result.sections[0]?.heading;
+    expect(heading?.kind === "project" ? heading.conversation : null).toEqual({
+      kind: "thread",
+      environmentId: local,
+      thread: coordinator,
+      key: key(coordinator),
     });
-    const result = layout({
+    expect(pluginTreeThreadKeys(result.sections)).toEqual(
+      [coordinator, placedWorker, newWorker].map(key),
+    );
+    expect(result.placedKeys).toEqual(new Set(threads.map(key)));
+
+    // Folded, the heading keeps its thread in order and shows only an open worker.
+    const folded = layout({ sources, threads, folds: [`project:${local}:web`], route: doneWorker });
+    expect(outline(folded)).toEqual(['web (folded) 3: ["done"]']);
+    expect(pluginTreeThreadKeys(folded.sections)).toEqual([coordinator, doneWorker].map(key));
+    const onHeading = layout({
+      sources,
+      threads,
+      folds: [`project:${local}:web`],
+      route: coordinator,
+    });
+    expect(outline(onHeading)).toEqual(["web (folded) 3: []"]);
+    expect(pluginTreeThreadKeys(onHeading.sections)).toEqual([key(coordinator)]);
+
+    // A conversation with no workers yet still shows; without the grant it is a plain heading.
+    expect(outline(layout({ sources, threads: [coordinator] }))).toEqual(["web 0: []"]);
+    const ungranted = layout({ sources: [{ ...sources[0]!, conversations: false }], threads });
+    expect(outline(ungranted)).toEqual([
+      '- 2: [{"coordinator":["new"]}]',
+      'web 2: ["placed"]',
+      "  Done (folded) 1: []",
+    ]);
+  });
+
+  it("opens an action from a heading only while its project belongs in scope", () => {
+    const sources = [
+      {
+        environmentId: local,
+        conversations: true,
+        nodes: [conversation("p", "web", { actionId: "open-project" })],
+      },
+    ];
+    expect(outline(layout({ sources, threads: [] }))).toEqual([]);
+    const result = layout({ sources, threads: [], emptyProjects: true });
+    const heading = result.sections[0]?.heading;
+    expect(heading?.kind === "project" ? heading.conversation : null).toEqual({
+      kind: "action",
+      environmentId: local,
+      projectId: "web",
+      actionId: "open-project",
+    });
+    expect(pluginTreeThreadKeys(result.sections)).toEqual([]);
+  });
+
+  it("splits a merged project into named headings when several environments give it a conversation", () => {
+    const localCoordinator = thread("lc");
+    const remoteCoordinator = thread("rc", remote);
+    const both = layout({
       sources: [
         {
           environmentId: local,
-          nodes: [
-            withAction("p", "app-local"),
-            withAction("again", "app-local"),
-            group("g", "Mine"),
-            withAction("nested", "web", "g"),
-            placed("t", "one", "nested"),
-          ],
+          conversations: true,
+          nodes: [conversation("p", "app-local", { threadId: "lc" })],
         },
         {
           environmentId: remote,
-          nodes: [withAction("p", "app-remote"), project("q", "api")],
+          conversations: true,
+          nodes: [conversation("p", "app-remote", { actionId: "open-project" })],
         },
       ],
-      threads: [thread("one")],
+      threads: [localCoordinator],
       emptyProjects: true,
     });
-    const actions = Object.fromEntries(
-      result.sections.flatMap((section) =>
+    expect(
+      both.sections.map((section) =>
         section.heading?.kind === "project"
-          ? [[section.heading.project.name, section.heading.actions]]
-          : [],
+          ? [section.key, section.heading.environmentId, section.heading.conversation?.kind]
+          : null,
       ),
-    );
-    expect(actions).toEqual({
-      "app-local": [
-        { environmentId: local, projectId: "app-local", actionId: "coordinate" },
-        { environmentId: remote, projectId: "app-remote", actionId: "coordinate" },
+    ).toEqual([
+      [`project:logical:app\0${local}`, local, "thread"],
+      [`project:logical:app\0${remote}`, remote, "action"],
+    ]);
+    // One conversation is unambiguous: the logical project stays one heading.
+    const one = layout({
+      sources: [
+        {
+          environmentId: local,
+          conversations: true,
+          nodes: [project("p", "app-local"), placed("t", "one", "p")],
+        },
+        {
+          environmentId: remote,
+          conversations: true,
+          nodes: [conversation("p", "app-remote", { threadId: "rc" })],
+        },
       ],
-      web: [{ environmentId: local, projectId: "web", actionId: "coordinate" }],
-      api: undefined,
+      threads: [thread("one"), remoteCoordinator],
     });
-    expect(pluginTreeThreadKeys(result.sections)).toEqual([`${local}:one`]);
-    expect(result.placedKeys).toEqual(new Set([`${local}:one`]));
-    expect(result.sections.find((section) => section.key === "project:logical:app")?.count).toBe(0);
+    expect(outline(one)).toEqual(['app-local 1: ["one"]']);
+    const heading = one.sections[0]?.heading;
+    expect(heading?.kind === "project" ? heading.environmentId : null).toBeUndefined();
+    expect(pluginTreeThreadKeys(one.sections)).toEqual([key(remoteCoordinator), `${local}:one`]);
   });
 
   it("skips references the host does not list and lifts their children", () => {

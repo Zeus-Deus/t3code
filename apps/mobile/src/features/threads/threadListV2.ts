@@ -10,6 +10,7 @@ import {
 } from "@t3tools/client-runtime/state/thread-settled";
 import type { SnoozePreset } from "@t3tools/client-runtime/state/thread-settled";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
+import type { PluginTreeConversation } from "@t3tools/client-runtime/plugins";
 import { resolveThreadProviderStack } from "@t3tools/client-runtime/state/models";
 import {
   threadSearchMatchKey,
@@ -333,6 +334,8 @@ export interface ThreadListV2ThreadListItem {
   readonly canMoveDown: boolean;
   /** Headings above the row in a plugin's tree; absent in the activity list. */
   readonly depth?: number;
+  /** In a plugin tree that opted into project conversations: a seen finished thread reads Done. */
+  readonly markSettledDone?: boolean;
 }
 
 /** A plugin tree's heading: a group, a project, or the live threads the tree left out. */
@@ -348,6 +351,10 @@ export interface ThreadListV2TreeHeadingListItem {
   readonly collapsedByDefault: boolean;
   /** False for the heading over threads the tree left out. */
   readonly foldable: boolean;
+  /** Its name opens this thread, or runs the action that starts one; the chevron folds. */
+  readonly conversation?: PluginTreeConversation<EnvironmentThreadShell>;
+  /** Its conversation thread is the open one. */
+  readonly selected?: boolean;
 }
 
 export interface ThreadListV2PendingListItem {
@@ -404,6 +411,15 @@ export function isThreadListV2ListItem(value: {
   );
 }
 
+const conversationIdentity = (
+  conversation: PluginTreeConversation<EnvironmentThreadShell> | undefined,
+) =>
+  conversation === undefined
+    ? null
+    : conversation.kind === "thread"
+      ? `thread:${conversation.key}`
+      : `action:${conversation.environmentId}:${conversation.projectId}:${conversation.actionId}`;
+
 /** Compare rebuilt items by content so minute ticks and partition runs do not re-render every mounted row. */
 export function threadListV2ListItemsAreEqual(
   previous: ThreadListV2ListItem,
@@ -426,7 +442,8 @@ export function threadListV2ListItemsAreEqual(
         previous.hasQueuedMessages === item.hasQueuedMessages &&
         previous.canMoveUp === item.canMoveUp &&
         previous.canMoveDown === item.canMoveDown &&
-        previous.depth === item.depth
+        previous.depth === item.depth &&
+        previous.markSettledDone === item.markSettledDone
       );
     case "v2-tree-heading":
       return (
@@ -435,7 +452,9 @@ export function threadListV2ListItemsAreEqual(
         previous.title === item.title &&
         previous.depth === item.depth &&
         previous.count === item.count &&
-        previous.folded === item.folded
+        previous.folded === item.folded &&
+        previous.selected === item.selected &&
+        conversationIdentity(previous.conversation) === conversationIdentity(item.conversation)
       );
     case "v2-pending":
       return (
