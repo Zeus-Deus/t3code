@@ -283,6 +283,41 @@ it("lays out an exclusive tree from its serving identity before and after a fail
   );
 });
 
+it("lays out an owning tree that is not exclusive from its identity until a read succeeds", async () => {
+  setup();
+  const owning = [...installation.grants.capabilities, "ui.native-tree-projects" as const];
+  state.next = denied;
+  state.update({ catalogue: available("gen-1", owning), revision: undefined });
+  await using screen = await render(<Probe loaded />);
+  const identity = {
+    environmentId: "env-laptop",
+    conversations: false,
+    projects: {
+      installationId: "inst-projects",
+      treeId: "projects",
+      exclusive: false,
+      projectIds: [],
+    },
+  };
+  // Activity leaves owned conversations to this tree, so it never falls back while reading.
+  await vi.waitFor(() =>
+    expect(shown(screen)).toEqual({
+      sources: [{ ...identity, nodes: [] }],
+      notice: null,
+      loaded: false,
+    }),
+  );
+  expect(state.reads).toBe(0);
+  await act(() => state.update({ revision: 0 }));
+  await vi.waitFor(() =>
+    expect(shown(screen)).toEqual({
+      sources: [{ ...identity, nodes: [] }],
+      notice: "Couldn't load Projects. It may be incomplete.",
+      loaded: false,
+    }),
+  );
+});
+
 it("tells a project conversation and its direct workers apart from any other thread", async () => {
   setup();
   window.localStorage.setItem(SIDEBAR_VIEW_KEY, JSON.stringify(choice));

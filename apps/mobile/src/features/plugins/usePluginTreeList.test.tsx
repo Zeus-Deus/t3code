@@ -31,7 +31,8 @@ const harness = vi.hoisted(() => ({
   revision: 0 as number | undefined,
   generation: "gen-1",
   conversations: false,
-  // Holds ui.native-tree-projects for a tree declaring `unplaced: "omit"`, with access to p1.
+  // Holds ui.native-tree-projects with access to p1; `exclusive` also declares `unplaced: "omit"`.
+  owning: false,
   exclusive: false,
   connected: true,
   // A read for this environment stays in flight until the test settles it.
@@ -66,7 +67,7 @@ vi.mock("../../state/plugins", () => ({
           {
             status: "ready",
             options: [{ ...choice, environmentId }],
-            ...(harness.exclusive
+            ...(harness.owning
               ? {
                   owners: [
                     {
@@ -99,9 +100,9 @@ vi.mock("../../state/plugins", () => ({
               capabilities: [
                 ...installation.grants.capabilities,
                 ...(harness.conversations ? ["ui.native-tree-conversations" as const] : []),
-                ...(harness.exclusive ? ["ui.native-tree-projects" as const] : []),
+                ...(harness.owning ? ["ui.native-tree-projects" as const] : []),
               ],
-              projectIds: harness.exclusive ? [ProjectId.make("p1")] : [],
+              projectIds: harness.owning ? [ProjectId.make("p1")] : [],
             },
           },
         ]
@@ -168,6 +169,7 @@ beforeEach(() => {
   harness.revision = 0;
   harness.generation = "gen-1";
   harness.conversations = false;
+  harness.owning = false;
   harness.exclusive = false;
   harness.connected = true;
   harness.pending = new Map();
@@ -315,6 +317,7 @@ it("stops honouring project conversations as soon as the grant goes, even if the
 });
 
 it("lays out an exclusive tree from its serving identity until a read succeeds", async () => {
+  harness.owning = true;
   harness.exclusive = true;
   await renderList([laptop]);
   const projects = {
@@ -341,10 +344,39 @@ it("lays out an exclusive tree from its serving identity until a read succeeds",
   });
 
   // Without the grant it is an ordinary tree, and Activity keeps the conversation.
+  harness.owning = false;
   harness.exclusive = false;
   await renderList([laptop]);
   expect(harness.result).toMatchObject({ owned: false });
   expect(harness.result?.sources).toEqual([
     expect.not.objectContaining({ projects: expect.anything() }),
   ]);
+});
+
+it("keeps an owning tree that is not exclusive reachable before and after a failed first read", async () => {
+  harness.owning = true;
+  harness.revision = undefined;
+  await renderList([laptop]);
+  const projects = {
+    installationId: "inst-1",
+    treeId: "projects",
+    exclusive: false,
+    projectIds: ["p1"],
+  };
+  // Activity leaves the conversation to the tree, so the tree lays out before any read.
+  expect(harness.reads).toEqual([]);
+  expect(harness.result).toMatchObject({
+    sources: [{ environmentId: laptop, nodes: [], projects }],
+    notice: null,
+    owned: true,
+  });
+
+  harness.revision = 0;
+  await renderList([laptop]);
+  expect(harness.reads).toEqual([laptop]);
+  expect(harness.result).toMatchObject({
+    sources: [{ environmentId: laptop, nodes: [], projects }],
+    notice: "Couldn't load Projects. It may be incomplete.",
+    owned: true,
+  });
 });

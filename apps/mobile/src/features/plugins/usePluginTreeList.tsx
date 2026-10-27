@@ -252,9 +252,9 @@ export function usePluginTreeList(
               )?.unplaced === "omit",
             projectIds: snapshot.installation.grants.projectIds,
           };
-    // An exclusive tree is the only place its conversations show, so it lays out from the
-    // serving identity alone while the first read is pending or after it failed.
-    if (snapshot.nodes === null && projects?.exclusive !== true) return [];
+    // Activity leaves owned conversations to this tree, so it lays out from the serving identity
+    // alone while the first read is pending or after it failed.
+    if (snapshot.nodes === null && projects === null) return [];
     return [
       {
         environmentId,
@@ -275,7 +275,8 @@ export function usePluginTreeList(
             failed: snapshot.failed,
             hasNodes: snapshot.nodes !== null,
           })),
-          exclusive,
+          shown.length > 0 &&
+            shown.every(({ snapshot }) => pluginTreeProjectsGranted(snapshot.installation)),
         );
 
   const folds = new Set(preferences?.threadListTreeFolds ?? []);

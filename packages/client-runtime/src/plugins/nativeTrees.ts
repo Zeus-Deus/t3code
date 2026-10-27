@@ -752,12 +752,12 @@ export interface PluginTreeReadState {
 export function pluginTreeNotice(
   title: string,
   reads: ReadonlyArray<PluginTreeReadState>,
-  /** An exclusive tree still shows its own conversations rather than Activity. */
-  exclusive = false,
+  /** A tree that owns conversations still shows them rather than Activity. */
+  ownsConversations = false,
 ): string | null {
   if (!reads.some((read) => read.failed)) return null;
   if (!reads.some((read) => read.hasNodes)) {
-    return exclusive
+    return ownsConversations
       ? `Couldn't load ${title}. It may be incomplete.`
       : `Couldn't load ${title}. Showing Activity.`;
   }

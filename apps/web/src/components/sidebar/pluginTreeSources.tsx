@@ -305,7 +305,7 @@ export function usePluginTreeNotice(choice: PluginSidebarTreeOption | null): str
   return pluginTreeNotice(
     choice.tree.title,
     shown.map((snapshot) => ({ failed: snapshot.failed, hasNodes: snapshot.nodes !== null })),
-    shown.length > 0 && shown.every((snapshot) => snapshot.projects === "exclusive"),
+    shown.length > 0 && shown.every((snapshot) => snapshot.projects !== "none"),
   );
 }
 
@@ -341,9 +341,9 @@ export function usePluginTreeSources(
   const sources = ordered.flatMap((environmentId): PluginTreeSource[] => {
     const snapshot = snapshots.get(environmentId);
     if (snapshot === undefined) return [];
-    // An exclusive tree is the only place its conversations show, so it lays out from the
-    // serving identity alone while the first read is pending or after it failed.
-    if (snapshot.nodes === null && snapshot.projects !== "exclusive") return [];
+    // Activity leaves owned conversations to this tree, so it lays out from the serving identity
+    // alone while the first read is pending or after it failed.
+    if (snapshot.nodes === null && snapshot.projects === "none") return [];
     return [
       {
         environmentId,
