@@ -79,7 +79,7 @@ async function renderIntent(intent: PluginClientIntent, stillInFront = true) {
   };
 }
 
-it("reveals the requested thread and opens its full-screen panel in the same environment", async () => {
+it("lands on the requested thread in the same environment instead of a full-screen side panel", async () => {
   await using screen = await renderIntent({
     type: "view.open",
     viewId: "overview",
@@ -88,15 +88,6 @@ it("reveals the requested thread and opens its full-screen panel in the same env
   await screen.click();
   expect(harness.calls).toEqual([
     { name: "Thread", params: { environmentId, threadId: coordinator } },
-    [
-      "PluginView",
-      {
-        environmentId,
-        installationId: screen.installation.installationId,
-        viewId: "overview",
-        threadId: coordinator,
-      },
-    ],
   ]);
 });
 

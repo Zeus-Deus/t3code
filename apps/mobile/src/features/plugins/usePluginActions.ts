@@ -104,7 +104,7 @@ export function usePluginIntentApplier() {
         openThread(target.environmentId, intent.threadId);
         return;
       case "view.open": {
-        const threadId = pluginViewThreadId(target.installation.manifest, intent, target.threadId);
+        // Side panels are full-screen here, so a panel for another thread lands on that thread.
         if (
           intent.threadId !== undefined &&
           target.installation.manifest.views.some(
@@ -112,7 +112,9 @@ export function usePluginIntentApplier() {
           )
         ) {
           openThread(target.environmentId, intent.threadId);
+          return;
         }
+        const threadId = pluginViewThreadId(target.installation.manifest, intent, target.threadId);
         navigation.navigate("PluginView", {
           environmentId: target.environmentId,
           installationId: target.installation.installationId,
