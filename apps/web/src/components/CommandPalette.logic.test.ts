@@ -14,6 +14,7 @@ import {
   reduceCommandPaletteSearchState,
   type CommandPaletteUiState,
   createProjectPicker,
+  dispatchEndingProjectChoice,
 } from "./CommandPalette.logic";
 
 describe("linked pull request thread navigation", () => {
@@ -973,5 +974,59 @@ describe("createProjectPicker", () => {
     const next = picker.attempt(choice);
     expect(next && picker.deliver(next, project)).toBe(true);
     expect(choose).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("dispatchEndingProjectChoice", () => {
+  const environmentId = EnvironmentId.make("environment-remote");
+  const project = { environmentId, projectId: ProjectId.make("project-1") };
+  const pending = () => {
+    const picker = createProjectPicker();
+    const choose = vi.fn();
+    const choice = { environmentIds: [environmentId], choose };
+    picker.set(choice);
+    const dispatch = vi.fn();
+    return { picker, choice, choose, dispatch, attempt: picker.attempt(choice) };
+  };
+
+  it("ends a pending add-folder the moment the palette is asked to close", () => {
+    const { picker, choose, dispatch, attempt } = pending();
+    dispatchEndingProjectChoice(picker, dispatch)({ _tag: "SetOpen", open: false });
+    expect(dispatch).toHaveBeenCalledWith({ _tag: "SetOpen", open: false });
+    expect(attempt && picker.isLive(attempt)).toBe(false);
+    expect(attempt && picker.deliver(attempt, project)).toBe(false);
+    expect(choose).not.toHaveBeenCalled();
+  });
+
+  it("ends it when the palette switches mode or opens another intent", () => {
+    for (const action of [
+      { _tag: "ToggleMode", mode: "files" },
+      { _tag: "OpenAddProject" },
+      { _tag: "OpenSearch", query: "x" },
+    ] as const) {
+      const { picker, dispatch, attempt } = pending();
+      dispatchEndingProjectChoice(picker, dispatch)(action);
+      expect(attempt && picker.isLive(attempt)).toBe(false);
+    }
+  });
+
+  it("keeps it while the palette stays open on the same intent", () => {
+    for (const action of [
+      { _tag: "SetOpen", open: true },
+      { _tag: "ClearOpenIntent" },
+      { _tag: "BackToCommand" },
+    ] as const) {
+      const { picker, dispatch, attempt } = pending();
+      dispatchEndingProjectChoice(picker, dispatch)(action);
+      expect(attempt && picker.isLive(attempt)).toBe(true);
+    }
+  });
+
+  it("never revives an attempt that lapsed while its choice stayed live", () => {
+    const { picker, choice, attempt } = pending();
+    picker.leaveView();
+    expect(attempt && picker.isLive(attempt)).toBe(false);
+    expect(picker.attempt(choice)).not.toBeNull();
+    expect(attempt && picker.isLive(attempt)).toBe(false);
   });
 });

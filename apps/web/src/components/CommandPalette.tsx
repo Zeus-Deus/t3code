@@ -194,6 +194,8 @@ import {
   reduceCommandPaletteSearchState,
   type SearchOverlayMode,
   createProjectPicker,
+  dispatchEndingProjectChoice,
+  type ProjectPicker,
   type ProjectPickerAttempt,
 } from "./CommandPalette.logic";
 import { resolveEnvironmentOptionLabel } from "./BranchToolbar.logic";
@@ -278,6 +280,7 @@ export function CommandPalette({ children }: { children: ReactNode }) {
   useCommandPaletteMount();
   const state = useCommandPaletteStore();
   const setOpen = (open: boolean) => dispatchCommandPalette({ _tag: "SetOpen", open });
+  const [projectPicker] = useState(createProjectPicker);
   const openChildSearch = (mode: "files" | "content", context: CommandPaletteReturnContext) =>
     dispatchCommandPalette({ _tag: "OpenChildSearch", mode, context });
   const composerHandleRef = useRef<ChatComposerHandle | null>(null);
@@ -305,6 +308,7 @@ export function CommandPalette({ children }: { children: ReactNode }) {
           setOpen={setOpen}
           openChildSearch={openChildSearch}
           initialContext={state.restoredSearch}
+          projectPicker={projectPicker}
         />
       </CommandDialog>
     </ComposerHandleContext>
@@ -321,6 +325,7 @@ function CommandPaletteDialog(props: {
     context: CommandPaletteReturnContext,
   ) => void;
   readonly initialContext: CommandPaletteReturnContext | undefined;
+  readonly projectPicker: ProjectPicker;
 }) {
   const composerHandleRef = useComposerHandleContext();
 
@@ -362,6 +367,7 @@ function CommandPaletteDialog(props: {
           setOpen={props.setOpen}
           openChildSearch={props.openChildSearch}
           initialContext={props.initialContext}
+          projectPicker={props.projectPicker}
         />
       )}
     </CommandDialogPopup>
@@ -376,10 +382,11 @@ function OpenCommandPaletteDialog(props: {
     context: CommandPaletteReturnContext,
   ) => void;
   readonly initialContext: CommandPaletteReturnContext | undefined;
+  readonly projectPicker: ProjectPicker;
 }) {
   const navigate = useNavigate();
   const pathname = useLocation({ select: (location) => location.pathname });
-  const { openChildSearch, setOpen } = props;
+  const { openChildSearch, setOpen, projectPicker } = props;
   // Keyed by palette session: the intent and restored search only seed this
   // mount, and closing must not change what the closing palette shows.
   const [initialSearch] = useState(
@@ -496,7 +503,6 @@ function OpenCommandPaletteDialog(props: {
   // Set only by the choose-project intent and dropped on returning to the root list, so an
   // ordinary add-project flow never hands its project to a caller.
   const [projectChoice, setProjectChoice] = useState<CommandPaletteProjectChoice | null>(null);
-  const [projectPicker] = useState(createProjectPicker);
   const selectProjectChoice = (choice: CommandPaletteProjectChoice | null) => {
     projectPicker.set(choice);
     setProjectChoice(choice);
@@ -1245,7 +1251,11 @@ function OpenCommandPaletteDialog(props: {
       {
         value: "projects",
         label: "Projects",
-        items: [...(folderEnvironments.length > 0 ? [addFolder] : []), ...projectItems],
+        items: [
+          ...(folderEnvironments.length > 0 ? [addFolder] : []),
+          // Closing ends the choice, so these close only after delivering.
+          ...projectItems.map((item) => ({ ...item, keepOpen: true })),
+        ],
       },
     ];
   };
@@ -1756,6 +1766,8 @@ function OpenCommandPaletteDialog(props: {
     readonly rawCwd: string;
     readonly platform: string;
     readonly currentProjectCwd: string | null;
+    /** The picker attempt a gesture took before awaiting; taken here when nothing was awaited. */
+    readonly pickerAttempt?: ProjectPickerAttempt | null;
   }) => {
     const environment = environments.find(
       (candidate) => candidate.environmentId === input.environmentId,
@@ -1772,8 +1784,11 @@ function OpenCommandPaletteDialog(props: {
     }
     // Bound before any await: a picker that closed, went back, or changed meanwhile gets nothing,
     // and its folder never falls through to opening a draft.
-    const attempt = projectPicker.attempt(projectChoice);
-    if (projectChoice !== null && attempt === null) return;
+    const attempt =
+      input.pickerAttempt === undefined
+        ? projectPicker.attempt(projectChoice)
+        : input.pickerAttempt;
+    if (projectChoice !== null && (attempt === null || !projectPicker.isLive(attempt))) return;
     if (attempt !== null && !attempt.choice.environmentIds.includes(input.environmentId)) {
       toastManager.add(
         stackedThreadToast({
@@ -1908,13 +1923,14 @@ function OpenCommandPaletteDialog(props: {
     setOpen(false);
   };
 
-  const handleAddProject = async (rawCwd: string) => {
+  const handleAddProject = async (rawCwd: string, pickerAttempt?: ProjectPickerAttempt | null) => {
     if (!browseEnvironmentId) return;
     await handleAddProjectForEnvironment({
       environmentId: browseEnvironmentId,
       rawCwd,
       platform: browseEnvironmentPlatform,
       currentProjectCwd: currentProjectCwdForBrowse,
+      ...(pickerAttempt === undefined ? {} : { pickerAttempt }),
     });
   };
 
@@ -2575,6 +2591,10 @@ function OpenCommandPaletteDialog(props: {
     if (!api) {
       return;
     }
+    // Taken before the dialog and WSL lookups and carried to the add, never taken again after them.
+    const pickerAttempt = projectPicker.attempt(projectChoice);
+    if (projectChoice !== null && pickerAttempt === null) return;
+    const pickerLapsed = () => pickerAttempt !== null && !projectPicker.isLive(pickerAttempt);
 
     setIsPickingProjectFolder(true);
     let pickedPath: string | null = null;
@@ -2596,6 +2616,10 @@ function OpenCommandPaletteDialog(props: {
         ...(fileManagerInitialPath ? { initialPath: fileManagerInitialPath } : {}),
         ...(pickerTargetEnvironmentId ? { targetEnvironmentId: pickerTargetEnvironmentId } : {}),
       };
+      if (pickerLapsed()) {
+        setIsPickingProjectFolder(false);
+        return;
+      }
       pickedPath = await api.dialogs.pickFolder(
         Object.keys(pickerOptions).length > 0 ? pickerOptions : undefined,
       );
@@ -2639,6 +2663,7 @@ function OpenCommandPaletteDialog(props: {
           primaryRunningDistro,
         ),
       );
+      if (pickerLapsed()) return;
       if (!selection) {
         toastManager.add(
           stackedThreadToast({
@@ -2654,10 +2679,11 @@ function OpenCommandPaletteDialog(props: {
         rawCwd: selection.linuxPath,
         platform: "Linux",
         currentProjectCwd: null,
+        pickerAttempt,
       });
       return;
     }
-    await handleAddProject(pickedPath);
+    await handleAddProject(pickedPath, pickerAttempt);
   };
 
   const inputAccessory =
