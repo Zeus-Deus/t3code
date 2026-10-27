@@ -665,6 +665,21 @@ function treePlugin(enabled = true): PluginInstallation {
   };
 }
 
+function treeActionPlugin(): PluginInstallation {
+  const capabilities = ["ui.native-trees", "ui.native-tree-actions", "threads.read", "ui"] as const;
+  const base = treePlugin();
+  return {
+    ...base,
+    manifest: {
+      ...base.manifest,
+      capabilities: [...capabilities],
+      actions: [{ id: "coordinate", title: "Start coordinator", placements: [] }],
+      views: [{ id: "board", title: "Board", entry: "views/board.html", placement: "side-panel" }],
+    },
+    grants: { capabilities: [...capabilities], projectIds: [] },
+  };
+}
+
 const treeGroup = (id: string, title: string, extra: Partial<PluginTreeNode> = {}) =>
   ({ id, kind: "group", title, ...extra }) as PluginTreeNode;
 const treeProject = (id: string, projectId: string, parentId?: string): PluginTreeNode => ({
@@ -1084,20 +1099,8 @@ describe("Sidebar plugin tree", () => {
         [server, [actionable("p9")]],
       ]),
     });
-    const capabilities = ["ui.native-trees", "ui.native-tree-actions", "threads.read"] as const;
     const base = treePlugin();
-    const withAction: PluginInstallation = {
-      ...base,
-      manifest: {
-        ...base.manifest,
-        capabilities: [...capabilities, "ui"],
-        actions: [{ id: "coordinate", title: "Start coordinator", placements: [] }],
-        views: [
-          { id: "board", title: "Board", entry: "views/board.html", placement: "side-panel" },
-        ],
-      },
-      grants: { capabilities: [...capabilities, "ui"], projectIds: [] },
-    };
+    const withAction = treeActionPlugin();
     let release!: () => void;
     data.update({
       installations: [withAction],
@@ -1162,5 +1165,89 @@ describe("Sidebar plugin tree", () => {
     await expect.element(page.getByText("a", { exact: true })).toBeVisible();
     expect(page.getByRole("button", { name: /Start coordinator/ }).query()).toBeNull();
     expect(data.read().invokes).toHaveLength(1);
+  });
+
+  it("lists a project's action as a row under its heading, folded or not, until the tree drops it", async () => {
+    const a = thread("a", laptop, "p1");
+    const coordinator = thread("coordinator", laptop, "p1");
+    const app: PluginTreeNode = {
+      id: "app",
+      kind: "project",
+      projectId: ProjectId.make("p1"),
+      actionId: "coordinate",
+    };
+    setupTree({
+      threads: [a],
+      route: null,
+      trees: new Map([[laptop, [app, treeThread("n-a", "a", "app")]]]),
+    });
+    const releases: Array<() => void> = [];
+    data.update({
+      installations: [treeActionPlugin()],
+      invokes: [],
+      answerInvoke: () => new Promise((resolve) => releases.push(() => resolve({}))),
+    });
+    await using _screen = await renderSidebar();
+
+    const action = page.getByRole("button", { name: "Start coordinator in App", exact: true });
+    await expect.element(action).toBeVisible();
+    await expect.element(action).toHaveTextContent("Start coordinator");
+    await vi.waitFor(() => expect(rowTitles()).toEqual(["a"]));
+    // Directly under the heading and ahead of its threads.
+    const heading = page.getByTestId("sidebar-project-section").element();
+    const below = (element: Element) => element.nextElementSibling;
+    expect(below(heading)?.contains(action.element())).toBe(true);
+    expect(below(below(heading)!)).toBe(page.getByTestId("thread-row").element());
+    expect(data.read().invokes).toEqual([]);
+
+    const expectedInvoke = {
+      environmentId: laptop,
+      input: expect.objectContaining({
+        handler: "action:coordinate",
+        context: { projectId: "p1" },
+      }),
+    };
+    (action.element() as HTMLElement).focus();
+    await userEvent.keyboard("{Enter}");
+    await expect.element(action).toBeDisabled();
+    await expect.element(action).toHaveAttribute("aria-busy", "true");
+    expect(data.read().invokes).toEqual([expectedInvoke]);
+    releases[0]!();
+    await expect.element(action).toBeEnabled();
+    (action.element() as HTMLElement).focus();
+    await userEvent.keyboard(" ");
+    await expect.element(action).toBeDisabled();
+    expect(data.read().invokes).toEqual([expectedInvoke, expectedInvoke]);
+    releases[1]!();
+    await expect.element(action).toBeEnabled();
+
+    // Folding hides the threads, not the action.
+    await userEvent.click(page.getByRole("button", { name: "App, 1 active" }));
+    await vi.waitFor(() => expect(rowTitles()).toEqual([]));
+    await expect.element(action).toBeVisible();
+    await userEvent.click(page.getByRole("button", { name: "App, 1 active" }));
+    await vi.waitFor(() => expect(rowTitles()).toEqual(["a"]));
+
+    // Once the plugin stops naming the action, its coordinator thread sits where the row was.
+    await act(() =>
+      data.update({
+        threads: [a, coordinator],
+        trees: new Map([
+          [
+            laptop,
+            [
+              treeProject("app", "p1"),
+              treeThread("n-coordinator", "coordinator", "app"),
+              treeThread("n-a", "a", "app"),
+            ],
+          ],
+        ]),
+        treeRevision: 1,
+      }),
+    );
+    await vi.waitFor(() => expect(rowTitles()).toEqual(["coordinator", "a"]));
+    expect(page.getByRole("button", { name: /Start coordinator/ }).query()).toBeNull();
+    expect(below(heading)).toBe(page.getByTestId("thread-row").first().element());
+    expect(data.read().invokes).toHaveLength(2);
   });
 });

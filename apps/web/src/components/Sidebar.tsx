@@ -3610,20 +3610,27 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                                     : (key) => toggleTreeFold(key, tree.collapsedByDefault)
                                 }
                                 onNewThread={startThreadInProject}
-                                actions={
-                                  selectedTree !== null &&
-                                  section.group !== null &&
-                                  heading?.kind === "project" &&
-                                  heading.actions !== undefined ? (
-                                    <PluginTreeProjectActions
-                                      choice={selectedTree}
-                                      actions={heading.actions}
-                                      projectName={section.group.displayName}
-                                      environmentLabels={environmentLabelById}
-                                    />
-                                  ) : undefined
-                                }
                                 onOpenSettings={openProjectSettingsFromHeader}
+                              />,
+                            );
+                          }
+                          // A heading's rows sit flush with it, as in the project view.
+                          const rowDepth = tree === undefined ? 0 : Math.max(tree.rowDepth - 1, 0);
+                          // Not thread content, so a folded heading still offers its actions.
+                          if (
+                            selectedTree !== null &&
+                            section.group !== null &&
+                            heading?.kind === "project" &&
+                            heading.actions !== undefined
+                          ) {
+                            items.push(
+                              <PluginTreeProjectActions
+                                key={`actions:${section.key}`}
+                                choice={selectedTree}
+                                actions={heading.actions}
+                                projectName={section.group.displayName}
+                                environmentLabels={environmentLabelById}
+                                depth={rowDepth}
                               />,
                             );
                           }
@@ -3631,8 +3638,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                             <SidebarProjectThreadTree
                               key={`tree:${section.key}`}
                               rows={section.rows}
-                              // A heading's rows sit flush with it, as in the project view.
-                              depth={tree === undefined ? 0 : Math.max(tree.rowDepth - 1, 0)}
+                              depth={rowDepth}
                               renderRow={(thread) =>
                                 renderThreadRow(
                                   thread,

@@ -122,7 +122,7 @@ export function SidebarViewSwitch(props: {
 
 // Plugin trees nest headings; deeper levels stop indenting so rows keep room for their titles.
 const DEPTH_INDENT = ["", "pl-4", "pl-8", "pl-12"] as const;
-const depthIndent = (depth: number) => DEPTH_INDENT[Math.min(Math.max(depth, 0), 3)];
+export const depthIndent = (depth: number) => DEPTH_INDENT[Math.min(Math.max(depth, 0), 3)];
 
 export function SidebarProjectThreadTree<TThread>(props: {
   rows: ReadonlyArray<ProjectViewRow<TThread>>;
@@ -183,8 +183,6 @@ export function SidebarProjectSectionHeader(props: {
   folded: boolean;
   onToggleFold: (sectionKey: string) => void;
   onNewThread: (project: SidebarProjectSnapshot) => void;
-  /** Plugin actions shown beside new thread on a project heading. */
-  actions?: ReactNode;
   /** Right-click opens project settings, as it does in the project filter. */
   onOpenSettings: (event: ReactMouseEvent, project: SidebarProjectSnapshot) => void;
 }) {
@@ -265,7 +263,6 @@ export function SidebarProjectSectionHeader(props: {
       )}
       {project ? (
         <span className="-ml-8 mr-1 flex opacity-0 group-hover/project-section:opacity-100 group-focus-within/project-section:opacity-100 pointer-coarse:opacity-100">
-          {props.actions}
           <Tooltip>
             <TooltipTrigger
               render={
