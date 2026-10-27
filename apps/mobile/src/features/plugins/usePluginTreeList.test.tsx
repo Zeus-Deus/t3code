@@ -66,7 +66,14 @@ vi.mock("../../state/plugins", () => ({
           environmentId,
           {
             status: "ready",
-            options: [{ ...choice, environmentId }],
+            // As the catalogue declares it, so an exclusive tree is known before it is read.
+            options: [
+              {
+                ...choice,
+                environmentId,
+                tree: harness.exclusive ? { ...tree, unplaced: "omit" as const } : tree,
+              },
+            ],
             ...(harness.owning
               ? {
                   owners: [
@@ -128,6 +135,7 @@ vi.mock("../../state/use-atom-command", () => ({
 }));
 vi.mock("./usePluginActions", () => ({ newPluginOperationId: () => "op-test" }));
 
+import { pluginTreeHoldsList } from "../threads/pluginTreeThreadList";
 import { usePluginTreeList } from "./usePluginTreeList";
 
 let root: Root | null = null;
@@ -379,4 +387,41 @@ it("keeps an owning tree that is not exclusive reachable before and after a fail
     notice: "Couldn't load Projects. It may be incomplete.",
     owned: true,
   });
+});
+
+/** Home's composition: with nothing listed, the tree's readers mount only while it holds the list. */
+function EmptyHome(props: { readonly environmentIds: ReadonlyArray<EnvironmentId> }) {
+  const list = usePluginTreeList(props.environmentIds);
+  harness.result = {
+    sources: list.sources,
+    notice: list.notice,
+    selected: list.selected,
+    loaded: list.loaded,
+  };
+  return pluginTreeHoldsList(list, false) ? (list.fetchers as ReactNode) : null;
+}
+
+it("loads a chosen exclusive tree on an empty Home, and leaves an ordinary one alone", async () => {
+  harness.owning = true;
+  harness.exclusive = true;
+  harness.served.set(laptop, []);
+  await act(async () => {
+    root!.render(<EmptyHome environmentIds={[laptop]} />);
+  });
+  for (let index = 0; index < 3; index += 1) {
+    await act(async () => {
+      await Promise.resolve();
+    });
+  }
+  expect(harness.reads).toEqual([laptop]);
+  expect(harness.result).toMatchObject({ loaded: true, notice: null });
+
+  // With nothing to arrange and no create action, an ordinary tree reads nothing.
+  harness.owning = false;
+  harness.exclusive = false;
+  harness.reads = [];
+  await act(async () => {
+    root!.render(<EmptyHome environmentIds={[server]} />);
+  });
+  expect(harness.reads).toEqual([]);
 });

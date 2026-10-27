@@ -62,6 +62,7 @@ import { usePluginTreeConversationOpener, usePluginTreeList } from "../plugins/u
 import {
   buildPluginTreeThreadListItems,
   earliestSnoozeWakeAt,
+  pluginTreeHoldsList,
   withPluginTreeItems,
 } from "../threads/pluginTreeThreadList";
 import {
@@ -719,9 +720,9 @@ export function HomeScreen(props: HomeScreenProps) {
     workingShelfEnabled,
   };
 
+  const treeHoldsList = pluginTreeHoldsList(pluginTree, hasSearchQuery);
   const hasAnyThreads =
-    // An exclusive tree keeps its header, with its create action, even with nothing in it.
-    exclusiveTree ||
+    treeHoldsList ||
     props.threads.some((thread) => thread.archivedAt === null) ||
     props.pendingTasks.length > 0 ||
     threadListV2Layout.settledCount > 0;
@@ -809,7 +810,8 @@ export function HomeScreen(props: HomeScreenProps) {
     pluginTree.loaded ? (
       <PluginTreeNotice notice={pluginTree.selected?.tree.emptyText ?? "No threads yet"} />
     ) : undefined
-  ) : hasSearchQuery && threadSearch.isPending ? undefined : hasSearchQuery ? (
+  ) : treeHoldsList && !pluginTree.loaded ? undefined : hasSearchQuery &&
+    threadSearch.isPending ? undefined : hasSearchQuery ? (
     <EmptyState
       title="No results"
       detail={`No threads matching "${props.searchQuery}".`}
@@ -835,7 +837,7 @@ export function HomeScreen(props: HomeScreenProps) {
     />
   );
 
-  if (Platform.OS === "android" && threadListV2Items.length === 0 && !exclusiveTree) {
+  if (Platform.OS === "android" && threadListV2Items.length === 0 && !treeHoldsList) {
     return (
       <View className="flex-1 bg-header">
         <View

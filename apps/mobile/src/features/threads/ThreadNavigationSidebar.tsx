@@ -56,6 +56,7 @@ import { usePluginTreeConversationOpener, usePluginTreeList } from "../plugins/u
 import {
   buildPluginTreeThreadListItems,
   earliestSnoozeWakeAt,
+  pluginTreeHoldsList,
   withPluginTreeItems,
 } from "./pluginTreeThreadList";
 import { SwipeableScrollGateProvider, useSwipeableScrollGate } from "../home/thread-swipe-actions";
@@ -800,7 +801,8 @@ function ThreadNavigationSidebarPane(
     pluginTree.loaded ? (
       <PluginTreeNotice notice={pluginTree.selected?.tree.emptyText ?? "No threads yet"} />
     ) : null
-  ) : (
+  ) : pluginTreeHoldsList(pluginTree, props.searchQuery.trim().length > 0) &&
+    !pluginTree.loaded ? null : (
     <Text
       className={
         Platform.OS === "android"

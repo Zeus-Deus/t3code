@@ -1,5 +1,6 @@
 import {
   buildPluginTreeLayout,
+  type PluginSidebarTreeOption,
   type PluginTreeRow,
   type PluginTreeSource,
 } from "@t3tools/client-runtime/plugins";
@@ -233,4 +234,20 @@ export function withPluginTreeItems<T extends { readonly type: string }>(
     foldable: false,
   };
   return [...tree, other, ...activity];
+}
+
+/**
+ * Whether the list stays up for the chosen tree with nothing in it yet: the tree's header offers
+ * its create action, and its readers must stay mounted for an exclusive tree to load at all.
+ */
+export function pluginTreeHoldsList(
+  tree: { readonly selected: PluginSidebarTreeOption | null; readonly exclusive: boolean },
+  searching: boolean,
+): boolean {
+  if (searching || tree.selected === null) return false;
+  return (
+    tree.exclusive ||
+    tree.selected.tree.unplaced === "omit" ||
+    tree.selected.tree.create !== undefined
+  );
 }
