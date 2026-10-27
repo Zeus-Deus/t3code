@@ -6,6 +6,7 @@ import { NodeId, RunAttemptId, TrimmedNonEmptyString } from "./index.ts";
 import {
   latestProviderTurnForAttempt,
   OrchestrationV2AppThreadJson,
+  OrchestrationV2Command,
   OrchestrationV2ConversationMessageJson,
   OrchestrationV2ProviderCapabilities,
   OrchestrationV2ProviderThread,
@@ -493,6 +494,9 @@ describe("thread open stats", () => {
     const decode = Schema.decodeUnknownSync(OrchestrationV2ThreadShellJson);
     const opens = { openedAt: 1, score: 1, picks: [{ query: "upl", at: 1 }] };
     expect(decode({ ...shell, opens }).opens).toEqual(opens);
+    const pluginOwner = { installationId: "plugin", treeId: "projects" };
+    expect(decode(shell)).not.toHaveProperty("pluginOwner");
+    expect(decode({ ...shell, pluginOwner }).pluginOwner).toEqual(pluginOwner);
     expect(decode({ ...shell, opens: { openedAt: "2026-10-01", score: 1 } }).opens).toBeNull();
   });
 });
@@ -676,6 +680,36 @@ it("decodes old thread history without independent launch provenance and preserv
   const related = decode({ ...thread, launchedFrom: { threadId: "source" } });
   expect(related).toHaveProperty("launchedFrom", { threadId: "source" });
   expect(related.lineage).toEqual(thread.lineage);
+  const pluginOwner = { installationId: "plugin", treeId: "projects" };
+  expect(decode({ ...thread, pluginOwner })).toHaveProperty("pluginOwner", pluginOwner);
+  const decodeCommand = Schema.decodeUnknownSync(OrchestrationV2Command);
+  expect(
+    decodeCommand({
+      type: "thread.create",
+      commandId: "create",
+      threadId: thread.id,
+      ...thread,
+      pluginOwner,
+    }),
+  ).not.toHaveProperty("pluginOwner");
+  expect(
+    decodeCommand({
+      type: "thread.metadata.update",
+      commandId: "update",
+      threadId: thread.id,
+      pluginOwner,
+    }),
+  ).not.toHaveProperty("pluginOwner");
+  const decodeLaunch = Schema.decodeUnknownSync(OrchestrationV2RpcSchemas.launchThread.input);
+  expect(
+    decodeLaunch({
+      ...thread,
+      threadId: thread.id,
+      commandId: "launch",
+      workspaceStrategy: { type: "root" },
+      pluginOwner,
+    }),
+  ).not.toHaveProperty("pluginOwner");
   expect(decode(thread)).not.toHaveProperty("pluginBrief");
   const bound = {
     ...thread,

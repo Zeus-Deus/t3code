@@ -279,6 +279,14 @@ export const runPluginHostChild = async (): Promise<void> => {
           (await hostCall("threads.list", input)) as Awaited<
             ReturnType<PluginContext["threads"]["list"]>
           >,
+        adopt: async (input) =>
+          (await hostCall("threads.adopt", input)) as Awaited<
+            ReturnType<PluginContext["threads"]["adopt"]>
+          >,
+        unarchive: async (input) =>
+          (await hostCall("threads.unarchive", input)) as Awaited<
+            ReturnType<PluginContext["threads"]["unarchive"]>
+          >,
         metadata: async (input) =>
           (await hostCall("threads.metadata", input)) as Awaited<
             ReturnType<PluginContext["threads"]["metadata"]>

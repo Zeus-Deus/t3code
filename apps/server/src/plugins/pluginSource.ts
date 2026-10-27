@@ -170,6 +170,24 @@ const collectSnapshot = async (directory: string) => {
         message: "A thread status opens one of the plugin's declared side-panel views.",
       });
   }
+  for (const tree of manifest.nativeTrees ?? []) {
+    if (
+      tree.create !== undefined &&
+      !manifest.actions.some((action) => action.id === tree.create?.actionId)
+    )
+      throw new PluginError({
+        reason: "invalid_manifest",
+        message: "A native tree create action must be declared by this plugin.",
+      });
+    if (
+      (tree.unplaced !== undefined || tree.create !== undefined || tree.emptyText !== undefined) &&
+      !pluginRequestedCapabilities(manifest).includes("ui.native-tree-projects")
+    )
+      throw new PluginError({
+        reason: "invalid_manifest",
+        message: "Project tree contributions require the ui.native-tree-projects capability.",
+      });
+  }
   // Older hosts ignore the field, so the capability is what makes them refuse the plugin (required)
   // or knowingly run it without the view (optional).
   if (

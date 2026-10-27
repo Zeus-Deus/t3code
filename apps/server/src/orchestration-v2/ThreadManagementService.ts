@@ -359,6 +359,7 @@ export interface ThreadManagementServiceShape {
   readonly ensureLegacyTranscript: (
     threadId: ThreadId,
   ) => Effect.Effect<void, LegacyV1ThreadImporter.LegacyV1ThreadImportError>;
+  readonly dispatchAuthorized: Orchestrator.OrchestratorV2["Service"]["dispatchAuthorized"];
   readonly dispatch: (
     command: OrchestrationV2ServerCommand,
   ) => Effect.Effect<
@@ -1336,6 +1337,7 @@ const make = Effect.gen(function* () {
     listActiveSubagentThreadIds: orchestrator.listActiveSubagentThreadIds,
     listOlderSettledThreads: orchestrator.listOlderSettledThreads,
     readShellSnapshot: orchestrator.readShellSnapshot,
+    dispatchAuthorized: orchestrator.dispatchAuthorized,
     getThreadMetadata: orchestrator.getThreadMetadata,
     getThreadShell: orchestrator.getThreadShell,
     listProjectThreads,

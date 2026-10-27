@@ -57,6 +57,7 @@ export function makeSubagentChildThread(input: {
   return {
     ...input.parentThread,
     launchedFrom: undefined,
+    pluginOwner: undefined,
     pluginBrief: undefined,
     pluginBriefMessageId: undefined,
     createdBy: input.createdBy,

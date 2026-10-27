@@ -9,6 +9,7 @@ import {
   ProviderInstanceId,
   ProviderDriverKind,
   type OrchestrationV2ThreadShell,
+  type OrchestrationV2ServerCommand,
   type ServerProvider,
   RunId,
   RuntimeRequestId,
@@ -108,8 +109,11 @@ const fixture = Effect.gen(function* () {
   const sends: Array<Threads.ThreadManagementSendInput> = [];
   const limits: Array<DispatchModeLimitValue | undefined> = [];
   let beforeRead: (() => Effect.Effect<void>) | undefined;
+  const ownedShells = new Map<ThreadId, OrchestrationV2ThreadShell>();
+  const lifecycleCommands: OrchestrationV2ServerCommand[] = [];
+  let beforeDispatch: (() => Effect.Effect<void>) | undefined;
   const projection = (id: ThreadId) => ({
-    thread: { ...shell, id, projectId: effectProject, lastVisitedAt: null },
+    thread: { ...shell, ...ownedShells.get(id), id, projectId: effectProject, lastVisitedAt: null },
     runs: [],
     messages: [
       {
@@ -145,7 +149,33 @@ const fixture = Effect.gen(function* () {
   });
   const domain = Layer.mock(Threads.ThreadManagementService)({
     getThreadShell: (id) =>
-      Effect.sync(() => ({ ...shell, ...effectModes, id, projectId: effectProject })),
+      Effect.sync(() => ({
+        ...shell,
+        ...effectModes,
+        ...ownedShells.get(id),
+        id,
+        projectId: effectProject,
+      })),
+    dispatchAuthorized: (command, authorize) =>
+      Effect.gen(function* () {
+        const before = beforeDispatch;
+        beforeDispatch = undefined;
+        yield* before?.() ?? Effect.void;
+        if (!(yield* authorize)) return null;
+        lifecycleCommands.push(command);
+        const current = ownedShells.get(command.threadId) ?? { ...shell, id: command.threadId };
+        ownedShells.set(
+          command.threadId,
+          command.type === "thread.unarchive"
+            ? { ...current, archivedAt: null }
+            : {
+                ...current,
+                ...(command.pluginOwner === undefined ? {} : { pluginOwner: command.pluginOwner }),
+              },
+        );
+        return { sequence: lifecycleCommands.length, storedEvents: [] };
+      }),
+    getThreadRecords: (id) => Effect.sync(() => projection(id)),
     listProjectThreads: () => Effect.sync(() => listedThreads),
     isProviderInstanceEnabledForProject: () => Effect.sync(() => modelEnabled),
     ensureLegacyTranscript: () => Effect.void,
@@ -327,6 +357,13 @@ const fixture = Effect.gen(function* () {
     request,
     launches: () => launches,
     launchInputs,
+    lifecycleCommands,
+    setShell: (value: OrchestrationV2ThreadShell) => {
+      ownedShells.set(value.id, value);
+    },
+    beforeDispatch: (value: NonNullable<typeof beforeDispatch>) => {
+      beforeDispatch = value;
+    },
     shell,
     registry: Context.get(context, ProviderRegistry.ProviderRegistry),
     projects: Context.get(context, Projects.ProjectService),
@@ -2743,5 +2780,261 @@ it.effect("rechecks the brief capability before returning a created thread", () 
       .pipe(Effect.result);
     expect(f.launchInputs).toHaveLength(1);
     expect(denied).toMatchObject({ _tag: "Failure", failure: { reason: "permission_denied" } });
+  }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+const grantProjectTree = Effect.fn("test.grantProjectTree")(function* (
+  store: Store.PluginStore["Service"],
+) {
+  yield* store.update((state) =>
+    Effect.succeed([
+      undefined,
+      {
+        ...state,
+        installations: state.installations.map((record) => ({
+          ...record,
+          installation: {
+            ...record.installation,
+            manifest: {
+              ...record.installation.manifest,
+              optionalCapabilities: ["ui.native-trees", "ui.native-tree-projects"],
+              nativeTrees: [{ id: "projects", title: "Projects" }],
+            },
+            grants: {
+              ...record.installation.grants,
+              capabilities: [
+                ...record.installation.grants.capabilities,
+                "ui.native-trees",
+                "ui.native-tree-projects",
+              ],
+            },
+          },
+        })),
+      },
+    ] as const),
+  );
+});
+const provePluginCreation = Effect.fn("test.provePluginCreation")(function* (
+  f: Effect.Success<typeof fixture>,
+  threadId: ThreadId,
+) {
+  const key = `creation:${threadId}`;
+  yield* f.receipts.reserve({
+    key,
+    installationId: "plugin",
+    generation: "old-generation",
+    requestDigest: "creation",
+  });
+  const core = Context.get(
+    yield* Layer.build(CoreReceipts.layer),
+    CoreReceipts.OrchestrationCommandReceiptRepository,
+  );
+  yield* core.upsert({
+    commandId: CommandId.make(key),
+    aggregateKind: "thread",
+    aggregateId: threadId,
+    commandType: "thread.create",
+    acceptedAt: "2026-10-23T12:00:00.000Z",
+    resultSequence: 1,
+    status: "accepted",
+    error: null,
+  });
+});
+it.effect("stamps the declared owner on creation and exposes it in plugin metadata", () =>
+  Effect.gen(function* () {
+    const f = yield* fixture;
+    const request = {
+      ...f.request,
+      owner: "tree:projects",
+      pluginOwner: { installationId: "forged", treeId: "other" },
+    };
+    expect(
+      (yield* f.host.call(f.invocation, "threads.create", request).pipe(Effect.asVoid, Effect.flip))
+        .reason,
+    ).toBe("permission_denied");
+    yield* grantProjectTree(f.store);
+    expect(
+      (yield* f.host
+        .call(f.invocation, "threads.create", { ...request, owner: "tree:undeclared" })
+        .pipe(Effect.asVoid, Effect.flip)).reason,
+    ).toBe("permission_denied");
+    yield* f.host.call(f.invocation, "threads.create", request);
+    const pluginOwner = { installationId: "plugin", treeId: "projects" };
+    expect(f.launchInputs[0]?.pluginOwner).toEqual(pluginOwner);
+    f.setShell({ ...f.shell, pluginOwner });
+    expect(
+      yield* f.host.call(f.invocation, "threads.metadata", { threadId: f.shell.id }),
+    ).toHaveProperty("pluginOwner", pluginOwner);
+    f.setListedThreads([{ ...f.shell, pluginOwner }]);
+    expect(yield* f.host.call(f.invocation, "threads.list", { projectId })).toHaveProperty(
+      "threads.0.pluginOwner",
+      pluginOwner,
+    );
+  }).pipe(Effect.provide(base()), Effect.scoped),
+);
+it.effect("adopts only receipt-proven own threads idempotently during a writable tree read", () =>
+  Effect.gen(function* () {
+    const f = yield* fixture;
+    yield* grantProjectTree(f.store);
+    const request = { threadId: ThreadId.make("legacy-without-prefix"), owner: "tree:projects" };
+    expect(
+      (yield* f.host.call(f.invocation, "threads.adopt", request).pipe(Effect.asVoid, Effect.flip))
+        .reason,
+    ).toBe("permission_denied");
+    yield* provePluginCreation(f, request.threadId);
+    expect(yield* f.host.call(f.invocation, "threads.adopt", request)).toEqual({
+      threadId: request.threadId,
+    });
+    expect(
+      yield* f.host.call(
+        { ...f.invocation, operationId: "later-tree-read" },
+        "threads.adopt",
+        request,
+      ),
+    ).toEqual({ threadId: request.threadId });
+    expect(f.lifecycleCommands).toHaveLength(1);
+    expect(f.lifecycleCommands[0]).toMatchObject({
+      type: "thread.metadata.update",
+      pluginOwner: { installationId: "plugin", treeId: "projects" },
+    });
+    f.setShell({
+      ...f.shell,
+      id: request.threadId,
+      pluginOwner: { installationId: "other-installation", treeId: "projects" },
+    });
+    expect(
+      (yield* f.host.call(f.invocation, "threads.adopt", request).pipe(Effect.asVoid, Effect.flip))
+        .reason,
+    ).toBe("permission_denied");
+  }).pipe(Effect.provide(base()), Effect.scoped),
+);
+it.effect(
+  "unarchives an own thread only for a verified client action and preserves quiet state",
+  () =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      yield* grantProjectTree(f.store);
+      const archived = {
+        ...f.shell,
+        archivedAt: f.shell.createdAt,
+        settledOverride: "settled" as const,
+        settledAt: f.shell.createdAt,
+        snoozedUntil: DateTime.makeUnsafe("2027-01-01T00:00:00.000Z"),
+        snoozedAt: f.shell.createdAt,
+      };
+      f.setShell(archived);
+      yield* provePluginCreation(f, archived.id);
+      const request = { threadId: archived.id, clientAction: true };
+      expect(
+        (yield* f.host
+          .call(f.invocation, "threads.unarchive", request)
+          .pipe(Effect.asVoid, Effect.flip)).reason,
+      ).toBe("permission_denied");
+      const invocation = { ...f.invocation, event: false, clientAction: true };
+      expect(yield* f.host.call(invocation, "threads.unarchive", request)).toEqual({
+        threadId: archived.id,
+      });
+      expect(
+        yield* f.host.call(
+          { ...invocation, operationId: "later-action" },
+          "threads.unarchive",
+          request,
+        ),
+      ).toEqual({ threadId: archived.id });
+      expect(f.lifecycleCommands).toHaveLength(1);
+      expect(yield* f.threads.getThreadShell(archived.id)).toMatchObject({
+        archivedAt: null,
+        settledOverride: "settled",
+        settledAt: archived.settledAt,
+        snoozedUntil: archived.snoozedUntil,
+        snoozedAt: archived.snoozedAt,
+      });
+    }).pipe(Effect.provide(base()), Effect.scoped),
+);
+it.effect.each(["threads.adopt", "threads.unarchive"] as const)(
+  "rechecks live authority at the thread dispatch boundary for %s",
+  (method) =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      yield* grantProjectTree(f.store);
+      f.setShell({ ...f.shell, archivedAt: f.shell.createdAt });
+      yield* provePluginCreation(f, f.shell.id);
+      let revoked = false;
+      f.beforeDispatch(() =>
+        Effect.sync(() => {
+          revoked = true;
+        }),
+      );
+      const invocation = {
+        ...f.invocation,
+        event: false,
+        clientAction: true,
+        actor: {
+          ...actor,
+          authorize: () => (revoked ? Effect.fail(pluginPermissionDenied()) : Effect.void),
+        },
+      };
+      expect(
+        (yield* f.host
+          .call(invocation, method, { threadId: f.shell.id, owner: "tree:projects" })
+          .pipe(Effect.asVoid, Effect.flip)).reason,
+      ).toBe("permission_denied");
+      expect(f.lifecycleCommands).toEqual([]);
+    }).pipe(Effect.provide(base()), Effect.scoped),
+);
+it.effect.each([
+  "agent",
+  "event",
+  "read-scope",
+  "project-limit",
+  "mode-limit",
+  "capability",
+  "stale",
+  "deleted",
+] as const)("rejects unarchive with %s authority", (reason) =>
+  Effect.gen(function* () {
+    const f = yield* fixture;
+    yield* grantProjectTree(f.store);
+    yield* provePluginCreation(f, f.shell.id);
+    f.setShell({
+      ...f.shell,
+      archivedAt: f.shell.createdAt,
+      ...(reason === "deleted" ? { deletedAt: f.shell.createdAt } : {}),
+    });
+    const invocation: Host.PluginHostInvocation = {
+      ...f.invocation,
+      event: reason === "event",
+      clientAction: true,
+      generation: reason === "stale" ? "stale" : "one",
+      actor: {
+        ...actor,
+        source: reason === "agent" ? "agent" : "client",
+        ...(reason === "read-scope" ? { scopes: [AuthOrchestrationReadScope] } : {}),
+        ...(reason === "project-limit" ? { projectIds: [] } : {}),
+        ...(reason === "mode-limit" ? { runtimeMode: "approval-required" } : {}),
+      },
+    };
+    if (reason === "capability")
+      yield* f.store.update((state) =>
+        Effect.succeed([
+          undefined,
+          {
+            ...state,
+            installations: state.installations.map((record) => ({
+              ...record,
+              installation: {
+                ...record.installation,
+                grants: { ...record.installation.grants, capabilities: [] },
+              },
+            })),
+          },
+        ] as const),
+      );
+    expect(
+      (yield* f.host
+        .call(invocation, "threads.unarchive", { threadId: f.shell.id })
+        .pipe(Effect.asVoid, Effect.flip)).reason,
+    ).toBe(reason === "stale" ? "stale_generation" : "permission_denied");
+    expect(f.lifecycleCommands).toEqual([]);
   }).pipe(Effect.provide(base()), Effect.scoped),
 );

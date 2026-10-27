@@ -1,4 +1,7 @@
 import {
+  AuthAccessWriteScope,
+  AuthTerminalOperateScope,
+  type PluginGrantProjectInput,
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
   ProjectId,
@@ -155,6 +158,10 @@ export class PluginService extends Context.Service<
       readonly grants: PluginGrants;
       readonly eventBacklog?: PluginEventBacklogPolicy;
     }) => Effect.Effect<PluginInstallation, PluginError>;
+    readonly grantProject: (
+      input: PluginGrantProjectInput,
+      actor: PluginActor,
+    ) => Effect.Effect<PluginInstallation, PluginError>;
     readonly setEnabled: (input: {
       readonly installationId: string;
       readonly enabled: boolean;
@@ -1804,6 +1811,63 @@ const make = Effect.gen(function* () {
       };
     });
   }, lifecycle);
+  const grantProject = Effect.fn("PluginService.grantProject")(function* (
+    input: PluginGrantProjectInput,
+    actor: PluginActor,
+  ) {
+    if (
+      actor.source !== "client" ||
+      !actor.scopes.includes(AuthAccessWriteScope) ||
+      !actor.scopes.includes(AuthTerminalOperateScope) ||
+      (actor.projectIds !== undefined && !actor.projectIds.includes(input.projectId))
+    )
+      return yield* pluginPermissionDenied();
+    while (true) {
+      const snapshot = yield* read;
+      const project = yield* projects
+        .getShell(input.projectId)
+        .pipe(Effect.mapError(() => pluginPermissionDenied()));
+      if (Option.isNone(project) || project.value.id !== input.projectId)
+        return yield* pluginPermissionDenied();
+      yield* actor.authorize?.() ?? Effect.void;
+      const result = yield* store
+        .tryUpdate((state) =>
+          Effect.gen(function* () {
+            if (state !== snapshot) return [null, state] as const;
+            const record = recordFor(state, input.installationId);
+            if (!record) return yield* notFound();
+            const denied =
+              PluginStore.assertMutablePluginRecord(record) ??
+              assertPluginActive(present(record), input.generation) ??
+              assertNotTransitioning(input.installationId);
+            if (denied) return yield* denied;
+            if (record.installation.grants.projectIds.includes(input.projectId))
+              return [present(record), state] as const;
+            const next = {
+              ...record,
+              installation: {
+                ...record.installation,
+                grants: {
+                  ...record.installation.grants,
+                  projectIds: [...record.installation.grants.projectIds, input.projectId],
+                },
+              },
+            };
+            return [
+              present(next),
+              {
+                ...state,
+                installations: state.installations.map((current) =>
+                  current === record ? next : current,
+                ),
+              },
+            ] as const;
+          }),
+        )
+        .pipe(Effect.mapError((error) => (isPluginError(error) ? error : failure())));
+      if (Option.isSome(result) && result.value !== null) return result.value;
+    }
+  }, lifecycle);
   const execute = Effect.fn("PluginService.execute")(
     function* (
       input: {
@@ -1948,6 +2012,8 @@ const make = Effect.gen(function* () {
               callId,
               actor,
               event,
+              clientAction:
+                actor.source === "client" && input.handler.startsWith("action:") && !event,
               ...(input.context === undefined ? {} : { context: input.context }),
             },
             method,
@@ -2484,6 +2550,7 @@ const make = Effect.gen(function* () {
     resume,
     remove,
     updateSettings,
+    grantProject,
     invoke,
     readTree,
     readCardView,

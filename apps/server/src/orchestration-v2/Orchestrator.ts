@@ -328,6 +328,13 @@ export interface OrchestratorV2Shape {
   readonly dispatch: (
     command: OrchestrationV2ServerCommand,
   ) => Effect.Effect<OrchestratorV2DispatchResult, OrchestratorV2Error>;
+  readonly dispatchAuthorized: <E>(
+    command: Extract<
+      OrchestrationV2ServerCommand,
+      { readonly type: "thread.metadata.update" | "thread.unarchive" }
+    >,
+    authorize: Effect.Effect<boolean, E>,
+  ) => Effect.Effect<OrchestratorV2DispatchResult | null, E | OrchestratorV2Error>;
   readonly autoArmLimitRecovery: (input: {
     readonly commandId: CommandId;
     readonly threadId: ThreadId;
@@ -404,7 +411,7 @@ export interface OrchestratorV2Shape {
   readonly getThreadMetadata: (
     threadId: ThreadId,
   ) => Effect.Effect<
-    Pick<OrchestrationV2AppThread, "lineage" | "deletedAt"> | null,
+    Pick<OrchestrationV2AppThread, "lineage" | "deletedAt" | "pluginOwner"> | null,
     OrchestratorV2Error
   >;
   readonly getThreadShell: (
@@ -2490,7 +2497,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     );
 
   const dispatchThreadCreate = Effect.fn("orchestrationV2.dispatch.threadCreate")(function* (
-    command: Extract<OrchestrationV2Command, { readonly type: "thread.create" }>,
+    command: Extract<OrchestrationV2ServerCommand, { readonly type: "thread.create" }>,
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
   ) {
     yield* Effect.annotateCurrentSpan({
@@ -2522,6 +2529,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       id: command.threadId,
       projectId: command.projectId,
       title: command.title,
+      ...(command.pluginOwner === undefined ? {} : { pluginOwner: command.pluginOwner }),
       ...(command.pluginBrief === undefined ? {} : { pluginBrief: command.pluginBrief }),
       providerInstanceId: command.modelSelection.instanceId,
       modelSelection: command.modelSelection,
@@ -2925,6 +2933,18 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         cause: `Thread ${command.threadId} branch changed before the metadata update could be applied.`,
       });
     }
+    if (
+      command.type === "thread.metadata.update" &&
+      command.pluginOwner !== undefined &&
+      thread.pluginOwner !== undefined &&
+      (thread.pluginOwner.installationId !== command.pluginOwner.installationId ||
+        thread.pluginOwner.treeId !== command.pluginOwner.treeId)
+    )
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: "Thread ownership cannot be reassigned.",
+      });
     if (command.type === "thread.metadata.update" && command.expectedEmpty === true) {
       const records = yield* projectionStore
         .getThreadRecords(command.threadId, ["runs"])
@@ -3366,6 +3386,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                   };
           return {
             ...thread,
+            ...(command.pluginOwner === undefined ? {} : { pluginOwner: command.pluginOwner }),
             ...(command.title === undefined ? {} : { title: command.title }),
             ...(command.limitRecovery === undefined ? {} : { limitRecovery }),
             ...(command.limitRecovery !== undefined &&
@@ -13252,6 +13273,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       return effectOutbox.awaitSettled(`effect:restart-continuation:${run.id}`).pipe(Effect.ignore);
     }),
     dispatch: dispatchWithReceipt,
+    dispatchAuthorized: (command, authorize) =>
+      threadDispatch.withLock(
+        command.threadId,
+        authorize.pipe(
+          Effect.flatMap((apply) =>
+            apply ? dispatchWithReceiptEffect(command) : Effect.succeed(null),
+          ),
+        ),
+      ),
     autoArmLimitRecovery: Effect.fn("OrchestratorV2.autoArmLimitRecovery")(function (input) {
       return threadDispatch.withLock(
         input.threadId,
@@ -13370,7 +13400,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     }),
     getThreadMetadata: Effect.fn("Orchestrator.getThreadMetadata")((threadId) =>
       projectionStore.getThread(threadId).pipe(
-        Effect.map(({ lineage, deletedAt }) => ({ lineage, deletedAt })),
+        Effect.map(({ lineage, deletedAt, pluginOwner }) => ({
+          lineage,
+          deletedAt,
+          ...(pluginOwner === undefined ? {} : { pluginOwner }),
+        })),
         Effect.catchTags({ ProjectionStoreThreadNotFoundError: () => Effect.succeed(null) }),
         Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause })),
       ),

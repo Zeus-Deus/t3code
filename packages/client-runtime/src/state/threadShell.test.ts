@@ -540,3 +540,17 @@ describe("v2 thread shell lists", () => {
     }
   });
 });
+
+it("preserves optional plugin ownership in environment shells and removes stale ownership", () => {
+  const { registry, threads, snapshotAtom } = makeHarness();
+  const pluginOwner = { installationId: "plugin", treeId: "projects" };
+  registry.set(snapshotAtom(environmentId), {
+    ...v2ShellSnapshot,
+    threads: [{ ...v2ThreadShell, pluginOwner }],
+  });
+  const dispose = registry.mount(threads.threadShellsAtom);
+  expect(registry.get(threads.threadShellsAtom)[0]?.pluginOwner).toEqual(pluginOwner);
+  registry.set(snapshotAtom(environmentId), { ...v2ShellSnapshot, threads: [v2ThreadShell] });
+  expect(registry.get(threads.threadShellsAtom)[0]?.pluginOwner).toBeUndefined();
+  dispose();
+});

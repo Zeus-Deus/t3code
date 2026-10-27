@@ -33,6 +33,8 @@ export const PluginHostMethod = Schema.Literals([
   "threads.create",
   "threads.list",
   "threads.metadata",
+  "threads.adopt",
+  "threads.unarchive",
   "projects.list",
   "models.list",
   "ui.invalidate",

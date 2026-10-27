@@ -109,6 +109,12 @@ const loadPlugin = Effect.fn("RepositoryLensTest.loadPlugin")((initialPath: stri
       },
       storage: { get: unexpected, set: unexpected, delete: unexpected },
       threads: {
+        adopt: async () => {
+          throw new Error("Not used by repository lens");
+        },
+        unarchive: async () => {
+          throw new Error("Not used by repository lens");
+        },
         read: unexpected,
         send: unexpected,
         create: unexpected,

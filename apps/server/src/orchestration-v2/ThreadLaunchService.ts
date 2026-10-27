@@ -85,6 +85,7 @@ export interface ThreadLaunchInput {
   readonly projectId: ProjectId;
   readonly title: string;
   readonly generateTitle?: boolean;
+  readonly pluginOwner?: import("@t3tools/contracts").PluginThreadOwner | undefined;
   readonly pluginBrief?: import("@t3tools/contracts").OrchestrationV2PluginBrief | undefined;
   readonly modelSelection: ModelSelection;
   readonly runtimeMode: RuntimeMode;
@@ -913,6 +914,7 @@ const make = Effect.gen(function* () {
                 threadId: candidateThreadId,
                 projectId: input.projectId,
                 title: input.title,
+                ...(input.pluginOwner === undefined ? {} : { pluginOwner: input.pluginOwner }),
                 ...(input.pluginBrief === undefined ? {} : { pluginBrief: input.pluginBrief }),
                 modelSelection: input.modelSelection,
                 runtimeMode: input.runtimeMode,

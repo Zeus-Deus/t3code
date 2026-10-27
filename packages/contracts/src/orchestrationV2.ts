@@ -55,6 +55,7 @@ import {
   OrchestrationGetTurnDiffResult,
 } from "./checkpointDiff.ts";
 import { ModelSelection } from "./modelSelection.ts";
+import { PluginThreadOwner } from "./plugins.ts";
 import {
   ThreadLinkedPullRequest,
   ThreadPullRequestLink,
@@ -464,6 +465,7 @@ export const OrchestrationV2AppThread = Schema.Struct({
   lineage: OrchestrationV2AppThreadLineage,
   // Informational provenance only; ownership and cancellation follow lineage.
   launchedFrom: Schema.optional(OrchestrationV2IndependentLaunchSource),
+  pluginOwner: Schema.optional(PluginThreadOwner),
   pluginBrief: Schema.optional(OrchestrationV2PluginBrief),
   pluginBriefMessageId: Schema.optional(MessageId),
   forkedFrom: Schema.NullOr(
@@ -2053,6 +2055,7 @@ export const OrchestrationV2ThreadShell = Schema.Struct({
   lineage: OrchestrationV2AppThreadLineage,
   // Informational provenance only; ownership and cancellation follow lineage.
   launchedFrom: Schema.optional(OrchestrationV2IndependentLaunchSource),
+  pluginOwner: Schema.optional(PluginThreadOwner),
   forkedFrom: Schema.NullOr(OrchestrationV2AppThread.fields.forkedFrom),
   activeProviderThreadId: Schema.NullOr(ProviderThreadId),
   historyOrigin: Schema.optional(OrchestrationV2ThreadHistoryOrigin),
@@ -3509,7 +3512,15 @@ const OrchestrationV2InternalCommand = Schema.Union([
 ]);
 export type OrchestrationV2InternalCommand = typeof OrchestrationV2InternalCommand.Type;
 
-export type OrchestrationV2ServerCommand = OrchestrationV2Command | OrchestrationV2InternalCommand;
+export type OrchestrationV2ServerCommand =
+  | Exclude<OrchestrationV2Command, { readonly type: "thread.create" | "thread.metadata.update" }>
+  | (Extract<
+      OrchestrationV2Command,
+      { readonly type: "thread.create" | "thread.metadata.update" }
+    > & {
+      readonly pluginOwner?: PluginThreadOwner;
+    })
+  | OrchestrationV2InternalCommand;
 
 export const ORCHESTRATION_V2_WS_METHODS = {
   dispatchCommand: "orchestration.dispatchCommand",

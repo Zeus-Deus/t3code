@@ -284,11 +284,13 @@ it.effect("does not inherit a pending or consumed plugin brief into a fork", () 
         thread: {
           ...source.thread,
           pluginBrief: { pluginName: "Coordinator", text: "Coordinate Shelf." },
+          pluginOwner: { installationId: "plugin", treeId: "projects" },
           pluginBriefMessageId,
         },
       };
       const result = yield* planFork(sourceRun, sourceProjection);
       assert.isUndefined(result.targetThread.pluginBrief);
+      assert.isUndefined(result.targetThread.pluginOwner);
       assert.isUndefined(result.targetThread.pluginBriefMessageId);
     }
   }),

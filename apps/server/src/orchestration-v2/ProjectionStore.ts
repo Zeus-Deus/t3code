@@ -1468,6 +1468,9 @@ export function threadShellFromProjection(
       : { activeOrderKey: projection.thread.activeOrderKey }),
     lineage: projection.thread.lineage,
     forkedFrom: projection.thread.forkedFrom,
+    ...(projection.thread.pluginOwner === undefined
+      ? {}
+      : { pluginOwner: projection.thread.pluginOwner }),
     ...(projection.thread.launchedFrom === undefined
       ? {}
       : { launchedFrom: projection.thread.launchedFrom }),
@@ -1753,6 +1756,9 @@ function shellFromState(input: {
       : { activeOrderKey: input.state.thread.activeOrderKey }),
     lineage: input.state.thread.lineage,
     forkedFrom: input.state.thread.forkedFrom,
+    ...(input.state.thread.pluginOwner === undefined
+      ? {}
+      : { pluginOwner: input.state.thread.pluginOwner }),
     ...(input.state.thread.launchedFrom === undefined
       ? {}
       : { launchedFrom: input.state.thread.launchedFrom }),

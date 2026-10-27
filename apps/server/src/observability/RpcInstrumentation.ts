@@ -17,6 +17,7 @@ const RPC_AGGREGATES = {
   [WS_METHODS.pluginsRefresh]: "plugins",
   [WS_METHODS.pluginsDiscardPendingUpdate]: "plugins",
   [WS_METHODS.pluginsConsent]: "plugins",
+  [WS_METHODS.pluginsGrantProject]: "plugins",
   [WS_METHODS.pluginsSetEnabled]: "plugins",
   [WS_METHODS.pluginsRemove]: "plugins",
   [WS_METHODS.pluginsUpdateSettings]: "plugins",

@@ -5,6 +5,8 @@ import * as NodeSocket from "@effect/platform-node/NodeSocket";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it, vi } from "@effect/vitest";
 import {
+  AuthAccessWriteScope,
+  AuthTerminalOperateScope,
   AuthSessionId,
   WS_METHODS,
   WsRpcGroup,
@@ -24,6 +26,7 @@ import {
   type ApplicationStoredEvent,
   type OrchestrationV2Run,
   type OrchestrationV2ThreadShell,
+  type OrchestrationV2ServerCommand,
   type OrchestrationV2StoredEvent,
   type PluginManifest,
   type PluginInstallation,
@@ -58,6 +61,7 @@ import { DispatchModeLimit } from "../orchestration-v2/DispatchModeLimit.ts";
 import * as Database from "./PluginDatabase.ts";
 import * as Sqlite from "../persistence/Sqlite.ts";
 import * as Receipts from "./PluginReceipts.ts";
+import * as CoreReceipts from "../persistence/OrchestrationCommandReceipts.ts";
 import * as Store from "./PluginStore.ts";
 import * as Service from "./PluginService.ts";
 import * as Host from "./PluginHost.ts";
@@ -77,7 +81,7 @@ import * as Secrets from "../auth/ServerSecretStore.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as RpcHandlers from "./PluginRpcHandlers.ts";
 import { rpcInstrumentationLayer } from "../observability/RpcInstrumentation.ts";
-import type { PluginActor } from "./PluginAuthority.ts";
+import { pluginPermissionDenied, type PluginActor } from "./PluginAuthority.ts";
 
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const projectId = ProjectId.make("project:plugin-test");
@@ -178,6 +182,8 @@ const makeFixture = Effect.fn("PluginServiceTest.fixture")(function* (realWorker
   let afterUpdate: (() => Effect.Effect<void>) | undefined;
   let beforeUpdate: (() => Effect.Effect<void>) | undefined;
   let beforeRead: (() => Effect.Effect<void>) | undefined;
+  let projectExists = true;
+  const lifecycleCommands: OrchestrationV2ServerCommand[] = [];
   const shellReads: Array<string> = [];
   const metadataReads: Array<ThreadId> = [];
   let metadataReadFailure: ThreadId | undefined;
@@ -216,6 +222,43 @@ const makeFixture = Effect.fn("PluginServiceTest.fixture")(function* (realWorker
     streamApplicationEvents: (input) => live(input),
   });
   const domainLayer = Layer.mock(Threads.ThreadManagementService)({
+    dispatchAuthorized: (command, authorize) =>
+      Effect.gen(function* () {
+        if (!(yield* authorize)) return null;
+        const current = threadShells.get(command.threadId) ?? shell;
+        threadShells.set(
+          command.threadId,
+          command.type === "thread.unarchive"
+            ? { ...current, archivedAt: null }
+            : {
+                ...current,
+                ...(command.pluginOwner === undefined ? {} : { pluginOwner: command.pluginOwner }),
+              },
+        );
+        lifecycleCommands.push(command);
+        return { sequence: 1, storedEvents: [] };
+      }),
+    getThreadRecords: (id) =>
+      Effect.sync(() => ({
+        thread: { ...(threadShells.get(id) ?? shell), lastVisitedAt: null },
+        runs: [],
+        messages: [],
+        turnItems: [],
+        attempts: [],
+        nodes: [],
+        subagents: [],
+        providerSessions: [],
+        providerThreads: [],
+        providerTurns: [],
+        runtimeRequests: [],
+        plans: [],
+        checkpointScopes: [],
+        checkpoints: [],
+        contextHandoffs: [],
+        contextTransfers: [],
+        visibleTurnItems: [],
+        updatedAt: shell.updatedAt,
+      })),
     getThreadMetadata: (id) =>
       Effect.gen(function* () {
         const before = beforeMetadata;
@@ -369,17 +412,19 @@ const makeFixture = Effect.fn("PluginServiceTest.fixture")(function* (realWorker
     ),
     Layer.provide(
       Layer.mock(Projects.ProjectService)({
-        getShell: () =>
+        getShell: (id) =>
           Effect.succeed(
-            Option.some({
-              id: projectId,
-              title: "Test",
-              workspaceRoot: directory,
-              defaultModelSelection: shell.modelSelection,
-              scripts: [],
-              createdAt: stamp,
-              updatedAt: stamp,
-            }),
+            projectExists
+              ? Option.some({
+                  id,
+                  title: "Test",
+                  workspaceRoot: directory,
+                  defaultModelSelection: shell.modelSelection,
+                  scripts: [],
+                  createdAt: stamp,
+                  updatedAt: stamp,
+                })
+              : Option.none(),
           ),
       }),
     ),
@@ -420,6 +465,9 @@ const makeFixture = Effect.fn("PluginServiceTest.fixture")(function* (realWorker
     directory,
     install,
     enable,
+    setProjectExists: (value: boolean) => {
+      projectExists = value;
+    },
     calls,
     commands,
     launches,
@@ -437,6 +485,7 @@ const makeFixture = Effect.fn("PluginServiceTest.fixture")(function* (realWorker
       metadataReadFailure = id;
     },
     threadShells,
+    lifecycleCommands,
     eventLayer,
     domainLayer,
     setLive: (stream: typeof live) => {
@@ -6393,5 +6442,318 @@ it.effect.each([
           topic: "view:board",
         });
       expect(f.shellReads).toEqual([]);
+    }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect(
+  "grants only another project without approving pending bytes or restarting a generation",
+  () =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      const enabled = yield* f.enable();
+      const extra = ProjectId.make("project:extra");
+      yield* f.plugins.updateSettings({
+        installationId: enabled.installationId,
+        values: { auto: true, token: "fixture-secret" },
+      });
+      yield* f.fs.writeFileString(
+        f.path.join(f.directory, "plugin.mjs"),
+        "export function activate() { /* pending revision */ }\n",
+      );
+      yield* f.plugins.refresh({ installationId: enabled.installationId });
+      const before = (yield* f.plugins.list()).installations[0]!;
+      expect(before.pendingUpdate).toBeDefined();
+      expect(before.pendingUpdate?.digest).not.toBe(before.digest);
+      const beforeRecord = (yield* f.store.read).installations[0]!;
+      const manager: PluginActor = {
+        ...actor,
+        scopes: [AuthAccessWriteScope, AuthTerminalOperateScope],
+      };
+      const result = yield* f.plugins.grantProject(
+        {
+          installationId: enabled.installationId,
+          generation: enabled.generation,
+          projectId: extra,
+        },
+        manager,
+      );
+      expect(result).toEqual({
+        ...before,
+        grants: { ...before.grants, projectIds: [...before.grants.projectIds, extra] },
+      });
+      const snapshot = yield* f.store.read;
+      expect(snapshot.installations[0]).toEqual({
+        ...beforeRecord,
+        installation: { ...beforeRecord.installation, grants: result.grants },
+      });
+      expect(
+        yield* f.plugins.grantProject(
+          {
+            installationId: enabled.installationId,
+            generation: enabled.generation,
+            projectId: extra,
+          },
+          manager,
+        ),
+      ).toEqual(result);
+      expect(yield* f.store.read).toBe(snapshot);
+      expect(f.stopped).toEqual([enabled.installationId]);
+      expect(
+        (yield* f.plugins
+          .grantProject(
+            { installationId: enabled.installationId, generation: "stale", projectId: extra },
+            manager,
+          )
+          .pipe(Effect.flip)).reason,
+      ).toBe("stale_generation");
+      expect(
+        (yield* f.plugins
+          .grantProject(
+            {
+              installationId: enabled.installationId,
+              generation: enabled.generation,
+              projectId: extra,
+            },
+            actor,
+          )
+          .pipe(Effect.flip)).reason,
+      ).toBe("permission_denied");
+    }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect(
+  "rechecks management authority after waiting and can authorize without holding the plugin store lock",
+  () =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      const enabled = yield* f.enable();
+      const before = yield* f.store.read;
+      const entered = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const blocker = yield* f.store
+        .update((state) =>
+          Effect.gen(function* () {
+            yield* Deferred.succeed(entered, undefined);
+            yield* Deferred.await(release);
+            return [undefined, state] as const;
+          }),
+        )
+        .pipe(Effect.forkChild);
+      yield* Deferred.await(entered);
+      let revoked = false;
+      const manager: PluginActor = {
+        ...actor,
+        scopes: [AuthAccessWriteScope, AuthTerminalOperateScope],
+        authorize: () =>
+          f.store.read.pipe(
+            Effect.mapError(() => pluginPermissionDenied()),
+            Effect.andThen(() => (revoked ? Effect.fail(pluginPermissionDenied()) : Effect.void)),
+          ),
+      };
+      const call = yield* f.plugins
+        .grantProject(
+          {
+            installationId: enabled.installationId,
+            generation: enabled.generation,
+            projectId: ProjectId.make("extra"),
+          },
+          manager,
+        )
+        .pipe(Effect.result, Effect.forkChild);
+      revoked = true;
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(blocker);
+      expect(yield* Fiber.join(call)).toMatchObject({
+        _tag: "Failure",
+        failure: { reason: "permission_denied" },
+      });
+      expect(yield* f.store.read).toBe(before);
+      revoked = false;
+      expect(
+        (yield* f.plugins.grantProject(
+          {
+            installationId: enabled.installationId,
+            generation: enabled.generation,
+            projectId: ProjectId.make("extra"),
+          },
+          manager,
+        )).grants.projectIds,
+      ).toContain("extra");
+    }).pipe(Effect.provide(base()), Effect.scoped),
+);
+it.effect("rejects a project grant when its generation changes before commit", () =>
+  Effect.gen(function* () {
+    const f = yield* fixture;
+    const enabled = yield* f.enable();
+    const manager: PluginActor = {
+      ...actor,
+      scopes: [AuthAccessWriteScope, AuthTerminalOperateScope],
+    };
+    f.beforeUpdate(() =>
+      f.store
+        .update((state) =>
+          Effect.succeed([
+            undefined,
+            {
+              ...state,
+              installations: state.installations.map((record) => ({
+                ...record,
+                installation: { ...record.installation, generation: "new" },
+              })),
+            },
+          ] as const),
+        )
+        .pipe(Effect.orDie),
+    );
+    expect(
+      yield* f.plugins
+        .grantProject(
+          {
+            installationId: enabled.installationId,
+            generation: enabled.generation,
+            projectId: ProjectId.make("extra"),
+          },
+          manager,
+        )
+        .pipe(Effect.result),
+    ).toMatchObject({ _tag: "Failure", failure: { reason: "stale_generation" } });
+    expect((yield* f.plugins.list()).installations[0]?.grants.projectIds).toEqual([projectId]);
+  }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect.each(["action", "view", "status", "agent"] as const)(
+  "only a host-verified client action can restore through %s execution",
+  (kind) =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      const declared = {
+        ...manifest,
+        optionalCapabilities: ["ui.native-trees", "ui.native-tree-projects"],
+        nativeTrees: [{ id: "projects", title: "Projects" }],
+      };
+      yield* f.fs.writeFileString(
+        f.path.join(f.directory, "t3-plugin.json"),
+        yield* encodeJson(declared),
+      );
+      const installed = yield* f.install();
+      const enabled = yield* f.plugins.consent({
+        installationId: installed.installationId,
+        digest: installed.digest,
+        grants: {
+          capabilities: ["ui", "threads.read", "ui.native-trees", "ui.native-tree-projects"],
+          projectIds: [projectId],
+        },
+      });
+      const receipts = Context.get(f.context, Receipts.PluginReceipts);
+      const key = "creation:restorable";
+      yield* receipts.reserve({
+        key,
+        installationId: enabled.installationId,
+        generation: "older",
+        requestDigest: "creation",
+      });
+      const core = Context.get(
+        yield* Layer.build(CoreReceipts.layer),
+        CoreReceipts.OrchestrationCommandReceiptRepository,
+      );
+      yield* core.upsert({
+        commandId: CommandId.make(key),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        commandType: "thread.create",
+        acceptedAt: stamp,
+        resultSequence: 1,
+        status: "accepted",
+        error: null,
+      });
+      f.threadShells.set(threadId, { ...shell, archivedAt: at });
+      f.setHandler((_invocation, host) =>
+        host("threads.unarchive", { threadId, clientAction: true }).pipe(
+          Effect.map((data) => ({ data })),
+        ),
+      );
+      const result = yield* f.plugins
+        .invoke(
+          {
+            installationId: enabled.installationId,
+            generation: enabled.generation,
+            handler:
+              kind === "view"
+                ? "view:board:restore"
+                : kind === "status"
+                  ? "status:lane"
+                  : "action:review",
+            operationId: "restore",
+            context: { threadId },
+            input: { clientAction: true },
+          },
+          { ...actor, source: kind === "agent" ? "agent" : "client" },
+        )
+        .pipe(Effect.result);
+      if (kind === "action") {
+        expect(result).toMatchObject({ _tag: "Success", success: { data: { threadId } } });
+        expect(f.threadShells.get(threadId)?.archivedAt).toBeNull();
+        expect(f.lifecycleCommands).toHaveLength(1);
+      } else {
+        expect(result).toMatchObject({ _tag: "Failure", failure: { reason: "permission_denied" } });
+        expect(f.threadShells.get(threadId)?.archivedAt).toEqual(at);
+        expect(f.lifecycleCommands).toEqual([]);
+      }
+    }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect.each(["missing-project", "disabled", "unconsented"] as const)(
+  "does not expand grants for %s installations or targets",
+  (reason) =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      const enabled = yield* f.enable();
+      if (reason === "missing-project") f.setProjectExists(false);
+      else
+        yield* f.store.update((state) =>
+          Effect.succeed([
+            undefined,
+            {
+              ...state,
+              installations: state.installations.map((record) => ({
+                ...record,
+                installation: {
+                  ...record.installation,
+                  ...(reason === "disabled"
+                    ? { enabled: false }
+                    : { consentedDigest: "f".repeat(64) }),
+                },
+              })),
+            },
+          ] as const),
+        );
+      const before = yield* f.store.read;
+      const manager: PluginActor = {
+        ...actor,
+        scopes: [AuthAccessWriteScope, AuthTerminalOperateScope],
+      };
+      expect(
+        yield* f.plugins
+          .grantProject(
+            {
+              installationId: enabled.installationId,
+              generation: enabled.generation,
+              projectId: ProjectId.make("extra"),
+            },
+            manager,
+          )
+          .pipe(Effect.result),
+      ).toMatchObject({
+        _tag: "Failure",
+        failure: {
+          reason:
+            reason === "missing-project"
+              ? "permission_denied"
+              : reason === "disabled"
+                ? "disabled"
+                : "needs_consent",
+        },
+      });
+      expect(yield* f.store.read).toBe(before);
     }).pipe(Effect.provide(base()), Effect.scoped),
 );

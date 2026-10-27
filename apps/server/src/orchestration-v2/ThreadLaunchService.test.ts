@@ -59,6 +59,7 @@ import * as EffectOutbox from "./EffectOutbox.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ThreadLaunch from "./ThreadLaunchService.ts";
+import * as ThreadLifecycle from "./ThreadLifecycleService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as ThreadManagement from "./ThreadManagementService.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
@@ -2372,10 +2373,19 @@ it.effect(
         ...launchInput({ command: "brief:create", thread: "brief:thread" }),
         title: "Shelf",
         pluginBrief,
+        pluginOwner: { installationId: "plugin", treeId: "projects" },
         createdBy: "system",
         creationSource: "server",
       });
       assert.deepEqual(created.projection.thread.pluginBrief, pluginBrief);
+      assert.deepEqual(created.projection.thread.pluginOwner, {
+        installationId: "plugin",
+        treeId: "projects",
+      });
+      assert.deepEqual(
+        (yield* threads.getThreadShell(created.threadId))?.pluginOwner,
+        created.projection.thread.pluginOwner,
+      );
       assert.deepEqual(created.projection.messages, []);
       assert.deepEqual(created.projection.runs, []);
       const stored = yield* threads
@@ -2462,3 +2472,122 @@ it.effect("leaves the brief pending when queued human messages are edited or can
     assert.deepEqual(projection.thread.pluginBrief, pluginBrief);
   }).pipe(Effect.provide(harness.layer), Effect.scoped);
 });
+
+it.effect(
+  "persists adopted ownership through metadata events and replay without consuming the brief",
+  () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const launch = yield* ThreadLaunch.ThreadLaunchService;
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const brief = { pluginName: "Coordinator", text: "Coordinate this project." };
+      const created = yield* launch.launch({
+        ...launchInput({ command: "owner:create", thread: "owner:legacy" }),
+        pluginBrief: brief,
+      });
+      const pluginOwner = { installationId: "plugin", treeId: "projects" };
+      const command = {
+        type: "thread.metadata.update" as const,
+        commandId: CommandId.make("owner:adopt"),
+        threadId: created.threadId,
+        pluginOwner,
+      };
+      yield* threads.dispatchAuthorized(command, Effect.succeed(true));
+      assert.isNull(
+        yield* threads.dispatchAuthorized(
+          { ...command, commandId: CommandId.make("owner:again") },
+          Effect.succeed(false),
+        ),
+      );
+      const current = yield* threads.getThreadProjection(created.threadId);
+      assert.deepEqual(current.thread.pluginOwner, pluginOwner);
+      assert.deepEqual(
+        (yield* threads.getThreadMetadata(created.threadId))?.pluginOwner,
+        pluginOwner,
+      );
+      assert.deepEqual(current.thread.pluginBrief, brief);
+      assert.isUndefined(current.thread.pluginBriefMessageId);
+      assert.deepEqual(current.messages, []);
+      assert.deepEqual(current.runs, []);
+      const stored = yield* threads
+        .streamStoredEventsFrom({ threadId: created.threadId })
+        .pipe(Stream.take(2), Stream.runCollect);
+      const replayed = yield* Effect.gen(function* () {
+        const projections = yield* ProjectionStore.ProjectionStoreV2;
+        for (const entry of stored) yield* projections.apply(entry.event);
+        return yield* projections.getThreadShell(created.threadId);
+      }).pipe(Effect.provide(ProjectionStore.layerMemory));
+      assert.deepEqual(replayed?.pluginOwner, pluginOwner);
+      assert.deepEqual((yield* threads.getThreadShell(created.threadId))?.pluginOwner, pluginOwner);
+      const refused = yield* threads
+        .dispatch({
+          ...command,
+          commandId: CommandId.make("owner:reassign"),
+          pluginOwner: { installationId: "other", treeId: "projects" },
+        })
+        .pipe(Effect.result);
+      assert.equal(refused._tag, "Failure");
+    }).pipe(Effect.provide(harness.layer), Effect.scoped);
+  },
+);
+it.effect(
+  "unarchives through lifecycle without altering snooze or settle metadata and skips live repeats",
+  () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const launch = yield* ThreadLaunch.ThreadLaunchService;
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const lifecycle = yield* ThreadLifecycle.ThreadLifecycleService;
+      const created = yield* launch.launch(
+        launchInput({ command: "owner:quiet-create", thread: "owner:quiet" }),
+      );
+      yield* threads.dispatch({
+        type: "thread.settle",
+        commandId: CommandId.make("owner:settle"),
+        threadId: created.threadId,
+      });
+      yield* threads.dispatch({
+        type: "thread.snooze",
+        commandId: CommandId.make("owner:snooze"),
+        threadId: created.threadId,
+        snoozedUntil: "2050-01-01T00:00:00.000Z",
+      });
+      yield* threads.dispatch({
+        type: "thread.archive",
+        commandId: CommandId.make("owner:archive"),
+        threadId: created.threadId,
+      });
+      const before = (yield* threads.getThreadProjection(created.threadId)).thread;
+      const authorize = threads.getThreadShell(created.threadId).pipe(
+        Effect.map((thread) => thread?.archivedAt !== null),
+        Effect.mapError(
+          (cause) =>
+            new ThreadLifecycle.ThreadLifecycleError({
+              operation: "unarchive",
+              threadId: created.threadId,
+              cause,
+            }),
+        ),
+      );
+      yield* lifecycle.unarchive({
+        commandId: CommandId.make("owner:unarchive"),
+        threadId: created.threadId,
+        authorize,
+      });
+      const after = (yield* threads.getThreadProjection(created.threadId)).thread;
+      assert.isNull(after.archivedAt);
+      assert.deepEqual(after.settledAt, before.settledAt);
+      assert.deepEqual(after.snoozedUntil, before.snoozedUntil);
+      assert.deepEqual(after.snoozedAt, before.snoozedAt);
+      yield* lifecycle.unarchive({
+        commandId: CommandId.make("owner:unarchive-again"),
+        threadId: created.threadId,
+        authorize,
+      });
+      assert.deepEqual((yield* threads.getThreadProjection(created.threadId)).thread, after);
+    }).pipe(
+      Effect.provide(ThreadLifecycle.layer.pipe(Layer.provideMerge(harness.layer))),
+      Effect.scoped,
+    );
+  },
+);

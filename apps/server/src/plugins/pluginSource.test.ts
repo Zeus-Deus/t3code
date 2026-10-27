@@ -337,3 +337,43 @@ it.effect(
       }),
     ),
 );
+
+it.effect(
+  "requires a declared create action and project-tree capability for project contributions",
+  () =>
+    provide(
+      Effect.gen(function* () {
+        const input = yield* fixture;
+        const write = (capabilities: ReadonlyArray<string>, actionId: string) =>
+          input.fs.writeFileString(
+            NodePath.join(input.directory, "t3-plugin.json"),
+            JSON.stringify({
+              ...manifest,
+              capabilities,
+              actions: [{ id: "new", title: "New project", placements: [] }],
+              nativeTrees: [
+                {
+                  id: "projects",
+                  title: "Projects",
+                  unplaced: "omit",
+                  create: { actionId, title: "New project" },
+                  emptyText: "Start a project.",
+                },
+              ],
+            }),
+          );
+        yield* write(["ui.native-trees"], "new");
+        expect((yield* inspectPluginSource(input.directory).pipe(Effect.flip)).reason).toBe(
+          "invalid_manifest",
+        );
+        yield* write(["ui.native-trees", "ui.native-tree-projects"], "other-plugin-action");
+        expect((yield* inspectPluginSource(input.directory).pipe(Effect.flip)).reason).toBe(
+          "invalid_manifest",
+        );
+        yield* write(["ui.native-trees", "ui.native-tree-projects"], "new");
+        expect(
+          (yield* inspectPluginSource(input.directory)).manifest.nativeTrees?.[0]?.create?.actionId,
+        ).toBe("new");
+      }),
+    ),
+);

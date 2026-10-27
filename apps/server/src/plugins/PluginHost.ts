@@ -1,4 +1,6 @@
 import {
+  AuthOrchestrationOperateScope,
+  PluginThreadAdoptInput,
   CommandId,
   MessageId,
   PluginError,
@@ -88,6 +90,7 @@ const threadMetadata = (thread: OrchestrationV2ThreadShell) =>
     branch: thread.branch?.slice(0, 256) ?? null,
     worktreePath: thread.worktreePath?.slice(0, 4_096) ?? null,
     lineage: thread.lineage,
+    ...(thread.pluginOwner === undefined ? {} : { pluginOwner: thread.pluginOwner }),
     ...(thread.launchedFrom === undefined ? {} : { launchedFrom: thread.launchedFrom }),
   }) satisfies PluginThreadMetadata;
 
@@ -104,6 +107,7 @@ export interface PluginHostInvocation {
   readonly operationId: string;
   readonly callId: number;
   readonly event?: boolean;
+  readonly clientAction?: boolean;
 }
 
 export class PluginHost extends Context.Service<
@@ -614,9 +618,95 @@ const make = Effect.gen(function* () {
           }),
         );
       }
+      if (method === "threads.adopt" || method === "threads.unarchive") {
+        const adoption =
+          method === "threads.adopt" ? yield* decode(PluginThreadAdoptInput, input) : undefined;
+        const request = adoption ?? (yield* decode(ThreadRead, input));
+        if (
+          method === "threads.unarchive" &&
+          (actor.source !== "client" ||
+            invocation.clientAction !== true ||
+            invocation.event === true)
+        )
+          return yield* pluginPermissionDenied();
+        const treeId = adoption?.owner.slice("tree:".length);
+        const authorize = Effect.fn("PluginHost.authorizeOwnedThread")(function* () {
+          const current = yield* readCurrent();
+          const shell = yield* target(request.threadId);
+          if (
+            !actor.scopes.includes(AuthOrchestrationOperateScope) ||
+            !pluginCapabilityAllowed(
+              current.installation,
+              actor,
+              "ui.native-tree-projects",
+              shell.projectId,
+            ) ||
+            !pluginTargetWithinCeiling(actor, shell) ||
+            (treeId !== undefined &&
+              !(current.installation.manifest.nativeTrees ?? []).some(
+                (tree) => tree.id === treeId,
+              )) ||
+            (shell.pluginOwner !== undefined &&
+              (shell.pluginOwner.installationId !== invocation.installationId ||
+                (treeId !== undefined && shell.pluginOwner.treeId !== treeId))) ||
+            !(yield* receipts.createdThread({
+              installationId: invocation.installationId,
+              threadId: shell.id,
+            }))
+          )
+            return yield* pluginPermissionDenied();
+          yield* actor.authorize?.() ?? Effect.void;
+          if (!store.isCurrent(current.state)) return yield* pluginPermissionDenied();
+          return shell;
+        });
+        yield* authorize();
+        const commandId = CommandId.make(
+          `plugin:${invocation.installationId}:${yield* digest(yield* encodeJson([actor.principalId, invocation.operationId, method, request]).pipe(Effect.mapError(() => pluginPermissionDenied())))}`,
+        );
+        if (treeId !== undefined) {
+          yield* threads
+            .dispatchAuthorized(
+              {
+                type: "thread.metadata.update",
+                commandId,
+                threadId: request.threadId,
+                pluginOwner: { installationId: invocation.installationId, treeId },
+              },
+              authorize().pipe(Effect.map((shell) => shell.pluginOwner === undefined)),
+            )
+            .pipe(
+              Effect.mapError((error) =>
+                isPluginError(error)
+                  ? error
+                  : new PluginError({
+                      reason: "operation_failed",
+                      message: "The plugin could not adopt the thread.",
+                    }),
+              ),
+            );
+        } else {
+          yield* threads.dispatchAuthorized({ type: "thread.unarchive", commandId, threadId: request.threadId },
+            authorize().pipe(Effect.map((shell) => shell.archivedAt !== null)),
+          ).pipe(Effect.mapError((error) => isPluginError(error) ? error : new PluginError({ reason: "operation_failed", message: "The plugin could not unarchive the thread." })));
+        }
+        yield* authorize();
+        return { threadId: request.threadId };
+      }
       if (method === "threads.create") {
         const request = yield* decode(PluginThreadCreateInput, input);
         yield* requireCapability("threads.create", request.projectId);
+        const treeId = request.owner?.slice("tree:".length);
+        if (
+          treeId !== undefined &&
+          (!pluginCapabilityAllowed(
+            installation,
+            actor,
+            "ui.native-tree-projects",
+            request.projectId,
+          ) ||
+            !(installation.manifest.nativeTrees ?? []).some((tree) => tree.id === treeId))
+        )
+          return yield* pluginPermissionDenied();
         if (request.brief !== undefined)
           yield* requireCapability("ui.native-tree-conversations", request.projectId);
         const sourceThreadId =
@@ -701,6 +791,9 @@ const make = Effect.gen(function* () {
                 threadId: ThreadId.make(`${commandKey}:thread`),
                 projectId: request.projectId,
                 title: request.title ?? "Plugin thread",
+                ...(treeId === undefined
+                  ? {}
+                  : { pluginOwner: { installationId: invocation.installationId, treeId } }),
                 modelSelection,
                 runtimeMode,
                 interactionMode,
@@ -734,6 +827,14 @@ const make = Effect.gen(function* () {
           Effect.fn("PluginHost.authorizeCreate")(function* (current) {
             if (
               !pluginCapabilityAllowed(current, actor, "threads.create", request.projectId) ||
+              (treeId !== undefined &&
+                (!pluginCapabilityAllowed(
+                  current,
+                  actor,
+                  "ui.native-tree-projects",
+                  request.projectId,
+                ) ||
+                  !(current.manifest.nativeTrees ?? []).some((tree) => tree.id === treeId))) ||
               (request.brief !== undefined &&
                 !pluginCapabilityAllowed(
                   current,

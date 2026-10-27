@@ -441,6 +441,7 @@ it("does not pass a pending or consumed plugin brief to delegated or native suba
       parentThread: {
         ...makeParentThread(),
         pluginBrief: { pluginName: "Coordinator", text: "Coordinate Shelf." },
+        pluginOwner: { installationId: "plugin", treeId: "projects" },
         pluginBriefMessageId,
       },
       childThreadId,
@@ -454,6 +455,7 @@ it("does not pass a pending or consumed plugin brief to delegated or native suba
       creationSource: "mcp",
     });
     assert.isUndefined(child.pluginBrief);
+    assert.isUndefined(child.pluginOwner);
     assert.isUndefined(child.pluginBriefMessageId);
   }
 });

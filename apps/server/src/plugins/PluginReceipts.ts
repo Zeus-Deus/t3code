@@ -25,6 +25,10 @@ interface Identity {
 export class PluginReceipts extends Context.Service<
   PluginReceipts,
   {
+    readonly createdThread: (input: {
+      readonly installationId: string;
+      readonly threadId: ThreadId;
+    }) => Effect.Effect<boolean, PluginError>;
     readonly reserve: (
       input: Identity & {
         readonly key: string;
@@ -192,7 +196,19 @@ const make = Effect.gen(function* () {
     // Core history still owns these effects after plugin data is removed.
     yield* sql`UPDATE plugin_operation_receipts SET result_json=NULL WHERE installation_id=${installationId} AND result_json IS NOT NULL`;
   }, Effect.mapError(failed));
+  const createdThread = Effect.fn("PluginReceipts.createdThread")(function* (input: {
+    readonly installationId: string;
+    readonly threadId: ThreadId;
+  }) {
+    const rows = yield* sql`SELECT 1 FROM orchestration_command_receipts AS core
+      INNER JOIN plugin_operation_receipts AS plugin ON plugin.operation_key=core.command_id
+      WHERE core.aggregate_kind='thread' AND core.aggregate_id=${input.threadId}
+        AND core.command_type='thread.create' AND core.status='accepted'
+        AND plugin.installation_id=${input.installationId} LIMIT 1`;
+    return rows.length > 0;
+  }, Effect.mapError(failed));
   return PluginReceipts.of({
+    createdThread,
     reserve,
     releaseUncommitted,
     complete,

@@ -8,6 +8,7 @@ import {
   AuthSettingsWriteScope,
   DEFAULT_SERVER_SETTINGS,
   ProviderInstanceId,
+  ProjectId,
   ThreadId,
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
@@ -380,6 +381,7 @@ describe("community plugin RPC scope middleware", () => {
   const tested = [
     WS_METHODS.pluginsList,
     WS_METHODS.pluginsInstall,
+    WS_METHODS.pluginsGrantProject,
     WS_METHODS.pluginsUpdateSettings,
     WS_METHODS.pluginsInvoke,
   ] as const;
@@ -410,6 +412,11 @@ describe("community plugin RPC scope middleware", () => {
                   handled++;
                 }).pipe(Effect.andThen(Effect.never)),
               ),
+              group.toLayerHandler(WS_METHODS.pluginsGrantProject, () =>
+                Effect.sync(() => {
+                  handled++;
+                }).pipe(Effect.andThen(Effect.never)),
+              ),
               group.toLayerHandler(WS_METHODS.pluginsUpdateSettings, () =>
                 Effect.sync(() => {
                   handled++;
@@ -435,6 +442,13 @@ describe("community plugin RPC scope middleware", () => {
             values: { token: "private" },
           }).pipe(Effect.flip),
         ).toMatchObject({ _tag: "EnvironmentAuthorizationError", requiredPermission: missing });
+        expect(
+          yield* client[WS_METHODS.pluginsGrantProject]({
+            installationId: "plugin",
+            generation: "current",
+            projectId: ProjectId.make("project"),
+          }).pipe(Effect.flip),
+        ).toMatchObject({ _tag: "EnvironmentAuthorizationError", requiredPermission: missing });
         expect(handled).toBe(0);
       }).pipe(Effect.scoped),
   );
@@ -449,6 +463,7 @@ describe("community plugin RPC scope middleware", () => {
               Effect.succeed({ installations: [] }),
             ),
             group.toLayerHandler(WS_METHODS.pluginsInstall, () => Effect.never),
+            group.toLayerHandler(WS_METHODS.pluginsGrantProject, () => Effect.never),
             group.toLayerHandler(WS_METHODS.pluginsUpdateSettings, () => Effect.never),
             group.toLayerHandler(WS_METHODS.pluginsInvoke, () =>
               Effect.sync(() => {
@@ -499,6 +514,7 @@ describe("community plugin RPC scope middleware", () => {
                 ),
               ),
             ),
+            group.toLayerHandler(WS_METHODS.pluginsGrantProject, () => Effect.never),
             group.toLayerHandler(WS_METHODS.pluginsUpdateSettings, () => Effect.never),
             group.toLayerHandler(WS_METHODS.pluginsInvoke, () => Effect.succeed({})),
             RpcAuthorization.layer([AuthAccessWriteScope, AuthTerminalOperateScope]),

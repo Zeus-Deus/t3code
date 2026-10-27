@@ -4,6 +4,7 @@ import * as NodePath from "node:path";
 import { expect, it } from "@effect/vitest";
 import { CommandId, ThreadId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Context from "effect/Context";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as FileSystem from "effect/FileSystem";
@@ -119,6 +120,26 @@ it.effect(
       yield* Effect.gen(function* () {
         const receipts = yield* Receipts.PluginReceipts;
         yield* receipts.reserve(input);
+        const core = Context.get(
+          yield* Layer.build(CoreReceipts.layer),
+          CoreReceipts.OrchestrationCommandReceiptRepository,
+        );
+        yield* core.upsert({
+          commandId: CommandId.make(input.key),
+          aggregateKind: "thread",
+          aggregateId: ThreadId.make("retained"),
+          commandType: "thread.create",
+          acceptedAt: "2026-10-27T00:00:00.000Z",
+          resultSequence: 1,
+          status: "accepted",
+          error: null,
+        });
+        expect(
+          yield* receipts.createdThread({
+            installationId: "plugin",
+            threadId: ThreadId.make("retained"),
+          }),
+        ).toBe(true);
         yield* receipts.complete(input.key, { threadId: "retained" });
         yield* receipts.reserve({ ...input, key: "second" });
         yield* receipts.reserve({ ...input, key: "third" });
@@ -128,6 +149,18 @@ it.effect(
         const receipts = yield* Receipts.PluginReceipts;
         const current = { ...input, generation: "two" };
         yield* receipts.prune("plugin", "two");
+        expect(
+          yield* receipts.createdThread({
+            installationId: "plugin",
+            threadId: ThreadId.make("retained"),
+          }),
+        ).toBe(true);
+        expect(
+          yield* receipts.createdThread({
+            installationId: "other",
+            threadId: ThreadId.make("retained"),
+          }),
+        ).toBe(false);
         expect(yield* receipts.reserve(current)).toEqual({ result: { threadId: "retained" } });
         expect(yield* receipts.delivered({ ...current, runId: "run" })).toBe(true);
         expect(
@@ -344,4 +377,54 @@ it.live.each(["reserved", "transaction", "committed"] as const)(
         });
       }).pipe(Effect.provide(services));
     }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
+);
+
+it.effect("verifies creation provenance from accepted core receipts across generations", () =>
+  Effect.gen(function* () {
+    const receipts = yield* Receipts.PluginReceipts;
+    const core = yield* CoreReceipts.OrchestrationCommandReceiptRepository;
+    const threadId = ThreadId.make("ordinary-id-without-a-plugin-prefix");
+    const input = {
+      installationId: "plugin",
+      generation: "one",
+      key: "creation",
+      requestDigest: "digest",
+    };
+    yield* receipts.reserve(input);
+    yield* receipts.complete(input.key, { threadId });
+    expect(yield* receipts.createdThread({ installationId: "plugin", threadId })).toBe(false);
+    const command = {
+      commandId: CommandId.make(input.key),
+      aggregateKind: "thread" as const,
+      aggregateId: threadId,
+      commandType: "thread.create",
+      acceptedAt: "2026-10-27T00:00:00.000Z",
+      resultSequence: 1,
+      status: "accepted" as const,
+      error: null,
+    };
+    yield* core.upsert({ ...command, status: "rejected" });
+    expect(yield* receipts.createdThread({ installationId: "plugin", threadId })).toBe(false);
+    yield* core.upsert({ ...command, commandType: "message.dispatch" });
+    expect(yield* receipts.createdThread({ installationId: "plugin", threadId })).toBe(false);
+    yield* core.upsert(command);
+    yield* receipts.prune("plugin");
+    expect(yield* receipts.createdThread({ installationId: "plugin", threadId })).toBe(true);
+    expect(yield* receipts.createdThread({ installationId: "other-installation", threadId })).toBe(
+      false,
+    );
+    expect(
+      yield* receipts.createdThread({
+        installationId: "plugin",
+        threadId: ThreadId.make("plugin:plugin:forged:thread"),
+      }),
+    ).toBe(false);
+  }).pipe(
+    Effect.provide(
+      Layer.mergeAll(Receipts.layer, CoreReceipts.layer).pipe(
+        Layer.provideMerge(Sqlite.layerMemory),
+        Layer.provide(NodeServices.layer),
+      ),
+    ),
+  ),
 );
