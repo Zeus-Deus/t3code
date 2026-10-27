@@ -289,3 +289,32 @@ export function usePluginChangeRevision(
   if (revisions === undefined) return undefined;
   return revisions.get(pluginChangeKey(topic)) ?? 0;
 }
+
+/**
+ * Each listed environment's runnable installations, for a control that spans environments. One
+ * whose catalogue this client must not ask for, or has not received, contributes none.
+ */
+const pluginRunnableInstallationsFamily = Atom.family((key: string) =>
+  Atom.make((get): ReadonlyMap<EnvironmentId, ReadonlyArray<PluginInstallation>> => {
+    const installations = new Map<EnvironmentId, ReadonlyArray<PluginInstallation>>();
+    for (const rawEnvironmentId of key.split("\n")) {
+      if (rawEnvironmentId === "") continue;
+      const environmentId = EnvironmentId.make(rawEnvironmentId);
+      const catalogue = readAvailableCatalogue(get, environmentId);
+      const data =
+        catalogue === null ? null : Option.getOrNull(AsyncResult.value(catalogue.result));
+      if (catalogue === null || data === null) continue;
+      installations.set(
+        environmentId,
+        pluginRunnableInstallations({
+          installations: data.installations,
+          executionDisabled: pluginExecutionDisabled(catalogue.capabilities, data),
+        }),
+      );
+    }
+    return installations;
+  }).pipe(Atom.withLabel(`mobile-plugin-runnable-installations:${key}`)),
+);
+
+export const pluginRunnableInstallationsAtom = (environmentIds: ReadonlyArray<EnvironmentId>) =>
+  pluginRunnableInstallationsFamily(environmentIds.join("\n"));

@@ -35,6 +35,17 @@ import { useWorkspaceState } from "../../state/workspace";
 
 import { useIncomingShare } from "../sharing/IncomingShareProvider";
 import { useNewTaskFlow } from "./new-task-flow-provider";
+import {
+  projectDestinationOffers,
+  readProjectDestination,
+  releaseProjectDestination,
+  takeProjectDestination,
+  type ProjectDestination,
+} from "../projects/projectDestination";
+import type { HomeProjectScope } from "../home/homeThreadList";
+import { scopedProjectKey } from "../../lib/scopedEntities";
+import type { ConnectedEnvironmentSummary } from "../../state/remote-runtime-types";
+import { scopeProjectRef } from "@t3tools/client-runtime/environment";
 import { filterProjectScopes, getProjectScopeSelectionTarget } from "./new-task-project-selection";
 import { useSelectWorkspaceDetail } from "../workspace/useSelectWorkspaceDetail";
 
@@ -45,6 +56,8 @@ type NewTaskRouteParams = {
   readonly pr?: string | string[];
   readonly provider?: string | string[];
   readonly model?: string | string[];
+  /** Hands the chosen project to a caller (a plugin tree) instead of opening a draft. */
+  readonly projectDestination?: string | string[];
 };
 
 function deriveProjectEmptyState(catalogState: WorkspaceState): {
@@ -110,6 +123,7 @@ function NewTaskHeader(props: {
   readonly title: string;
   readonly subtitle: string | null;
   readonly canAddProject: boolean;
+  readonly onAddProject: () => void;
   readonly searchText: string;
   readonly onSearchTextChange: (text: string) => void;
 }) {
@@ -133,7 +147,7 @@ function NewTaskHeader(props: {
                 {
                   accessibilityLabel: "Add project",
                   icon: "plus",
-                  onPress: () => navigation.dispatch(StackActions.push("AddProject")),
+                  onPress: props.onAddProject,
                 },
               ]
             : []
@@ -148,6 +162,34 @@ function NewTaskHeader(props: {
   );
 }
 
+/** One row per physical project the destination's environments hold, named by environment. */
+function destinationProjectScopes(
+  destination: ProjectDestination,
+  projects: ReadonlyArray<EnvironmentProject>,
+  serverConfigs: ReturnType<typeof useServerConfigs>,
+  environments: ReadonlyArray<ConnectedEnvironmentSummary>,
+): ReadonlyArray<HomeProjectScope> {
+  const named = destination.environmentIds.length > 1;
+  return projects
+    .filter(
+      (project) =>
+        projectDestinationOffers(destination, project.environmentId) &&
+        !isScratchProject(project, serverConfigs.get(project.environmentId)?.scratchWorkspaceRoot),
+    )
+    .map((project) => {
+      const label = environments.find(
+        (environment) => environment.environmentId === project.environmentId,
+      )?.environmentLabel;
+      return {
+        key: scopedProjectKey(project.environmentId, project.id),
+        title: named && label !== undefined ? `${project.title} · ${label}` : project.title,
+        representative: project,
+        projects: [project],
+        projectRefs: [scopeProjectRef(project.environmentId, project.id)],
+      };
+    });
+}
+
 export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRouteParams | undefined>) {
   const projects = useProjects();
   const [searchText, setSearchText] = useState("");
@@ -158,6 +200,17 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
   const isFocused = useIsFocused();
   const insets = useSafeAreaInsets();
   const { getShare, releaseShareReservation } = useIncomingShare();
+  const destinationParam = route.params?.projectDestination;
+  const destination = readProjectDestination(destinationParam);
+  // Leaving without a choice drops the destination, so nothing runs for it later.
+  useEffect(() => () => releaseProjectDestination(destinationParam), [destinationParam]);
+  const addProject = () =>
+    navigation.dispatch(
+      StackActions.push(
+        "AddProject",
+        destination === null ? undefined : { projectDestination: destinationParam },
+      ),
+    );
   const routeShareId = Array.isArray(route.params?.incomingShareId)
     ? route.params.incomingShareId[0]
     : route.params?.incomingShareId;
@@ -172,12 +225,19 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
   const screenTitle = incomingShare ? "Start a task" : "Choose project";
   const projectEmptyState = deriveProjectEmptyState(catalogState);
   const serverConfigs = useServerConfigs();
-  const listScopes = projectScopes.filter(
-    (scope) =>
-      !scope.projects.every((project) =>
-        isScratchProject(project, serverConfigs.get(project.environmentId)?.scratchWorkspaceRoot),
-      ),
-  );
+  const { connectedEnvironments } = useRemoteConnectionStatus();
+  const listScopes =
+    destination === null
+      ? projectScopes.filter(
+          (scope) =>
+            !scope.projects.every((project) =>
+              isScratchProject(
+                project,
+                serverConfigs.get(project.environmentId)?.scratchWorkspaceRoot,
+              ),
+            ),
+        )
+      : destinationProjectScopes(destination, projects, serverConfigs, connectedEnvironments);
   const visibleScopes = filterProjectScopes(listScopes, searchText);
   const resumedDestinationKeyRef = useRef<string | null>(null);
   const reservedDestinationProject = incomingShare?.destination
@@ -209,10 +269,19 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
     ) ??
     scratchEnvironments[0] ??
     null;
-  const canStartScratch = scratchEnvironment !== null && reservedDestinationProject === null;
+  const canStartScratch =
+    scratchEnvironment !== null && reservedDestinationProject === null && destination === null;
   const scratchStartInFlightRef = useRef(false);
 
   async function selectProject(project: EnvironmentProject): Promise<void> {
+    if (destination !== null) {
+      const taken = takeProjectDestination(destinationParam);
+      if (taken === null) return;
+      if (navigation.canGoBack()) navigation.goBack();
+      else navigation.getParent()?.goBack();
+      taken.choose(scopeProjectRef(project.environmentId, project.id));
+      return;
+    }
     if (incomingShare?.destination && !reservedDestinationProject) {
       try {
         await releaseShareReservation(incomingShare.id, incomingShare.destination);
@@ -310,6 +379,7 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
         title={screenTitle}
         subtitle={incomingShareSubtitle}
         canAddProject={catalogState.hasReadyEnvironment}
+        onAddProject={addProject}
         searchText={searchText}
         onSearchTextChange={setSearchText}
       />
@@ -405,7 +475,7 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
                     tone="primary"
                     onPress={() =>
                       catalogState.hasReadyEnvironment
-                        ? navigation.dispatch(StackActions.push("AddProject"))
+                        ? addProject()
                         : navigation.navigate("ConnectionsNew")
                     }
                   />
@@ -428,11 +498,7 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
               ) : (
                 <>
                   <View className="mt-1">
-                    <Button
-                      label="Add new project"
-                      tone="primary"
-                      onPress={() => navigation.dispatch(StackActions.push("AddProject"))}
-                    />
+                    <Button label="Add new project" tone="primary" onPress={addProject} />
                   </View>
                   {canStartScratch ? (
                     <Button

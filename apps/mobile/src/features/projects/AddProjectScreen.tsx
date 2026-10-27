@@ -56,6 +56,7 @@ import {
   ProjectId,
   resolveEnvironmentMachineKind,
   SourceControlProviderKind,
+  type ScopedProjectRef,
 } from "@t3tools/contracts";
 import {
   StackActions,
@@ -85,7 +86,14 @@ import { ErrorBanner } from "../../components/ui/ErrorBanner";
 import { SourceControlIcon } from "./SourceControlIcon";
 import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
 import { ThemedSwitch } from "../../components/ui/ThemedSwitch";
+import { scopeProjectRef } from "@t3tools/client-runtime/environment";
 import { uuidv4 } from "../../lib/uuid";
+import {
+  projectDestinationOffers,
+  readProjectDestination,
+  takeProjectDestination,
+  type ProjectDestination,
+} from "./projectDestination";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { suggestAppAccessForRemote } from "./suggestAppAccess";
 import { useAtomQueryRunner } from "../../state/use-atom-query-runner";
@@ -414,7 +422,7 @@ function useEnvironmentOptions(
   })();
 }
 
-function useSelectedEnvironment(requestedEnvironmentId: EnvironmentId | null): {
+function useSelectedEnvironment(requestedEnvironmentId: EnvironmentId | null, destination: ProjectDestination | null): {
   readonly environmentOptions: ReadonlyArray<EnvironmentOption>;
   readonly selectedEnvironment: EnvironmentOption | null;
   readonly setSelectedEnvironmentId: (environmentId: EnvironmentId) => void;
@@ -425,7 +433,7 @@ function useSelectedEnvironment(requestedEnvironmentId: EnvironmentId | null): {
     setPreviousRequest(requestedEnvironmentId);
     setSelectedEnvironmentId(requestedEnvironmentId);
   }
-  const environmentOptions = useEnvironmentOptions(selectedEnvironmentId);
+  const environmentOptions = useEnvironmentOptions(selectedEnvironmentId).filter((environment) => projectDestinationOffers(destination, environment.environmentId));
   const selectedEnvironment =
     environmentOptions.find((environment) => environment.environmentId === selectedEnvironmentId) ??
     environmentOptions.find((environment) =>
@@ -514,10 +522,12 @@ function SourceControlRow(props: {
   );
 }
 
-export function AddProjectSourceScreen(props: { readonly environmentId?: string | string[] }) {
+export function AddProjectSourceScreen(props: { readonly environmentId?: string | string[]; readonly projectDestination?: string | string[] }) {
   const navigation = useNavigation();
+  // A destination takes only a folder, so new and cloned projects stay on the ordinary flow.
+  const destination = readProjectDestination(props.projectDestination);
   const { environmentOptions, selectedEnvironment, setSelectedEnvironmentId } =
-    useSelectedEnvironment(stringParam(props.environmentId) as EnvironmentId | null);
+    useSelectedEnvironment(stringParam(props.environmentId) as EnvironmentId | null, destination);
   const canWriteSourceControl = useEnvironmentScope(
     selectedEnvironment?.environmentId ?? null,
     AuthSourceControlWriteScope,
@@ -589,7 +599,7 @@ export function AddProjectSourceScreen(props: { readonly environmentId?: string 
       {selectedEnvironment ? (
         <>
           <ListSection>
-            {selectedEnvironment.newProjectsRoot !== null ? (
+            {selectedEnvironment.newProjectsRoot !== null && destination === null ? (
               <ListRow
                 title="New project"
                 subtitle="Start a new Git repository from a name"
@@ -627,18 +637,23 @@ export function AddProjectSourceScreen(props: { readonly environmentId?: string 
                   type="monochrome"
                 />
               }
-              isFirst={selectedEnvironment.newProjectsRoot === null}
+              isFirst={selectedEnvironment.newProjectsRoot === null || destination !== null}
               disabled={!isConnected || !canCreateProject}
               onPress={() =>
                 navigation.dispatch(
                   StackActions.push("AddProjectLocal", {
                     environmentId: selectedEnvironment.environmentId,
+                    ...(destination === null
+                      ? {}
+                      : { projectDestination: props.projectDestination }),
                   }),
                 )
               }
             />
-            {(["url", ...sortAddProjectProviderSources(readiness)] as AddProjectRemoteSource[]).map(
-              (candidate) => (
+            {destination === null &&
+              (
+                ["url", ...sortAddProjectProviderSources(readiness)] as AddProjectRemoteSource[]
+              ).map((candidate) => (
                 <SourceControlRow
                   key={candidate}
                   source={candidate}
@@ -653,8 +668,7 @@ export function AddProjectSourceScreen(props: { readonly environmentId?: string 
                   }
                   isFirst={false}
                 />
-              ),
-            )}
+              ))}
           </ListSection>
           {discoveryState.isPending ? (
             <AppActivityIndicator colorClassName="accent-icon-muted" />
@@ -698,6 +712,23 @@ function useOpenNewTaskDraft() {
   };
 }
 
+/** Hands the project to the destination and closes the chooser it was opened from. */
+function finishAtProjectDestination(
+  navigation: {
+    dispatch: (action: ReturnType<typeof StackActions.pop>) => void;
+    getState: () => NavigationState<ParamListBase> | undefined;
+  },
+  projectDestination: string | string[] | undefined,
+  project: ScopedProjectRef,
+) {
+  const destination = takeProjectDestination(projectDestination);
+  if (destination === null) return;
+  const routes = navigation.getState()?.routes ?? [];
+  const chooser = routes.findLastIndex((route) => route.name === "NewTaskProject");
+  if (chooser > 0) navigation.dispatch(StackActions.pop(routes.length - chooser));
+  destination.choose(project);
+}
+
 async function draftWithPrompt(
   environmentId: EnvironmentId,
   projectId: ProjectId,
@@ -709,7 +740,10 @@ async function draftWithPrompt(
   return draftId;
 }
 
-function useCreateProject(environment: EnvironmentOption | null) {
+function useCreateProject(
+  environment: EnvironmentOption | null,
+  projectDestination?: string | string[],
+) {
   const openNewTaskDraft = useOpenNewTaskDraft();
   const navigation = useNavigation();
   const createProject = useAtomCommand(projectEnvironment.create, { reportFailure: false });
@@ -733,6 +767,16 @@ function useCreateProject(environment: EnvironmentOption | null) {
       environmentId: environment.environmentId,
       path: workspaceRoot,
     });
+    // Taken only once a project exists, so a failed create can be retried in the same flow.
+    const toDestination = readProjectDestination(projectDestination) !== null;
+    if (existing && toDestination) {
+      finishAtProjectDestination(
+        navigation,
+        projectDestination,
+        scopeProjectRef(existing.environmentId, existing.id),
+      );
+      return;
+    }
     if (existing) {
       Dialog.alert("Project already exists", existing.title);
       openNewTaskDraft(
@@ -757,6 +801,14 @@ function useCreateProject(environment: EnvironmentOption | null) {
       input: command,
     });
     if (AsyncResult.isFailure(result)) {
+      return result;
+    }
+    if (toDestination) {
+      finishAtProjectDestination(
+        navigation,
+        projectDestination,
+        scopeProjectRef(environment.environmentId, projectId),
+      );
       return result;
     }
     // A successful command can precede its project in the client store. The
@@ -1253,13 +1305,16 @@ export function AddProjectNewScreen(props: { readonly environmentId?: string | s
   );
 }
 
-export function AddProjectLocalFolderScreen(props: { readonly environmentId?: string | string[] }) {
+export function AddProjectLocalFolderScreen(props: {
+  readonly environmentId?: string | string[];
+  readonly projectDestination?: string | string[];
+}) {
   const environment = useEnvironmentFromParam(props.environmentId);
   const canCreateProject = useEnvironmentScope(
     environment?.environmentId ?? null,
     AuthOrchestrationOperateScope,
   );
-  const createProject = useCreateProject(environment);
+  const createProject = useCreateProject(environment, props.projectDestination);
   const { isBrowseNavigating, navigateToBrowsePath, pathInput, setPathInput } =
     useBrowsePathInput(environment);
   const [isSubmitting, setIsSubmitting] = useState(false);
