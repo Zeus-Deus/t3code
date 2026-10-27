@@ -5435,6 +5435,112 @@ it.effect("looks up each thread shell once when counting a backlog of finalized 
 );
 
 it.effect(
+  "keeps declared project tree actions scoped without invoking them during tree reads",
+  () =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      yield* f.fs.writeFileString(
+        f.path.join(f.directory, "t3-plugin.json"),
+        yield* encodeJson({
+          ...manifest,
+          capabilities: [...manifest.capabilities, "ui.native-trees"],
+          nativeTrees: [{ id: "projects", title: "Projects" }],
+        }),
+      );
+      const installed = yield* f.install();
+      const enabled = yield* f.plugins.consent({
+        installationId: installed.installationId,
+        digest: installed.digest,
+        grants: {
+          capabilities: ["threads.read", "ui", "ui.native-trees"],
+          projectIds: [projectId],
+        },
+      });
+      const node = { id: "project", kind: "project", projectId, actionId: "review" };
+      f.setHandler((input) =>
+        Effect.succeed(
+          input.handler === "tree:projects"
+            ? { data: { nodes: [node] } }
+            : { intents: [{ type: "view.open", viewId: "board", threadId }] },
+        ),
+      );
+      const request = {
+        installationId: enabled.installationId,
+        generation: enabled.generation,
+        treeId: "projects",
+        operationId: "project-action-tree",
+      };
+      expect((yield* f.plugins.readTree(request, actor)).nodes).toEqual([node]);
+      expect(f.calls.map((call) => call.handler)).toEqual(["tree:projects"]);
+      expect(f.launches).toHaveLength(0);
+      expect(
+        (yield* f.plugins.readTree(request, { ...actor, projectIds: [] }).pipe(Effect.flip)).reason,
+      ).toBe("permission_denied");
+      const action = {
+        installationId: enabled.installationId,
+        generation: enabled.generation,
+        handler: "action:review",
+        context: { projectId },
+        operationId: "project-action-click",
+      };
+      expect((yield* f.plugins.invoke(action, actor)).intents).toEqual([
+        { type: "view.open", viewId: "board", threadId },
+      ]);
+      expect(f.calls.at(-1)).toMatchObject({ handler: "action:review", context: { projectId } });
+      yield* f.plugins.consent({
+        installationId: enabled.installationId,
+        digest: enabled.digest,
+        grants: { capabilities: ["threads.read", "ui", "ui.native-trees"], projectIds: [] },
+      });
+      expect((yield* f.plugins.invoke(action, actor).pipe(Effect.flip)).reason).toBe(
+        "stale_generation",
+      );
+      expect(f.calls.filter((call) => call.handler === "action:review")).toHaveLength(1);
+    }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect(
+  "rejects undeclared project tree actions instead of returning an inert or arbitrary control",
+  () =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      yield* f.fs.writeFileString(
+        f.path.join(f.directory, "t3-plugin.json"),
+        yield* encodeJson({
+          ...manifest,
+          capabilities: [...manifest.capabilities, "ui.native-trees"],
+          nativeTrees: [{ id: "projects", title: "Projects" }],
+        }),
+      );
+      const installed = yield* f.install();
+      const enabled = yield* f.plugins.consent({
+        installationId: installed.installationId,
+        digest: installed.digest,
+        grants: { capabilities: ["threads.read", "ui.native-trees"], projectIds: [projectId] },
+      });
+      f.setHandler(() =>
+        Effect.succeed({
+          data: { nodes: [{ id: "project", kind: "project", projectId, actionId: "undeclared" }] },
+        }),
+      );
+      const result = yield* f.plugins
+        .readTree(
+          {
+            installationId: enabled.installationId,
+            generation: enabled.generation,
+            treeId: "projects",
+            operationId: "undeclared-project-action",
+          },
+          actor,
+        )
+        .pipe(Effect.result);
+      expect(result._tag).toBe("Failure");
+      if (result._tag === "Failure") expect(result.failure.reason).toBe("invalid_result");
+      expect(f.calls.map((call) => call.handler)).toEqual(["tree:projects"]);
+    }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect(
   "serves authorized native trees, rechecks grant revocation and stamps card data ownership",
   () =>
     Effect.gen(function* () {

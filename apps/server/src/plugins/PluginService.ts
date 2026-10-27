@@ -2294,8 +2294,19 @@ const make = Effect.gen(function* () {
     for (const node of tree.nodes) {
       if (node.kind === "group") continue;
       let projectId: ProjectId;
-      if (node.kind === "project") projectId = node.projectId;
-      else {
+      if (node.kind === "project") {
+        projectId = node.projectId;
+        if (
+          node.actionId !== undefined &&
+          !current.record.installation.manifest.actions.some(
+            (action) => action.id === node.actionId,
+          )
+        )
+          return yield* new PluginError({
+            reason: "invalid_result",
+            message: "The tree names an undeclared project action.",
+          });
+      } else {
         const thread = yield* threads
           .getThreadShell(node.threadId)
           .pipe(Effect.mapError(() => pluginPermissionDenied()));

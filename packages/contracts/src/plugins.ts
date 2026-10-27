@@ -135,7 +135,12 @@ export const PluginTreeNode = Schema.Union([
     kind: Schema.Literal("group"),
     title: text(200).check(Schema.isMinLength(1)),
   }),
-  Schema.Struct({ ...treeNodeFields, kind: Schema.Literal("project"), projectId: ProjectId }),
+  Schema.Struct({
+    ...treeNodeFields,
+    kind: Schema.Literal("project"),
+    projectId: ProjectId,
+    actionId: Schema.optionalKey(identifier),
+  }),
   Schema.Struct({ ...treeNodeFields, kind: Schema.Literal("thread"), threadId: ThreadId }),
 ]);
 export type PluginTreeNode = typeof PluginTreeNode.Type;

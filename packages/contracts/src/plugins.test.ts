@@ -61,6 +61,16 @@ const decodeCardReference = Schema.decodeUnknownSync(PluginCardReference);
 const decodeThreadMetadata = Schema.decodeUnknownSync(PluginThreadMetadata);
 const decodePluginError = Schema.decodeUnknownSync(Schema.toCodecJson(PluginError));
 
+it("keeps optional project actions in API 1 trees without requiring them from older plugins", () => {
+  const project = { id: "project", kind: "project", projectId: "p" };
+  expect(decodeTreeSnapshot({ nodes: [project] }).nodes).toEqual([project]);
+  const actionable = { ...project, actionId: "open-coordinator" };
+  expect(decodeTreeSnapshot({ nodes: [actionable] }).nodes).toEqual([actionable]);
+  for (const actionId of ["", 1, "x".repeat(201)]) {
+    expect(() => decodeTreeSnapshot({ nodes: [{ ...project, actionId }] })).toThrow();
+  }
+});
+
 it("decodes additive workflow choices, bounded native trees and historical card references", () => {
   expect(
     decodeThreadCreate({

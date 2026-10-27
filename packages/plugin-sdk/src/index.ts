@@ -139,6 +139,8 @@ export type PluginTreeNode =
       readonly collapsedByDefault?: boolean;
       readonly kind: "project";
       readonly projectId: string;
+      /** Declared action beside the heading; clicking passes this project's projectId. */
+      readonly actionId?: string;
     }
   | {
       readonly id: string;
