@@ -41,6 +41,15 @@ const threadId = ThreadId.make("thread-1");
 const sourceThreadId = ThreadId.make("thread-source");
 const runId = RunId.make("run-1");
 
+it("keeps the user's own words in the bubble and a plugin's brief beside them", () => {
+  const pluginBrief = { pluginName: "Project Coordinator", text: "Delegate to subagents." };
+  const [entry] = buildThreadFeed([projected({ ...userMessage(), pluginBrief }, 0)]);
+  expect(entry?.type === "message" ? entry.message : null).toMatchObject({
+    text: "Run checks",
+    pluginBrief,
+  });
+});
+
 it("keeps historical plan detail accessible from its paged turn item", () => {
   const item = {
     ...base("historical-plan", "2026-08-29T00:00:00.000Z", 1),

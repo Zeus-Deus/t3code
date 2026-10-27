@@ -147,6 +147,8 @@ export interface ThreadFeedMessage {
   readonly scheduledTaskId?: ScheduledTaskId;
   readonly senderThreadId?: ThreadId;
   readonly idleCompaction?: import("@t3tools/contracts").OrchestrationV2IdleCompaction;
+  /** What a plugin added before this message for the agent; `text` stays the user's own words. */
+  readonly pluginBrief?: import("@t3tools/contracts").OrchestrationV2PluginBrief;
   readonly visibility: OrchestrationV2ProjectedTurnItem["visibility"];
   readonly sourceThreadId: ThreadId;
   readonly createdAt: string;
@@ -2334,6 +2336,7 @@ export function buildThreadFeed(
                 ...(item.scheduledTaskId ? { scheduledTaskId: item.scheduledTaskId } : {}),
                 ...(item.senderThreadId ? { senderThreadId: item.senderThreadId } : {}),
                 ...(item.idleCompaction ? { idleCompaction: item.idleCompaction } : {}),
+                ...(item.pluginBrief ? { pluginBrief: item.pluginBrief } : {}),
               }
             : {}),
           visibility: row.visibility,

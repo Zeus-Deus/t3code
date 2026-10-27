@@ -3,6 +3,8 @@ import {
   type OrchestrationV2Actor,
   type OrchestrationV2CreationSource,
   type OrchestrationV2IdleCompaction,
+  type OrchestrationV2PluginBrief,
+  type MessageId,
   ScheduledTaskId,
 } from "@t3tools/contracts";
 
@@ -77,4 +79,29 @@ export function resolveUserMessagePresentation(message: {
           : "agent",
     scheduledTaskId: undefined,
   };
+}
+
+interface PluginBriefThread {
+  readonly pluginBrief?: OrchestrationV2PluginBrief | undefined;
+  readonly pluginBriefMessageId?: MessageId | undefined;
+}
+
+/** The brief a plugin adds to this empty conversation's first message. */
+export function pendingPluginBrief(projection: {
+  readonly thread: PluginBriefThread;
+  readonly runs: ReadonlyArray<unknown>;
+  readonly messages: ReadonlyArray<unknown>;
+}): OrchestrationV2PluginBrief | null {
+  const { pluginBrief, pluginBriefMessageId } = projection.thread;
+  return pluginBrief !== undefined &&
+    pluginBriefMessageId === undefined &&
+    projection.runs.length === 0 &&
+    projection.messages.length === 0
+    ? pluginBrief
+    : null;
+}
+
+/** Brief conversations keep their created title; the server skips first-send titling too. */
+export function threadKeepsCreatedTitle(thread: PluginBriefThread | null | undefined): boolean {
+  return thread?.pluginBrief !== undefined;
 }

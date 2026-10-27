@@ -84,6 +84,8 @@ export interface ChatMessage {
   readonly scheduledTaskId?: ScheduledTaskId;
   readonly senderThreadId?: ThreadId;
   readonly idleCompaction?: import("@t3tools/contracts").OrchestrationV2IdleCompaction;
+  /** What a plugin added before this message for the agent; `text` stays the user's own words. */
+  readonly pluginBrief?: import("@t3tools/contracts").OrchestrationV2PluginBrief;
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly inputIntent?: OrchestrationV2UserMessageInputIntent | undefined;

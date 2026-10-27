@@ -1750,3 +1750,51 @@ it("renders automatic completion as a work entry instead of a user bubble", () =
     })[0]?.kind,
   ).toBe("message");
 });
+
+describe("plugin briefs in the timeline", () => {
+  it("keeps the user's own words in the bubble and the brief beside them", () => {
+    const now = DateTime.makeUnsafe("2026-10-27T00:00:00.000Z");
+    const threadId = ThreadId.make("thread-brief");
+    const pluginBrief = { pluginName: "Project Coordinator", text: "Delegate to subagents." };
+    const item = {
+      id: TurnItemId.make("item-brief-message"),
+      threadId,
+      runId: RunId.make("run-brief"),
+      nodeId: null,
+      providerThreadId: null,
+      providerTurnId: null,
+      nativeItemRef: null,
+      parentItemId: null,
+      ordinal: 1,
+      status: "completed" as const,
+      title: null,
+      startedAt: now,
+      completedAt: now,
+      updatedAt: now,
+      type: "user_message" as const,
+      messageId: MessageId.make("message-brief"),
+      inputIntent: "turn_start" as const,
+      text: "Add dark mode",
+      attachments: [],
+      createdBy: "user" as const,
+      creationSource: "web" as const,
+      pluginBrief,
+    } satisfies OrchestrationV2TurnItem;
+    const [entry] = deriveTimelineEntriesFromVisibleTurnItems({
+      visibleTurnItems: [
+        {
+          position: 0,
+          visibility: "local",
+          sourceThreadId: threadId,
+          sourceItemId: item.id,
+          item,
+        },
+      ],
+      optimisticMessages: [],
+    });
+    expect(entry?.kind === "message" ? entry.message : null).toMatchObject({
+      text: "Add dark mode",
+      pluginBrief,
+    });
+  });
+});

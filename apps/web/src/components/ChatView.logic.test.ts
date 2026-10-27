@@ -50,6 +50,7 @@ import {
   deriveComposerSendState,
   deriveLockedProvider,
   hasServerAcknowledgedLocalDispatch,
+  resolveDraftHeroState,
   waitForRevertedMessage,
 } from "./ChatView.logic";
 
@@ -1176,5 +1177,32 @@ describe("deriveWorkspaceMutationId", () => {
     expect(deriveWorkspaceMutationId([item("reply", "assistant_message", "completed")], null)).toBe(
       null,
     );
+  });
+});
+
+describe("resolveDraftHeroState", () => {
+  const emptyServerThread = {
+    isLocalDraftThread: false,
+    hasTimelineEntries: false,
+    isWorking: false,
+    draftHeroDockRequested: false,
+    backgroundSubmissionPending: false,
+  };
+
+  it("greets a plugin's empty brief conversation like a new draft", () => {
+    expect(resolveDraftHeroState({ ...emptyServerThread, hasPendingPluginBrief: true })).toBe(true);
+  });
+
+  it("leaves ordinary empty threads and a sent brief conversation alone", () => {
+    expect(resolveDraftHeroState({ ...emptyServerThread, hasPendingPluginBrief: false })).toBe(
+      false,
+    );
+    expect(
+      resolveDraftHeroState({
+        ...emptyServerThread,
+        hasPendingPluginBrief: true,
+        draftHeroDockRequested: true,
+      }),
+    ).toBe(false);
   });
 });

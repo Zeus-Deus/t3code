@@ -32,6 +32,8 @@ import { closeThreadFind, openThreadFind, useThreadFindOpen } from "./chat/threa
 import { THREAD_FIND_BAR_RESERVED_HEIGHT } from "./chat/ThreadFindBar";
 import { usageLimitRecoveryBannerItem } from "./chat/UsageLimitRecoveryBanner";
 import { resolveDraftHeroState } from "./ChatView.logic";
+import { pendingPluginBrief, threadKeepsCreatedTitle } from "@t3tools/client-runtime/user-message";
+import { PluginBriefHero } from "./chat/PluginBriefDisclosure";
 import { useQueuedRunEdit } from "./chat/useQueuedRunEdit";
 import { recallCheckoutIsRepo, rememberCheckoutIsRepo } from "./ChatView.logic";
 import { useLogicalProjectEnvironments } from "../hooks/useLogicalProjectEnvironments";
@@ -1523,8 +1525,11 @@ export default function ChatView(props: ChatViewProps) {
   const [dockedDraftHeroThreadKey, setDockedDraftHeroThreadKey] = useState<string | null>(null);
   const draftHeroDockRequested =
     activeThreadKey !== null && dockedDraftHeroThreadKey === activeThreadKey;
+  const pendingBrief =
+    isServerThread && serverProjection !== null ? pendingPluginBrief(serverProjection) : null;
   const isDraftHeroState = resolveDraftHeroState({
     isLocalDraftThread,
+    hasPendingPluginBrief: pendingBrief !== null,
     hasTimelineEntries: !timelineEmpty,
     isWorking,
     draftHeroDockRequested,
@@ -2723,6 +2728,7 @@ export default function ChatView(props: ChatViewProps) {
     activeMessageCount,
     isServerThread,
     isLocalDraftThread,
+    keepsCreatedTitle: threadKeepsCreatedTitle(serverProjection?.thread),
     isGitRepo,
     phase,
     runtimeMode,
@@ -3337,11 +3343,15 @@ export default function ChatView(props: ChatViewProps) {
                             : undefined
                         }
                       >
-                        <DraftHeroHeadline
-                          draftId={draftId}
-                          activeProjectRef={activeProjectRef}
-                          activeProjectTitle={activeProject?.title ?? null}
-                        />
+                        {pendingBrief !== null && activeProject ? (
+                          <PluginBriefHero projectName={activeProject.title} brief={pendingBrief} />
+                        ) : (
+                          <DraftHeroHeadline
+                            draftId={draftId}
+                            activeProjectRef={activeProjectRef}
+                            activeProjectTitle={activeProject?.title ?? null}
+                          />
+                        )}
                       </div>
                     </div>
                   ) : null}

@@ -102,6 +102,7 @@ import {
 } from "../state/use-thread-detail";
 import { useThreadSelection } from "../state/use-thread-selection";
 import { enqueueThreadOutboxMessage } from "./thread-outbox";
+import { pendingPluginBrief, threadKeepsCreatedTitle } from "@t3tools/client-runtime/user-message";
 import { dispatchingQueuedMessageIdAtom, useThreadOutboxMessages } from "./use-thread-outbox";
 import { threadEnvironment } from "./threads";
 import { useAtomCommand } from "./use-atom-command";
@@ -660,6 +661,9 @@ export function useThreadComposerState() {
         draft.interactionMode ?? thread.interactionMode,
       ),
       ...(followUpDispatchMode === null ? {} : { dispatchMode: followUpDispatchMode }),
+      ...(threadKeepsCreatedTitle(selectedThreadProjection?.projection.thread)
+        ? { keepsThreadTitle: true }
+        : {}),
       createdAt: metadata.createdAt,
     });
     clearComposerDraftContent(threadKey, { deferAttachmentCleanup: true });
@@ -724,6 +728,9 @@ export function useThreadComposerState() {
     feedbackSubmissions,
     dismissFeedback,
     selectedThreadFeed,
+    selectedThreadPendingPluginBrief: selectedThreadProjection
+      ? pendingPluginBrief(selectedThreadProjection.projection)
+      : null,
     selectedThreadActivityRun,
     selectedThreadQueueCount,
     selectedThreadQueuedMessages,

@@ -876,10 +876,10 @@ export function createThreadOutboxDelivery(): {
           attachments: prepared.attachments,
         },
         modelSelection: sendSettings.modelSelection,
-        titleSeed: deriveThreadTitleSeed({
+        ...(queuedMessage.keepsThreadTitle ? {} : {titleSeed: deriveThreadTitleSeed({
           text: queuedMessage.text,
           attachments: queuedMessage.attachments,
-        }),
+        })}),
         runtimeMode: sendSettings.runtimeMode,
         interactionMode: sendSettings.interactionMode,
         createdAt: queuedMessage.createdAt,

@@ -17,6 +17,7 @@ import {
 import { ThreadContextDivider } from "./thread-context-divider";
 import { ThreadHandoffDivider, ThreadHandoffRow } from "./thread-handoff-row";
 import { GuestBubbleTint, GuestMessageName } from "./guestMessageStyle";
+import { PluginBriefEmptyThread, SentPluginBriefDisclosure } from "./PluginBriefDisclosure";
 import { ThreadGuestPendingMessage, useThreadGuestShare } from "./ThreadGuestShareBar";
 import { LinkRequestCard } from "./LinkRequestCard";
 import { SecretRequestCard } from "./SecretRequestCard";
@@ -343,6 +344,9 @@ export interface ThreadFeedProps {
   readonly threadTitle: string;
   readonly workspaceRoot?: string | null;
   readonly feed: ReadonlyArray<ThreadFeedEntry>;
+  /** A plugin's empty brief conversation greets like a new task instead of "No conversation yet". */
+  readonly pendingPluginBrief?: import("@t3tools/contracts").OrchestrationV2PluginBrief | null;
+  readonly projectTitle?: string | null;
   readonly pendingHandoff?: HandoffEndpoints | null;
   readonly contentPresentation: ThreadContentPresentation;
   readonly latestRun: ThreadFeedLatestRun | null;
@@ -1738,6 +1742,13 @@ function renderFeedEntry(
               </View>
             ) : null}
           </View>
+          {message.pluginBrief ? (
+            <SentPluginBriefDisclosure
+              brief={message.pluginBrief}
+              maxWidth={props.duoColumns ? "85%" : props.userBubbleMaxWidth}
+              iconSubtleColor={iconSubtleColor}
+            />
+          ) : null}
           {bubbleBodyVisible ? (
             <View className="mt-1 flex-row items-center justify-end gap-1 pr-0.5">
               {foldRowId !== null && message.senderThreadId ? (
@@ -3355,7 +3366,32 @@ export const ThreadFeed = memo(function ThreadFeed({
         {presentedFeed.length === 0 &&
         !props.worktreeSetup &&
         props.activeWorkStartedAt === null &&
-        props.contentPresentation.kind === "ready" ? (
+        props.contentPresentation.kind === "ready" &&
+        props.pendingPluginBrief &&
+        props.projectTitle ? (
+          <View
+            pointerEvents="box-none"
+            style={[
+              StyleSheet.absoluteFill,
+              {
+                left: contentLeftInset,
+                right: contentRightInset,
+                paddingTop: topContentInset,
+                paddingBottom: bottomContentInset,
+                alignItems: "center",
+                justifyContent: "center",
+              },
+            ]}
+          >
+            <PluginBriefEmptyThread
+              projectName={props.projectTitle}
+              brief={props.pendingPluginBrief}
+            />
+          </View>
+        ) : presentedFeed.length === 0 &&
+          !props.worktreeSetup &&
+          props.activeWorkStartedAt === null &&
+          props.contentPresentation.kind === "ready" ? (
           <View
             pointerEvents="none"
             style={[StyleSheet.absoluteFill, { left: contentLeftInset, right: contentRightInset }]}

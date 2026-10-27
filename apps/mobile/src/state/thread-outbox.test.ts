@@ -137,6 +137,15 @@ describe("thread outbox", () => {
       decodeQueuedThreadMessage(JSON.parse(JSON.stringify(encodeQueuedThreadMessage(message)))),
     ).toEqual(message);
   });
+  it("remembers through an offline queue that a brief conversation keeps its title", () => {
+    const message: QueuedThreadMessage = {
+      ...queuedMessage({ messageId: "brief-message", createdAt: "2026-10-27T12:00:00.000Z" }),
+      keepsThreadTitle: true,
+    };
+    expect(
+      decodeQueuedThreadMessage(JSON.parse(JSON.stringify(encodeQueuedThreadMessage(message)))),
+    ).toEqual(message);
+  });
   it.each(["read", "json", "schema"] as const)(
     "recovers usable messages without permitting cleanup after a record %s failure",
     async (failure) => {

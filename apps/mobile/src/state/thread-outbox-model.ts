@@ -59,6 +59,7 @@ export const QueuedThreadMessageSchema = Schema.Struct({
   runtimeMode: Schema.optional(RuntimeMode),
   interactionMode: Schema.optional(ProviderInteractionMode),
   creation: Schema.optional(QueuedThreadCreationSchema),
+  keepsThreadTitle: Schema.optional(Schema.Boolean),
   createdAt: IsoDateTime,
 });
 
@@ -90,6 +91,8 @@ export interface QueuedThreadMessage {
   /** Captured at enqueue because draining may occur long after the tap. */
   readonly dispatchMode?: ComposerDispatchMode;
   readonly creation?: QueuedThreadCreation;
+  /** Captured at enqueue: a plugin's brief conversation keeps its created title. */
+  readonly keepsThreadTitle?: boolean;
   readonly createdAt: string;
 }
 

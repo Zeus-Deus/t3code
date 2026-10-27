@@ -323,6 +323,7 @@ export function resolveDraftHeroState(input: {
   draftHeroDockRequested: boolean;
   backgroundSubmissionPending: boolean;
   hasWorktreeSetupCard?: boolean;
+  hasPendingPluginBrief?: boolean;
 }): boolean {
   if (input.hasWorktreeSetupCard) {
     return false;
@@ -331,7 +332,7 @@ export function resolveDraftHeroState(input: {
     return true;
   }
   return (
-    input.isLocalDraftThread &&
+    (input.isLocalDraftThread || input.hasPendingPluginBrief === true) &&
     !input.hasTimelineEntries &&
     !input.isWorking &&
     !input.draftHeroDockRequested

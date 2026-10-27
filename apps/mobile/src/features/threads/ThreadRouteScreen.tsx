@@ -982,6 +982,8 @@ function ThreadRouteContent(
           feedbackSubmissions={composer.feedbackSubmissions}
           onDismissFeedback={composer.dismissFeedback}
           selectedThreadFeed={composer.selectedThreadFeed}
+          pendingPluginBrief={composer.selectedThreadPendingPluginBrief}
+          projectTitle={selectedThreadProject?.title ?? null}
           pendingHandoff={composer.pendingHandoff}
           activityRun={composer.selectedThreadActivityRun}
           activeWorkStartedAt={

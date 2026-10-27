@@ -224,6 +224,8 @@ export interface ThreadDetailScreenProps {
   readonly feedbackSubmissions: ReadonlyArray<CodexFeedbackSubmission>;
   readonly onDismissFeedback: (id: MessageId) => void;
   readonly selectedThreadFeed: ReadonlyArray<ThreadFeedEntry>;
+  readonly pendingPluginBrief?: import("@t3tools/contracts").OrchestrationV2PluginBrief | null;
+  readonly projectTitle?: string | null;
   readonly pendingHandoff?: HandoffEndpoints | null;
   readonly activityRun: ThreadFeedLatestRun | null;
   readonly activeWorkStartedAt: string | null;
@@ -1296,6 +1298,8 @@ function ThreadDetailBody(props: ThreadDetailScreenProps) {
               detailRef={props.selectedThreadDetailRef}
               workspaceRoot={props.threadCwd}
               feed={props.selectedThreadFeed}
+              pendingPluginBrief={props.pendingPluginBrief ?? null}
+              projectTitle={props.projectTitle ?? null}
               pendingHandoff={props.pendingHandoff}
               worktreeSetup={props.worktreeSetup}
               setupWorkingStartedAt={props.setupWorkingStartedAt}

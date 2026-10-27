@@ -174,6 +174,7 @@ interface ComposerSendInput {
   readonly activeMessageCount: number;
   readonly isServerThread: boolean;
   readonly isLocalDraftThread: boolean;
+  readonly keepsCreatedTitle: boolean;
   readonly isGitRepo: boolean;
   readonly phase: SessionPhase;
   readonly runtimeMode: RuntimeMode;
@@ -268,6 +269,7 @@ export function useComposerSend(input: ComposerSendInput) {
     activeMessageCount,
     isServerThread,
     isLocalDraftThread,
+    keepsCreatedTitle,
     isGitRepo,
     phase,
     runtimeMode,
@@ -1293,7 +1295,7 @@ export function useComposerSend(input: ComposerSendInput) {
             }),
           },
           modelSelection: ctxSelectedModelSelection,
-          titleSeed: title,
+          ...(keepsCreatedTitle ? {} : { titleSeed: title }),
           runtimeMode,
           interactionMode: sendInteractionMode,
           dispatchMode: turnDispatchMode,

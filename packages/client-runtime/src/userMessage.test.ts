@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { GuestMessageId } from "@t3tools/contracts";
+import { GuestMessageId, MessageId } from "@t3tools/contracts";
 
-import { resolveUserMessagePresentation } from "./userMessage.ts";
+import {
+  pendingPluginBrief,
+  resolveUserMessagePresentation,
+  threadKeepsCreatedTitle,
+} from "./userMessage.ts";
 
 describe("resolveUserMessagePresentation", () => {
   const legacyText = "[Triggered by schedule task: Daily audit]\n\nCheck for crashes.\n";
@@ -70,5 +74,35 @@ describe("resolveUserMessagePresentation", () => {
         scheduledTaskId: "task:daily-audit",
       });
     }
+  });
+});
+
+describe("pendingPluginBrief", () => {
+  const brief = { pluginName: "Project Coordinator", text: "Delegate work to subagents." };
+
+  it("offers a plugin's brief only while its conversation has nothing in it", () => {
+    expect(pendingPluginBrief({ thread: { pluginBrief: brief }, runs: [], messages: [] })).toBe(
+      brief,
+    );
+    expect(pendingPluginBrief({ thread: {}, runs: [], messages: [] })).toBeNull();
+    expect(
+      pendingPluginBrief({
+        thread: { pluginBrief: brief, pluginBriefMessageId: MessageId.make("message-1") },
+        runs: [],
+        messages: [],
+      }),
+    ).toBeNull();
+    expect(
+      pendingPluginBrief({ thread: { pluginBrief: brief }, runs: [{}], messages: [] }),
+    ).toBeNull();
+    expect(
+      pendingPluginBrief({ thread: { pluginBrief: brief }, runs: [], messages: [{}] }),
+    ).toBeNull();
+  });
+
+  it("keeps a brief conversation's created title on its first send", () => {
+    expect(threadKeepsCreatedTitle({ pluginBrief: brief })).toBe(true);
+    expect(threadKeepsCreatedTitle({})).toBe(false);
+    expect(threadKeepsCreatedTitle(null)).toBe(false);
   });
 });
