@@ -20,7 +20,13 @@ export function threadJumpTarget(
   let index = threadJumpIndex(command);
   if (index < 0) return null;
   for (const item of items) {
-    const thread = item.type === "v2-thread" ? item.item.thread : null;
+    // A tree heading that stands for a conversation is that thread's only place in the list.
+    const thread =
+      item.type === "v2-thread"
+        ? item.item.thread
+        : item.type === "v2-tree-heading" && item.conversation?.kind === "thread"
+          ? item.conversation.thread
+          : null;
     if (thread !== null && index-- === 0) return thread;
   }
   return null;

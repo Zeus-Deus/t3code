@@ -5,6 +5,7 @@ import { describe, expect, it } from "vite-plus/test";
 import { makeThreadShellFixture } from "../../test-fixtures";
 import type { HomeProjectScope } from "../home/homeThreadList";
 import { buildPluginTreeThreadListItems, withPluginTreeItems } from "./pluginTreeThreadList";
+import { threadJumpTarget } from "../keyboard/threadKeyboardShortcuts";
 import { filterThreadListV2Threads } from "./threadListV2";
 
 const laptop = EnvironmentId.make("env-laptop");
@@ -251,5 +252,53 @@ describe("buildPluginTreeThreadListItems", () => {
       "v2-thread",
       "v2-settled-shelf",
     ]);
+  });
+
+  it("jumps to a conversation heading once, ahead of its workers, never to a start action", () => {
+    const remote = EnvironmentId.make("env-remote");
+    const main = thread("main");
+    const worker = thread("worker", {
+      lineage: { ...main.lineage, parentThreadId: main.id },
+    });
+    const sources = (folds: string[]) =>
+      buildPluginTreeThreadListItems({
+        sources: [
+          {
+            environmentId: laptop,
+            conversations: true,
+            nodes: [
+              { id: "app", kind: "project", projectId: ProjectId.make("p1"), threadId: main.id },
+            ],
+          },
+          {
+            environmentId: remote,
+            conversations: true,
+            nodes: [
+              { id: "docs", kind: "project", projectId: ProjectId.make("p9"), actionId: "open" },
+            ],
+          },
+        ],
+        threads: [main, worker],
+        projectScopes: [
+          scope,
+          {
+            key: "repo:docs",
+            title: "Docs",
+            projectRefs: [{ environmentId: remote, projectId: ProjectId.make("p9") }],
+          } as unknown as HomeProjectScope,
+        ],
+        selectedProjectKey: null,
+        folds: new Set(folds),
+        selectedThreadKey: `${laptop}:main`,
+        now: NOW,
+        snoozeLabelNow: NOW,
+      }).items;
+    const jumps = (items: ReturnType<typeof sources>) =>
+      (["thread.jump.1", "thread.jump.2", "thread.jump.3"] as const).map(
+        (command) => threadJumpTarget(items, command)?.id ?? null,
+      );
+    expect(jumps(sources([]))).toEqual(["main", "worker", null]);
+    // Folded, the heading keeps its place; its hidden worker is no target.
+    expect(jumps(sources([`project:repo:app`]))).toEqual(["main", null, null]);
   });
 });
