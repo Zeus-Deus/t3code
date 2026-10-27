@@ -8,6 +8,7 @@ import {
 import * as Schema from "effect/Schema";
 
 import { isPluginActive } from "./model.ts";
+import { pluginTreeProjectsGranted, type PluginTreeOwnerGrant } from "./nativeTrees.ts";
 
 /**
  * A sidebar view the person can switch to. Its key is the plugin and view id, not the installation,
@@ -49,7 +50,12 @@ export const pluginSidebarChoiceTitle = (choice: PluginSidebarChoice) =>
 /** What one environment currently contributes. `pending` until its catalogue has been read. */
 export type PluginSidebarViewSource =
   | { readonly status: "pending" }
-  | { readonly status: "ready"; readonly options: ReadonlyArray<PluginSidebarChoice> };
+  | {
+      readonly status: "ready";
+      readonly options: ReadonlyArray<PluginSidebarChoice>;
+      /** Trees that keep their own conversations out of Activity on this environment. */
+      readonly owners?: ReadonlyArray<PluginTreeOwnerGrant>;
+    };
 
 export const pluginSidebarViewKey = (pluginId: string, viewId: string) => `${pluginId}/${viewId}`;
 // Tree and view ids share no namespace in the manifest, so their keys must not collide.
@@ -79,6 +85,26 @@ export function pluginSidebarTreeOptions(
       tree,
     })),
   );
+}
+
+/**
+ * Trees whose owned conversations leave Activity: offered here right now by an installation that
+ * holds ui.native-tree-projects. Pass the environment's runnable installations.
+ */
+export function pluginTreeOwnerGrants(
+  installations: ReadonlyArray<PluginInstallation>,
+): ReadonlyArray<PluginTreeOwnerGrant> {
+  return installations
+    .filter(
+      (installation) => offersNativeTrees(installation) && pluginTreeProjectsGranted(installation),
+    )
+    .flatMap((installation) =>
+      (installation.manifest.nativeTrees ?? []).map((tree) => ({
+        installationId: installation.installationId,
+        treeId: tree.id,
+        projectIds: installation.grants.projectIds,
+      })),
+    );
 }
 
 /** The installation that serves a tree choice on one environment, if it offers it right now. */

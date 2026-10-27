@@ -1,7 +1,8 @@
-import { EnvironmentId, type PluginInstallation } from "@t3tools/contracts";
+import { EnvironmentId, ProjectId, ThreadId, type PluginInstallation } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import { pluginRunnableInstallations } from "./model.ts";
+import { isPluginTreeOwnedThread } from "./nativeTrees.ts";
 import * as Schema from "effect/Schema";
 
 import {
@@ -9,6 +10,7 @@ import {
   PluginSidebarChoice,
   pluginSidebarTreeOptions,
   pluginSidebarViewOptions,
+  pluginTreeOwnerGrants,
   resolvePluginSidebarView,
   type PluginSidebarViewSource,
 } from "./sidebarViews.ts";
@@ -160,5 +162,60 @@ describe("plugin sidebar views", () => {
     ).toBe(option);
     const [saved] = pluginSidebarViewOptions(local, [projectsPlugin()]);
     expect(decodeChoice(JSON.parse(JSON.stringify(saved)))).toEqual(saved);
+  });
+
+  it("leaves a main thread to its owning tree only while that tree is offered with its project", () => {
+    const base = pluginInstallationFixture();
+    const owning = (
+      capabilities: ReadonlyArray<string>,
+      overrides: Partial<PluginInstallation> = {},
+    ): PluginInstallation => ({
+      ...base,
+      manifest: {
+        ...base.manifest,
+        nativeTrees: [{ id: "projects", title: "Projects", unplaced: "omit" }],
+      },
+      grants: {
+        capabilities: capabilities as PluginInstallation["grants"]["capabilities"],
+        projectIds: [ProjectId.make("shelf")],
+      },
+      ...overrides,
+    });
+    const full = ["ui.native-trees", "threads.read", "ui.native-tree-projects"];
+    const main = {
+      lineage: { parentThreadId: null as ThreadId | null },
+      projectId: ProjectId.make("shelf"),
+      pluginOwner: { installationId: "inst-1", treeId: "projects" },
+    };
+    const hidden = (installations: ReadonlyArray<PluginInstallation>, thread = main) =>
+      isPluginTreeOwnedThread(thread, pluginTreeOwnerGrants(installations));
+
+    expect(hidden([owning(full)])).toBe(true);
+    // Any missing grant, a disabled or failed plugin, or safe mode returns it to Activity.
+    for (const capability of full) {
+      expect(hidden([owning(full.filter((entry) => entry !== capability))])).toBe(false);
+    }
+    expect(hidden([owning(full, { enabled: false })])).toBe(false);
+    expect(hidden([owning(full, { status: "error" })])).toBe(false);
+    expect(
+      hidden(
+        pluginRunnableInstallations({ installations: [owning(full)], executionDisabled: true }),
+      ),
+    ).toBe(false);
+    expect(hidden([])).toBe(false);
+    // Another installation's or tree's claim, an ungranted project, or a child stays in Activity.
+    expect(hidden([owning(full, { installationId: "inst-2" })])).toBe(false);
+    expect(
+      hidden([owning(full)], {
+        ...main,
+        pluginOwner: { installationId: "inst-1", treeId: "other" },
+      }),
+    ).toBe(false);
+    expect(hidden([owning(full)], { ...main, projectId: ProjectId.make("elsewhere") })).toBe(false);
+    expect(
+      hidden([owning(full)], { ...main, lineage: { parentThreadId: ThreadId.make("parent") } }),
+    ).toBe(false);
+    // An environment that has not reported its plugins hides nothing.
+    expect(isPluginTreeOwnedThread(main, undefined)).toBe(false);
   });
 });

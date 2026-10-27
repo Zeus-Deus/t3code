@@ -2,6 +2,7 @@ import type {
   EnvironmentId,
   PluginCapability,
   PluginInstallation,
+  PluginThreadOwner,
   PluginTreeNode,
   ProjectId,
   ScopedThreadRef,
@@ -20,6 +21,8 @@ interface PluginTreeThread {
   readonly id: ThreadId;
   readonly environmentId: EnvironmentId;
   readonly lineage: { readonly parentThreadId: ThreadId | null };
+  readonly projectId?: ProjectId;
+  readonly pluginOwner?: PluginThreadOwner | undefined;
 }
 
 export interface PluginTreeRow<TThread> {
@@ -29,6 +32,40 @@ export interface PluginTreeRow<TThread> {
 }
 
 const TREE_CONVERSATIONS_CAPABILITY: PluginCapability = "ui.native-tree-conversations";
+const TREE_PROJECTS_CAPABILITY: PluginCapability = "ui.native-tree-projects";
+
+/** Whether a tree served by this installation may own its conversations and omit the rest. */
+export const pluginTreeProjectsGranted = (installation: PluginInstallation) =>
+  installation.grants.capabilities.includes(TREE_PROJECTS_CAPABILITY);
+
+/** A tree that may own conversations on one environment, and the projects it may read there. */
+export interface PluginTreeOwnerGrant {
+  readonly installationId: string;
+  readonly treeId: string;
+  readonly projectIds: ReadonlyArray<ProjectId>;
+}
+
+/**
+ * Whether Activity leaves a thread to the tree that owns it: a main thread whose owning
+ * installation offers that tree on its environment right now, with access to its project. Any
+ * other thread, including one whose environment has not reported its plugins, stays in Activity.
+ */
+export function isPluginTreeOwnedThread(
+  thread: Pick<PluginTreeThread, "lineage" | "projectId" | "pluginOwner">,
+  grants: ReadonlyArray<PluginTreeOwnerGrant> | undefined,
+): boolean {
+  const owner = thread.pluginOwner;
+  if (owner === undefined || grants === undefined || thread.lineage.parentThreadId !== null) {
+    return false;
+  }
+  return grants.some(
+    (grant) =>
+      grant.installationId === owner.installationId &&
+      grant.treeId === owner.treeId &&
+      thread.projectId !== undefined &&
+      grant.projectIds.includes(thread.projectId),
+  );
+}
 
 /** Whether a tree served by this installation may make project headings conversations. */
 export const pluginTreeConversationsGranted = (installation: PluginInstallation) =>
@@ -93,7 +130,27 @@ export interface PluginTreeSource {
    * thread or action is ignored and it lays out as a plain heading.
    */
   readonly conversations?: boolean;
+  /**
+   * Set when the serving installation holds ui.native-tree-projects. Its own main conversations
+   * always show as headings, whatever the snapshot left out; an exclusive tree lists nothing else.
+   */
+  readonly projects?: {
+    readonly installationId: string;
+    readonly treeId: string;
+    readonly exclusive: boolean;
+  };
 }
+
+/** A tree that omits unplaced threads: every environment serving it opted in. */
+export const isPluginTreeExclusive = (sources: ReadonlyArray<PluginTreeSource>) =>
+  sources.length > 0 && sources.every((source) => source.projects?.exclusive === true);
+
+const ownsThread = (source: PluginTreeSource, thread: PluginTreeThread) =>
+  source.projects !== undefined &&
+  thread.environmentId === source.environmentId &&
+  thread.lineage.parentThreadId === null &&
+  thread.pluginOwner?.installationId === source.projects.installationId &&
+  thread.pluginOwner.treeId === source.projects.treeId;
 
 const conversationThreadId = (source: PluginTreeSource, node: PluginTreeNode) =>
   node.kind === "project" && source.conversations === true ? node.threadId : undefined;
@@ -248,6 +305,8 @@ export function buildPluginTreeLayout<TProject, TThread extends PluginTreeThread
   readonly showsEmptyProject: (project: TProject) => boolean;
   readonly folds: ReadonlySet<string>;
   readonly routeThreadKey: string | null;
+  /** A thread's latest activity; an exclusive tree's root lists the most recent first. */
+  readonly activityAt?: (thread: TThread) => number;
 }): {
   readonly sections: ReadonlyArray<PluginTreeSection<TProject, TThread>>;
   /** Threads the tree placed, directly or by following a placed parent. */
@@ -261,15 +320,25 @@ export function buildPluginTreeLayout<TProject, TThread extends PluginTreeThread
   const rootProjects = new Map<string, Heading>();
   // Logical projects whose conversations come from more than one environment.
   const conversationEnvironments = new Map<string, Set<EnvironmentId>>();
+  const addConversationEnvironment = (environmentId: EnvironmentId, projectId: ProjectId) => {
+    const project = input.project(environmentId, projectId);
+    if (project === null) return;
+    const environments = conversationEnvironments.get(project.key) ?? new Set();
+    environments.add(environmentId);
+    conversationEnvironments.set(project.key, environments);
+  };
   for (const source of input.sources) {
     if (source.conversations !== true) continue;
     for (const node of source.nodes) {
       if (node.kind !== "project" || (node.threadId ?? node.actionId) === undefined) continue;
-      const project = input.project(source.environmentId, node.projectId);
-      if (project === null) continue;
-      const environments = conversationEnvironments.get(project.key) ?? new Set();
-      environments.add(source.environmentId);
-      conversationEnvironments.set(project.key, environments);
+      addConversationEnvironment(source.environmentId, node.projectId);
+    }
+  }
+  for (const source of input.sources) {
+    for (const thread of input.threads) {
+      if (ownsThread(source, thread) && thread.projectId !== undefined) {
+        addConversationEnvironment(source.environmentId, thread.projectId);
+      }
     }
   }
   const isSplit = (projectKey: string) => (conversationEnvironments.get(projectKey)?.size ?? 0) > 1;
@@ -387,7 +456,46 @@ export function buildPluginTreeLayout<TProject, TThread extends PluginTreeThread
       else if (attachTo.kind === "heading") attachTo.children.push(entry);
       else if (entry.kind === "thread") attachTo.children.push(entry);
     }
+    // Owned conversations the snapshot left out (not read yet, failed, or cut by its limits)
+    // still head their project, so they never vanish from the only view that lists them.
+    for (const thread of input.threads) {
+      const key = threadKey(thread);
+      if (!ownsThread(source, thread) || placedKeys.has(key)) continue;
+      placedKeys.add(key);
+      const project =
+        thread.projectId === undefined ? null : input.project(environmentId, thread.projectId);
+      if (project === null || thread.projectId === undefined) {
+        roots.push({ kind: "thread", thread, key, heading: null, children: [] });
+        continue;
+      }
+      const conversation: PluginTreeConversation<TThread> = {
+        kind: "thread",
+        environmentId,
+        projectId: thread.projectId,
+        thread,
+        key,
+      };
+      const split = isSplit(project.key);
+      const rootKey = split ? `${project.key}\0${environmentId}` : project.key;
+      const existing = rootProjects.get(rootKey);
+      if (existing !== undefined && existing.conversation?.kind !== "thread") {
+        existing.conversation = conversation;
+        continue;
+      }
+      const entry: Heading = {
+        kind: "heading",
+        key: existing === undefined ? `project:${rootKey}` : `project:${rootKey}\0${key}`,
+        heading: { kind: "project", project: project.project, ...(split ? { environmentId } : {}) },
+        collapsedByDefault: false,
+        children: [],
+        conversation,
+        merged: false,
+      };
+      if (existing === undefined) rootProjects.set(rootKey, entry);
+      roots.push(entry);
+    }
   }
+  const exclusive = isPluginTreeExclusive(input.sources);
 
   // A thread the tree leaves out follows its nearest placed ancestor thread, in host order.
   const parentKey = (thread: TThread) =>
@@ -563,12 +671,37 @@ export function buildPluginTreeLayout<TProject, TThread extends PluginTreeThread
     return laid;
   };
 
+  if (exclusive && input.activityAt !== undefined) {
+    const activityAt = input.activityAt;
+    // Workers count toward their conversation, so a busy project rises with them.
+    const threadLatest = (thread: TThread, seen: Set<string>): number => {
+      const key = threadKey(thread);
+      seen.add(key);
+      let latest = activityAt(thread);
+      for (const child of followers.get(key) ?? []) {
+        if (!seen.has(threadKey(child))) latest = Math.max(latest, threadLatest(child, seen));
+      }
+      return latest;
+    };
+    const entryLatest = (entry: TreeEntry<TProject, TThread>, seen: Set<string>): number => {
+      let latest = Number.NEGATIVE_INFINITY;
+      if (entry.kind === "thread") latest = threadLatest(entry.thread, seen);
+      else if (entry.conversation?.kind === "thread") {
+        latest = threadLatest(entry.conversation.thread, seen);
+      }
+      for (const child of entry.children) latest = Math.max(latest, entryLatest(child, seen));
+      return latest;
+    };
+    const latestByEntry = new Map(roots.map((entry) => [entry, entryLatest(entry, new Set())]));
+    roots.sort((left, right) => latestByEntry.get(right)! - latestByEntry.get(left)!);
+  }
   const top = lay(roots, 0, "tree-root");
   const sections: PluginTreeSection<TProject, TThread>[] = [];
   if (top.rows.length > 0) sections.push(section("tree-root", null, 0, 0, top.rows));
   sections.push(...top.sections);
 
-  if (others.length > 0) {
+  // An exclusive tree lists only its own; Activity keeps every thread it leaves out.
+  if (others.length > 0 && !exclusive) {
     const seen = new Set<string>();
     const rows = others
       .filter((thread) => {
@@ -615,9 +748,15 @@ export interface PluginTreeReadState {
 export function pluginTreeNotice(
   title: string,
   reads: ReadonlyArray<PluginTreeReadState>,
+  /** An exclusive tree still shows its own conversations rather than Activity. */
+  exclusive = false,
 ): string | null {
   if (!reads.some((read) => read.failed)) return null;
-  if (!reads.some((read) => read.hasNodes)) return `Couldn't load ${title}. Showing Activity.`;
+  if (!reads.some((read) => read.hasNodes)) {
+    return exclusive
+      ? `Couldn't load ${title}. It may be incomplete.`
+      : `Couldn't load ${title}. Showing Activity.`;
+  }
   return reads.every((read) => !read.failed || read.hasNodes)
     ? `${title} may be out of date.`
     : `Part of ${title} couldn't load. It may be incomplete.`;

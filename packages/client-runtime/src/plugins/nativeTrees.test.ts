@@ -21,12 +21,30 @@ interface Thread {
   readonly id: ThreadId;
   readonly environmentId: EnvironmentId;
   readonly lineage: { readonly parentThreadId: ThreadId | null };
+  readonly projectId?: ProjectId;
+  readonly pluginOwner?: { readonly installationId: string; readonly treeId: string };
 }
 
 const thread = (id: string, environmentId = local, parent: string | null = null): Thread => ({
   id: ThreadId.make(id),
   environmentId,
   lineage: { parentThreadId: parent === null ? null : ThreadId.make(id === parent ? id : parent) },
+});
+/** A main conversation the "inst-1" installation's "projects" tree owns. */
+const owned = (id: string, projectId: string, environmentId = local): Thread => ({
+  ...thread(id, environmentId),
+  projectId: ProjectId.make(projectId),
+  pluginOwner: { installationId: "inst-1", treeId: "projects" },
+});
+const exclusiveSource = (
+  environmentId: EnvironmentId,
+  nodes: ReadonlyArray<PluginTreeNode> = [],
+  exclusive = true,
+): PluginTreeSource => ({
+  environmentId,
+  nodes,
+  conversations: true,
+  projects: { installationId: "inst-1", treeId: "projects", exclusive },
 });
 const key = (entry: Pick<Thread, "id" | "environmentId">) => `${entry.environmentId}:${entry.id}`;
 
@@ -68,6 +86,8 @@ function layout(input: {
   readonly folds?: ReadonlyArray<string>;
   readonly route?: Thread;
   readonly emptyProjects?: boolean;
+  /** Latest activity by thread id; absent threads count as idle. */
+  readonly activity?: Readonly<Record<string, number>>;
 }) {
   const parked = new Set((input.parked ?? []).map(key));
   return buildPluginTreeLayout({
@@ -85,6 +105,7 @@ function layout(input: {
     showsEmptyProject: () => input.emptyProjects === true,
     folds: new Set(input.folds ?? []),
     routeThreadKey: input.route === undefined ? null : key(input.route),
+    activityAt: (entry) => input.activity?.[entry.id] ?? 0,
   });
 }
 
@@ -598,6 +619,91 @@ describe("buildPluginTreeLayout", () => {
   });
 });
 
+describe("buildPluginTreeLayout with owned project conversations", () => {
+  it("heads its project with an owned conversation the snapshot has not placed yet", () => {
+    const shelf = owned("shelf-main", "shelf");
+    const worker = thread("worker", local, "shelf-main");
+    const unrelated = thread("unrelated");
+    // Before the first read (no nodes), after a failed one, or past its limits: same result.
+    const result = layout({
+      sources: [exclusiveSource(local)],
+      threads: [unrelated, shelf, worker],
+    });
+    expect(outline(result)).toEqual(['shelf 1: ["worker"]']);
+    const heading = result.sections[0]?.heading;
+    expect(heading?.kind === "project" ? heading.conversation : null).toMatchObject({
+      kind: "thread",
+      thread: shelf,
+    });
+    // The unrelated thread is not placed, so it stays wherever Activity lists it.
+    expect(result.placedKeys).toEqual(new Set([key(shelf), key(worker)]));
+  });
+
+  it("never lists an owned conversation twice, and prefers it to a stale start action", () => {
+    const shelf = owned("shelf-main", "shelf");
+    const placedByPlugin = layout({
+      sources: [exclusiveSource(local, [conversation("p", "shelf", { threadId: "shelf-main" })])],
+      threads: [shelf],
+    });
+    expect(outline(placedByPlugin)).toEqual(["shelf 0: []"]);
+    const stale = layout({
+      sources: [exclusiveSource(local, [conversation("p", "shelf", { actionId: "open" })])],
+      threads: [shelf],
+    });
+    expect(stale.sections).toHaveLength(1);
+    const heading = stale.sections[0]?.heading;
+    expect(heading?.kind === "project" ? heading.conversation?.kind : null).toBe("thread");
+  });
+
+  it("omits threads it leaves out only when every serving environment opted in", () => {
+    const threads = [owned("shelf-main", "shelf"), thread("loose"), thread("loose-remote", remote)];
+    expect(
+      outline(layout({ sources: [exclusiveSource(local), exclusiveSource(remote)], threads })),
+    ).toEqual(["shelf 0: []"]);
+    expect(
+      outline(
+        layout({ sources: [exclusiveSource(local), exclusiveSource(remote, [], false)], threads }),
+      ),
+    ).toEqual(["shelf 0: []", 'Other 2: ["loose","loose-remote"]']);
+    // Another installation's claim earns no heading.
+    const foreign = {
+      ...owned("foreign", "shelf"),
+      pluginOwner: { installationId: "inst-2", treeId: "projects" },
+    };
+    expect(outline(layout({ sources: [exclusiveSource(local)], threads: [foreign] }))).toEqual([]);
+  });
+
+  it("orders an exclusive tree's projects across environments by their latest activity", () => {
+    const threads = [
+      owned("old", "old"),
+      owned("busy", "busy"),
+      thread("busy-worker", local, "busy"),
+      owned("remote-main", "remote-project", remote),
+    ];
+    const sources = [
+      exclusiveSource(local, [
+        conversation("a", "old", { threadId: "old" }),
+        conversation("b", "busy", { threadId: "busy" }),
+      ]),
+      exclusiveSource(remote, [conversation("c", "remote-project", { threadId: "remote-main" })]),
+    ];
+    // A worker's activity lifts its project; environments interleave rather than concatenate.
+    const activity = { old: 30, busy: 10, "busy-worker": 50, "remote-main": 40 };
+    expect(outline(layout({ sources, threads, activity }))).toEqual([
+      'busy 1: ["busy-worker"]',
+      "remote-project 0: []",
+      "old 0: []",
+    ]);
+    // A tree that did not opt in keeps the plugin's order.
+    const ordinary = sources.map(({ projects: _projects, ...source }) => source);
+    expect(outline(layout({ sources: ordinary, threads, activity }))).toEqual([
+      "old 0: []",
+      'busy 1: ["busy-worker"]',
+      "remote-project 0: []",
+    ]);
+  });
+});
+
 describe("pluginTreeNotice", () => {
   it("says nothing while every environment's last read succeeded or is still loading", () => {
     expect(pluginTreeNotice("Projects", [])).toBeNull();
@@ -612,6 +718,10 @@ describe("pluginTreeNotice", () => {
   it("says the sidebar shows Activity only when no environment's tree is shown", () => {
     expect(pluginTreeNotice("Projects", [{ failed: true, hasNodes: false }])).toBe(
       "Couldn't load Projects. Showing Activity.",
+    );
+    // An exclusive tree keeps showing its own conversations instead.
+    expect(pluginTreeNotice("Projects", [{ failed: true, hasNodes: false }], true)).toBe(
+      "Couldn't load Projects. It may be incomplete.",
     );
   });
 

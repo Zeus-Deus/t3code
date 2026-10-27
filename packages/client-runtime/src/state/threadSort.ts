@@ -46,6 +46,14 @@ export function resolveSettledThreadTimestamp(thread: SettledThreadTimestampInpu
   return toSortableTimestamp(thread.updatedAt) === null ? null : thread.updatedAt;
 }
 
+/** When a thread last saw a message or run, falling back to its last update; 0 when unknown. */
+export function threadActivityTimestampMs(
+  thread: Omit<SettledThreadTimestampInput, "settledAt">,
+): number {
+  const timestamp = resolveSettledThreadTimestamp({ ...thread, settledAt: null });
+  return timestamp === null ? 0 : Date.parse(timestamp);
+}
+
 export function sortSettledThreads<T extends SettledThreadTimestampInput & { readonly id: string }>(
   threads: readonly T[],
 ): T[] {
