@@ -45,6 +45,7 @@ import {
   type DesktopWslState,
   type EnvironmentId,
   type FilesystemBrowseResult,
+  type ScopedProjectRef,
   SourceControlProviderKind,
   PRIMARY_LOCAL_ENVIRONMENT_ID,
   resolveEnvironmentMachineKind,
@@ -135,6 +136,7 @@ import {
   isUnsupportedWindowsProjectPath,
   resolveProjectPathForDispatch,
 } from "@t3tools/client-runtime/state/projects";
+import { type CommandPaletteProjectChoice } from "../commandPaletteBus";
 import {
   dispatchCommandPalette,
   getCommandPaletteReturnFocus,
@@ -489,6 +491,9 @@ function OpenCommandPaletteDialog(props: {
     null,
   );
   const [isPickingProjectFolder, setIsPickingProjectFolder] = useState(false);
+  // Set only by the choose-project intent and dropped on returning to the root list, so an
+  // ordinary add-project flow never hands its project to a caller.
+  const [projectChoice, setProjectChoice] = useState<CommandPaletteProjectChoice | null>(null);
   const [addProjectCloneFlow, setAddProjectCloneFlow] = useState<AddProjectCloneFlow | null>(null);
   const [newProjectFlow, setNewProjectFlow] = useState<{
     readonly environmentId: EnvironmentId;
@@ -848,6 +853,7 @@ function OpenCommandPaletteDialog(props: {
     setNewProjectFlow(null);
     if (viewStack.length <= 1) {
       setAddProjectEnvironmentId(null);
+      setProjectChoice(null);
     } else if (newProjectFlow?.sourcesEnvironmentId) {
       setAddProjectEnvironmentId(newProjectFlow.sourcesEnvironmentId);
     }
@@ -1157,6 +1163,78 @@ function OpenCommandPaletteDialog(props: {
           ),
         );
     }
+  };
+
+  const chooseProject = (choice: CommandPaletteProjectChoice, projectRef: ScopedProjectRef) => {
+    setProjectChoice(null);
+    setOpen(false);
+    choice.choose(projectRef);
+  };
+
+  const openChosenProjectFolderFlow = async (
+    folderEnvironments: ReadonlyArray<AddProjectEnvironmentOption>,
+  ): Promise<void> => {
+    const only = folderEnvironments.length === 1 ? folderEnvironments[0] : undefined;
+    if (only !== undefined) {
+      await startAddProjectBrowse(only.environmentId);
+      return;
+    }
+    pushPaletteView({
+      addonIcon: <FolderPlusIcon className={ADDON_ICON_CLASS} />,
+      groups: [
+        {
+          value: "environments",
+          label: "Environments",
+          items: folderEnvironments.map((option) =>
+            buildEnvironmentItem(
+              option,
+              `choose-project:environment:${option.environmentId}`,
+              (environmentId) => void startAddProjectBrowse(environmentId),
+            ),
+          ),
+        },
+      ],
+    });
+  };
+
+  const buildChooseProjectGroups = (
+    choice: CommandPaletteProjectChoice,
+  ): CommandPaletteView["groups"] => {
+    const offered = (environmentId: EnvironmentId) => choice.environmentIds.includes(environmentId);
+    const folderEnvironments = addProjectEnvironmentOptions.filter(
+      (option) => option.isConnected && offered(option.environmentId),
+    );
+    const addFolder: CommandPaletteActionItem = {
+      kind: "action",
+      value: "choose-project:add-folder",
+      searchTerms: ["add project", "folder", "directory", "browse"],
+      title: "Add project",
+      icon: <FolderPlusIcon className={ITEM_ICON_CLASS} />,
+      keepOpen: true,
+      run: async () => {
+        await openChosenProjectFolderFlow(folderEnvironments);
+      },
+    };
+    const projectItems = buildNewThreadInProjectItems({
+      projects: projects
+        .filter(
+          (project) =>
+            offered(project.environmentId) &&
+            !isScratchProject(project, scratchWorkspaceRootFor(project.environmentId)),
+        )
+        .map((project) => ({ ...project, displayName: project.title })),
+      projectGroupByTargetKey,
+      locationByEnvironmentId: projectEnvironmentLocationById,
+      runProject: async (project) =>
+        chooseProject(choice, scopeProjectRef(project.environmentId, project.id)),
+    });
+    return [
+      {
+        value: "projects",
+        label: "Projects",
+        items: [...(folderEnvironments.length > 0 ? [addFolder] : []), ...projectItems],
+      },
+    ];
   };
 
   const openNewProjectFlow = () => {
@@ -1679,6 +1757,16 @@ function OpenCommandPaletteDialog(props: {
       );
       return;
     }
+    if (projectChoice !== null && !projectChoice.environmentIds.includes(input.environmentId)) {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Project not added",
+          description: `That folder is on ${environment?.label ?? "another environment"}, which this view does not use.`,
+        }),
+      );
+      return;
+    }
     const rawCwd = input.rawCwd;
 
     if (isUnsupportedWindowsProjectPath(rawCwd.trim(), input.platform)) {
@@ -1710,6 +1798,10 @@ function OpenCommandPaletteDialog(props: {
       projects.filter((project) => project.environmentId === input.environmentId),
       cwd,
     );
+    if (existing && projectChoice !== null) {
+      chooseProject(projectChoice, scopeProjectRef(existing.environmentId, existing.id));
+      return;
+    }
     if (existing) {
       const latestThread = getLatestThreadForProject(
         threads.filter((thread) => thread.environmentId === existing.environmentId),
@@ -1775,6 +1867,10 @@ function OpenCommandPaletteDialog(props: {
           }),
         );
       }
+      return;
+    }
+    if (projectChoice !== null) {
+      chooseProject(projectChoice, scopeProjectRef(input.environmentId, projectId));
       return;
     }
 

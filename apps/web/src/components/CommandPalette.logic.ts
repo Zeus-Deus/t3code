@@ -10,7 +10,10 @@ import {
   type ThreadSearchSubject,
 } from "@t3tools/shared/paletteSearch";
 import { threadSearchSubject } from "@t3tools/client-runtime/state/thread-search";
-import type { CommandPaletteLinkedThreads } from "../commandPaletteBus";
+import type {
+  CommandPaletteLinkedThreads,
+  CommandPaletteProjectChoice,
+} from "../commandPaletteBus";
 import {
   addProjectRemoteSourceLabel,
   addProjectRemoteSourcePathHint,
@@ -72,6 +75,7 @@ export type SearchOverlayMode = "command" | "files" | "content";
 
 export type CommandPaletteOpenIntent =
   | { readonly kind: "add-project" | "new-thread-in" | "change-theme" }
+  | { readonly kind: "choose-project"; readonly choice: CommandPaletteProjectChoice }
   | {
       readonly kind: "search";
       readonly query: string;
@@ -99,6 +103,7 @@ export type CommandPaletteUiAction =
     }
   | { readonly _tag: "OpenAddProject" }
   | { readonly _tag: "OpenNewThreadIn" }
+  | { readonly _tag: "OpenChooseProject"; readonly choice: CommandPaletteProjectChoice }
   | { readonly _tag: "OpenChangeTheme" }
   | {
       readonly _tag: "OpenChildSearch";
@@ -155,6 +160,8 @@ export function reduceCommandPaletteUiState(
       return openWithIntent({ kind: "add-project" });
     case "OpenNewThreadIn":
       return openWithIntent({ kind: "new-thread-in" });
+    case "OpenChooseProject":
+      return openWithIntent({ kind: "choose-project", choice: action.choice });
     case "OpenChangeTheme":
       return openWithIntent({ kind: "change-theme" });
   }

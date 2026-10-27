@@ -1,4 +1,8 @@
-import type { EnvironmentId, PullRequestLinkedThreadsResult } from "@t3tools/contracts";
+import type {
+  EnvironmentId,
+  PullRequestLinkedThreadsResult,
+  ScopedProjectRef,
+} from "@t3tools/contracts";
 
 import { dispatchCommandPalette, isCommandPaletteMounted } from "./commandPaletteStore";
 
@@ -7,8 +11,19 @@ export interface CommandPaletteLinkedThreads {
   readonly threads: PullRequestLinkedThreadsResult["threads"];
 }
 
+/**
+ * Lists these environments' projects and the add-folder flow, and hands the project the person
+ * chose or added to `choose` instead of opening a draft. Closing the palette chooses nothing.
+ */
+export interface CommandPaletteProjectChoice {
+  readonly environmentIds: ReadonlyArray<EnvironmentId>;
+  readonly choose: (project: ScopedProjectRef) => void;
+}
+
+
 export interface CommandPaletteOpenDetail {
   readonly open?: "add-project" | "new-thread-in";
+  readonly chooseProject?: CommandPaletteProjectChoice;
   readonly query?: string;
   readonly linkedThreads?: CommandPaletteLinkedThreads;
 }
@@ -17,7 +32,9 @@ export function openCommandPalette(detail: CommandPaletteOpenDetail = {}): void 
   // With no palette on screen (e.g. /pair) the request is dropped; kept in the
   // store, it would pop a stale palette once the app shell mounts.
   if (!isCommandPaletteMounted()) return;
-  if (detail.open === "new-thread-in") {
+  if (detail.chooseProject !== undefined) {
+    dispatchCommandPalette({ _tag: "OpenChooseProject", choice: detail.chooseProject });
+  } else if (detail.open === "new-thread-in") {
     dispatchCommandPalette({ _tag: "OpenNewThreadIn" });
   } else if (detail.open === "add-project") {
     dispatchCommandPalette({ _tag: "OpenAddProject" });
