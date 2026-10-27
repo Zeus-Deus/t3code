@@ -183,6 +183,8 @@ export function SidebarProjectSectionHeader(props: {
   folded: boolean;
   onToggleFold: (sectionKey: string) => void;
   onNewThread: (project: SidebarProjectSnapshot) => void;
+  /** Plugin actions shown beside new thread on a project heading. */
+  actions?: ReactNode;
   /** Right-click opens project settings, as it does in the project filter. */
   onOpenSettings: (event: ReactMouseEvent, project: SidebarProjectSnapshot) => void;
 }) {
@@ -263,6 +265,7 @@ export function SidebarProjectSectionHeader(props: {
       )}
       {project ? (
         <span className="-ml-8 mr-1 flex opacity-0 group-hover/project-section:opacity-100 group-focus-within/project-section:opacity-100 pointer-coarse:opacity-100">
+          {props.actions}
           <Tooltip>
             <TooltipTrigger
               render={

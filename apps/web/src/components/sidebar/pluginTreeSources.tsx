@@ -6,7 +6,7 @@ import {
   type PluginSidebarTreeOption,
   type PluginTreeSource,
 } from "@t3tools/client-runtime/plugins";
-import type { EnvironmentId, PluginTreeNode } from "@t3tools/contracts";
+import type { EnvironmentId, PluginInstallation, PluginTreeNode } from "@t3tools/contracts";
 import { useEffect, useRef } from "react";
 import { create } from "zustand";
 
@@ -83,6 +83,27 @@ const usePluginTreeSnapshotStore = create<PluginTreeSnapshotState>()((set) => ({
       return { key, snapshots };
     }),
 }));
+
+/**
+ * The installation whose snapshot an environment shows for the chosen tree, while that same
+ * installation and generation is still runnable and still serves the tree; otherwise null.
+ */
+export function usePluginTreeInstallation(
+  choice: PluginSidebarTreeOption,
+  environmentId: EnvironmentId,
+): PluginInstallation | null {
+  const catalogue = usePluginCatalogue(environmentId);
+  const snapshot = usePluginTreeSnapshotStore((state) =>
+    state.key === choice.key ? state.snapshots.get(environmentId) : undefined,
+  );
+  if (catalogue.availability !== "available" || !catalogue.loaded) return null;
+  if (snapshot === undefined || snapshot.nodes === null) return null;
+  const installation = findPluginTreeInstallation(pluginRunnableInstallations(catalogue), choice);
+  return installation?.installationId === snapshot.installationId &&
+    installation.generation === snapshot.generation
+    ? installation
+    : null;
+}
 
 export function resetPluginTreeSnapshotsForTests(): void {
   usePluginTreeSnapshotStore.setState({ key: null, snapshots: new Map() });

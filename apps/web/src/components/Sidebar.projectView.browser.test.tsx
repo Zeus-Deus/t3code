@@ -16,6 +16,7 @@ import { act, fakeTimers, render } from "../../test/render";
 import type { SidebarProjectSnapshot } from "../sidebarProjectGrouping";
 import { makeThreadFixture } from "../test-fixtures";
 import type { Thread } from "../types";
+import { selectActiveRightPanelSurface, useRightPanelStore } from "../rightPanelStore";
 import { useThreadSelectionStore } from "../threadSelectionStore";
 import { useUiStateStore } from "../uiStateStore";
 import { threadFamilies } from "../state/threads";
@@ -46,6 +47,9 @@ const data = vi.hoisted(() => {
     // Undefined while the change subscription has not reported; null where there is none.
     treeRevision: 0 as number | null | undefined,
     treeReads: [] as string[],
+    // Plugin action invocations, answered by `answerInvoke`.
+    invokes: [] as Array<{ environmentId: string; input: unknown }>,
+    answerInvoke: () => Promise.resolve({}) as Promise<unknown>,
   };
   return {
     read: () => snapshot,
@@ -117,6 +121,12 @@ vi.mock("../state/use-atom-command", async (original) => {
     ...actual,
     useAtomCommand: (command: { label: string }, options?: never) => {
       const real = actual.useAtomCommand(command as never, options);
+      if (command.label === "environment-command:plugins:invoke") {
+        return async (request: { environmentId: string; input: unknown }) => {
+          data.read().invokes.push(request);
+          return { _tag: "Success", value: await data.read().answerInvoke() };
+        };
+      }
       if (command.label !== "environment-command:plugins:read-tree") return real;
       return async (request: { environmentId: string }) => {
         data.read().treeReads.push(request.environmentId);
@@ -1055,5 +1065,102 @@ describe("Sidebar plugin tree", () => {
     expect(window.localStorage.getItem("t3code:sidebar:project-folds")).toBe(
       JSON.stringify([`+tree:${laptop}:quiet`]),
     );
+  });
+
+  it("runs a project heading's declared action only on click, per environment and never for the open thread", async () => {
+    const a = thread("a", laptop, "p1");
+    const elsewhere = thread("elsewhere", server, "p1");
+    const actionable = (projectId: string): PluginTreeNode => ({
+      id: "app",
+      kind: "project",
+      projectId: ProjectId.make(projectId),
+      actionId: "coordinate",
+    });
+    setupTree({
+      threads: [a, elsewhere],
+      route: elsewhere,
+      trees: new Map([
+        [laptop, [actionable("p1"), treeThread("t", "a", "app")]],
+        [server, [actionable("p9")]],
+      ]),
+    });
+    const capabilities = ["ui.native-trees", "ui.native-tree-actions", "threads.read"] as const;
+    const base = treePlugin();
+    const withAction: PluginInstallation = {
+      ...base,
+      manifest: {
+        ...base.manifest,
+        capabilities: [...capabilities, "ui"],
+        actions: [{ id: "coordinate", title: "Start coordinator", placements: [] }],
+        views: [
+          { id: "board", title: "Board", entry: "views/board.html", placement: "side-panel" },
+        ],
+      },
+      grants: { capabilities: [...capabilities, "ui"], projectIds: [] },
+    };
+    let release!: () => void;
+    data.update({
+      installations: [withAction],
+      invokes: [],
+      answerInvoke: () =>
+        new Promise((resolve) => {
+          release = () =>
+            resolve({ intents: [{ type: "view.open", viewId: "board", threadId: "coordinator" }] });
+        }),
+    });
+    await using _screen = await renderSidebar();
+
+    // The merged App heading keeps one action per environment, each named.
+    const onServer = page.getByRole("button", { name: "Start coordinator in App on Server" });
+    await expect.element(onServer).toBeInTheDocument();
+    await expect
+      .element(page.getByRole("button", { name: "Start coordinator in App on Laptop" }))
+      .toBeInTheDocument();
+    expect(data.read().invokes).toEqual([]);
+
+    await userEvent.click(onServer);
+    await expect.element(onServer).toBeDisabled();
+    expect(data.read().invokes).toEqual([
+      {
+        environmentId: server,
+        input: expect.objectContaining({
+          installationId: "inst-projects",
+          generation: "gen-1",
+          handler: "action:coordinate",
+          context: { projectId: "p9" },
+        }),
+      },
+    ]);
+    release();
+    await expect.element(onServer).toBeEnabled();
+    // The result goes through the usual intent handling: the side panel opens on its thread.
+    expect(
+      selectActiveRightPanelSurface(
+        useRightPanelStore.getState().byThreadKey,
+        scopeThreadRef(server, ThreadId.make("coordinator")),
+      ),
+    ).toEqual(expect.objectContaining({ kind: "plugin", installationId: "inst-projects" }));
+    expect(data.read().invokes).toHaveLength(1);
+
+    // Without the grant, or once the action is no longer declared, no control is offered.
+    await act(() =>
+      data.update({
+        installations: [
+          {
+            ...withAction,
+            grants: { capabilities: [...base.grants.capabilities], projectIds: [] },
+          },
+        ],
+      }),
+    );
+    await expect.element(onServer).not.toBeInTheDocument();
+    await act(() =>
+      data.update({
+        installations: [{ ...withAction, manifest: { ...withAction.manifest, actions: [] } }],
+      }),
+    );
+    await expect.element(page.getByText("a", { exact: true })).toBeVisible();
+    expect(page.getByRole("button", { name: /Start coordinator/ }).query()).toBeNull();
+    expect(data.read().invokes).toHaveLength(1);
   });
 });

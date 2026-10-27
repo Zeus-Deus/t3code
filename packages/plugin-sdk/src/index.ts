@@ -106,7 +106,7 @@ export type PluginClientIntent =
   | {
       readonly type: "view.open";
       readonly viewId: string;
-      /** For a side panel, reveal and open beside this thread in the same environment. */
+      /** Opens beside this thread on web/desktop; mobile reveals the thread without a panel. */
       readonly threadId?: string;
     };
 /** An image file the plugin wrote under `context.dataDirectory`, named by its relative path. */

@@ -26,9 +26,21 @@ export interface PluginTreeRow<TThread> {
   readonly children: ReadonlyArray<PluginTreeRow<TThread>>;
 }
 
+/** A declared action a project node offers, run for the environment and project it named. */
+export interface PluginTreeProjectAction {
+  readonly environmentId: EnvironmentId;
+  readonly projectId: ProjectId;
+  readonly actionId: string;
+}
+
 export type PluginTreeHeading<TProject> =
   | { readonly kind: "group"; readonly title: string }
-  | { readonly kind: "project"; readonly project: TProject }
+  | {
+      readonly kind: "project";
+      readonly project: TProject;
+      /** Every merged node's action, kept per environment and project; absent when none offer one. */
+      readonly actions?: ReadonlyArray<PluginTreeProjectAction>;
+    }
   /** Live threads the tree does not place. */
   | { readonly kind: "other" };
 
@@ -148,6 +160,7 @@ interface HeadingNode<TProject, TThread> {
   readonly heading: PluginTreeHeading<TProject>;
   readonly collapsedByDefault: boolean;
   readonly children: Array<TreeEntry<TProject, TThread>>;
+  readonly actions: Array<PluginTreeProjectAction>;
   /** Root project headings that took in another node of the same logical project. */
   merged: boolean;
 }
@@ -242,15 +255,31 @@ export function buildPluginTreeLayout<TProject, TThread extends PluginTreeThread
             heading: { kind: "group", title: node.title },
             collapsedByDefault: collapsedByDefault(node),
             children: [],
+            actions: [],
             merged: false,
           };
           return { entry, attachTo: headingParent, container: entry };
         }
         const project = input.project(environmentId, node.projectId);
         if (project === null) return { entry: null, attachTo: null, container: headingParent };
+        const action =
+          node.actionId === undefined
+            ? null
+            : { environmentId, projectId: node.projectId, actionId: node.actionId };
         const merged = headingParent === null ? rootProjects.get(project.key) : undefined;
         if (merged !== undefined) {
           merged.merged = true;
+          if (
+            action !== null &&
+            !merged.actions.some(
+              (other) =>
+                other.environmentId === action.environmentId &&
+                other.projectId === action.projectId &&
+                other.actionId === action.actionId,
+            )
+          ) {
+            merged.actions.push(action);
+          }
           return { entry: null, attachTo: null, container: merged };
         }
         const entry: Heading = {
@@ -260,6 +289,7 @@ export function buildPluginTreeLayout<TProject, TThread extends PluginTreeThread
           heading: { kind: "project", project: project.project },
           collapsedByDefault: collapsedByDefault(node),
           children: [],
+          actions: action === null ? [] : [action],
           merged: false,
         };
         if (headingParent === null) rootProjects.set(project.key, entry);
@@ -420,7 +450,9 @@ export function buildPluginTreeLayout<TProject, TThread extends PluginTreeThread
       laid.sections.push(
         section(
           entry.key,
-          entry.heading,
+          entry.heading.kind === "project" && entry.actions.length > 0
+            ? { ...entry.heading, actions: entry.actions }
+            : entry.heading,
           depth,
           depth + 1,
           folded ? findRoute(inner.allRows) : inner.rows,

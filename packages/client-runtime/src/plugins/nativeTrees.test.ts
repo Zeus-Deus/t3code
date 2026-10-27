@@ -265,6 +265,54 @@ describe("buildPluginTreeLayout", () => {
     ]);
   });
 
+  it("keeps each environment's project action on merged and nested headings, once each", () => {
+    const withAction = (id: string, projectId: string, parentId?: string): PluginTreeNode => ({
+      id,
+      kind: "project",
+      projectId: ProjectId.make(projectId),
+      actionId: "coordinate",
+      ...(parentId === undefined ? {} : { parentId }),
+    });
+    const result = layout({
+      sources: [
+        {
+          environmentId: local,
+          nodes: [
+            withAction("p", "app-local"),
+            withAction("again", "app-local"),
+            group("g", "Mine"),
+            withAction("nested", "web", "g"),
+            placed("t", "one", "nested"),
+          ],
+        },
+        {
+          environmentId: remote,
+          nodes: [withAction("p", "app-remote"), project("q", "api")],
+        },
+      ],
+      threads: [thread("one")],
+      emptyProjects: true,
+    });
+    const actions = Object.fromEntries(
+      result.sections.flatMap((section) =>
+        section.heading?.kind === "project"
+          ? [[section.heading.project.name, section.heading.actions]]
+          : [],
+      ),
+    );
+    expect(actions).toEqual({
+      "app-local": [
+        { environmentId: local, projectId: "app-local", actionId: "coordinate" },
+        { environmentId: remote, projectId: "app-remote", actionId: "coordinate" },
+      ],
+      web: [{ environmentId: local, projectId: "web", actionId: "coordinate" }],
+      api: undefined,
+    });
+    expect(pluginTreeThreadKeys(result.sections)).toEqual([`${local}:one`]);
+    expect(result.placedKeys).toEqual(new Set([`${local}:one`]));
+    expect(result.sections.find((section) => section.key === "project:logical:app")?.count).toBe(0);
+  });
+
   it("skips references the host does not list and lifts their children", () => {
     const result = layout({
       sources: [

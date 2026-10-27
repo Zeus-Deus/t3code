@@ -264,6 +264,7 @@ import {
   usePluginTreeNotice,
   usePluginTreeSources,
 } from "./sidebar/pluginTreeSources";
+import { PluginTreeProjectActions } from "./sidebar/PluginTreeProjectActions";
 import {
   SidebarProjectSectionHeader,
   SidebarQuietProjectsToggle,
@@ -3609,6 +3610,19 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                                     : (key) => toggleTreeFold(key, tree.collapsedByDefault)
                                 }
                                 onNewThread={startThreadInProject}
+                                actions={
+                                  selectedTree !== null &&
+                                  section.group !== null &&
+                                  heading?.kind === "project" &&
+                                  heading.actions !== undefined ? (
+                                    <PluginTreeProjectActions
+                                      choice={selectedTree}
+                                      actions={heading.actions}
+                                      projectName={section.group.displayName}
+                                      environmentLabels={environmentLabelById}
+                                    />
+                                  ) : undefined
+                                }
                                 onOpenSettings={openProjectSettingsFromHeader}
                               />,
                             );
