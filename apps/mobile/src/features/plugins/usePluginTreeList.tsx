@@ -134,7 +134,6 @@ function PluginTreeSnapshotFetcher(props: {
     generation,
     // oxlint-disable-next-line react/exhaustive-effect-dependencies -- A grant change reads again.
     conversations,
-    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- So does a projects grant.
     projects,
     treeId,
     known,

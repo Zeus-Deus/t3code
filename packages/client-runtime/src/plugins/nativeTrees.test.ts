@@ -647,7 +647,10 @@ describe("buildPluginTreeLayout with owned project conversations", () => {
 
   it("heads only conversations in projects it may still read", () => {
     const threads = [owned("shelf-main", "shelf"), owned("revoked-main", "revoked")];
-    const granted = layout({ sources: [exclusiveSource(local, [], true, ["shelf", "revoked"])], threads });
+    const granted = layout({
+      sources: [exclusiveSource(local, [], true, ["shelf", "revoked"])],
+      threads,
+    });
     expect(outline(granted)).toEqual(["shelf 0: []", "revoked 0: []"]);
     // With the project's grant gone the conversation is Activity's again, not the tree's.
     const revoked = layout({ sources: [exclusiveSource(local, [], true, ["shelf"])], threads });
