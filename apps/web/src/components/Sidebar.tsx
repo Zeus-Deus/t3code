@@ -3638,10 +3638,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                             // A conversation's heading may show a project merged across
                             // environments; its own actions stay on the conversation's project.
                             const physical =
-                              conversation !== undefined &&
-                              projectByKey.has(
-                                `${conversation.environmentId}:${conversation.projectId}`,
-                              )
+                              conversation !== undefined
                                 ? scopeProjectRef(
                                     conversation.environmentId,
                                     conversation.projectId,
