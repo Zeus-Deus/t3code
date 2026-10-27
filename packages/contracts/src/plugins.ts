@@ -124,6 +124,9 @@ export const PluginThreadOwner = Schema.Struct({
 export type PluginThreadOwner = typeof PluginThreadOwner.Type;
 const pluginTreeOwner = text(133).check(Schema.isPattern(/^tree:[a-zA-Z0-9][a-zA-Z0-9._-]*$/));
 export const PluginThreadAdoptInput = Schema.Struct({ threadId: ThreadId, owner: pluginTreeOwner });
+export type PluginThreadAdoptInput = typeof PluginThreadAdoptInput.Type;
+export const PluginThreadUnarchiveInput = Schema.Struct({ threadId: ThreadId });
+export type PluginThreadUnarchiveInput = typeof PluginThreadUnarchiveInput.Type;
 
 export const PluginNativeTree = Schema.Struct({
   id: identifier,
