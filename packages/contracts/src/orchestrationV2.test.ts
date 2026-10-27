@@ -21,6 +21,14 @@ import {
 
 const now = DateTime.makeUnsafe("2026-04-20T00:00:00.000Z");
 
+const decodeOrchestrationV2AppThreadJson = Schema.decodeUnknownSync(OrchestrationV2AppThreadJson);
+const encodeOrchestrationV2AppThreadJson = Schema.encodeSync(OrchestrationV2AppThreadJson);
+const decodeOrchestrationV2ConversationMessageJson = Schema.decodeUnknownSync(
+  OrchestrationV2ConversationMessageJson,
+);
+const encodeOrchestrationV2ConversationMessageJson = Schema.encodeSync(
+  OrchestrationV2ConversationMessageJson,
+);
 const decodeOrchestrationV2TurnItemJson = Schema.decodeUnknownSync(OrchestrationV2TurnItemJson);
 const encodeOrchestrationV2TurnItemJson = Schema.encodeSync(OrchestrationV2TurnItemJson);
 const decodeOrchestrationV2Subagent = Schema.decodeUnknownSync(OrchestrationV2Subagent);
@@ -643,7 +651,7 @@ describe("latestProviderTurnForAttempt", () => {
 });
 
 it("decodes old thread history without independent launch provenance and preserves new provenance", () => {
-  const decode = Schema.decodeUnknownSync(OrchestrationV2AppThreadJson);
+  const decode = decodeOrchestrationV2AppThreadJson;
   const thread = {
     createdBy: "system",
     creationSource: "server",
@@ -677,7 +685,7 @@ it("decodes old thread history without independent launch provenance and preserv
     },
     pluginBriefMessageId: "first-message",
   };
-  const encoded = Schema.encodeSync(OrchestrationV2AppThreadJson)(decode(bound));
+  const encoded = encodeOrchestrationV2AppThreadJson(decode(bound));
   expect(encoded).toMatchObject(bound);
 });
 
@@ -720,8 +728,8 @@ it("round-trips a first-message brief in message and turn history while keeping 
     pluginName: "Coordinator",
     text: "Plan first.\nKeep the user's goal intact.",
   };
-  const decodeMessage = Schema.decodeUnknownSync(OrchestrationV2ConversationMessageJson);
-  const encodeMessage = Schema.encodeSync(OrchestrationV2ConversationMessageJson);
+  const decodeMessage = decodeOrchestrationV2ConversationMessageJson;
+  const encodeMessage = encodeOrchestrationV2ConversationMessageJson;
   expect(decodeMessage(message)).not.toHaveProperty("pluginBrief");
   expect(decodeOrchestrationV2TurnItemJson(item)).not.toHaveProperty("pluginBrief");
   expect(encodeMessage(decodeMessage({ ...message, pluginBrief }))).toMatchObject({
