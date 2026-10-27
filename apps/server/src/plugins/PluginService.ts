@@ -2298,6 +2298,11 @@ const make = Effect.gen(function* () {
         projectId = node.projectId;
         if (
           node.actionId !== undefined &&
+          !pluginCapabilityAllowed(current.record.installation, actor, "ui.native-tree-actions")
+        )
+          return yield* pluginPermissionDenied();
+        if (
+          node.actionId !== undefined &&
           !current.record.installation.manifest.actions.some(
             (action) => action.id === node.actionId,
           )

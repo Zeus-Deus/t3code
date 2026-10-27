@@ -17,6 +17,7 @@ export type PluginCapability =
   | "ui"
   | "ui.sidebar-views"
   | "ui.native-trees"
+  | "ui.native-tree-actions"
   | "ui.conversation-cards"
   | "ui.changes"
   | "worktrees.create"
@@ -139,7 +140,7 @@ export type PluginTreeNode =
       readonly collapsedByDefault?: boolean;
       readonly kind: "project";
       readonly projectId: string;
-      /** Declared action beside the heading; clicking passes this project's projectId. */
+      /** Requires ui.native-tree-actions. Clicking passes only this project's projectId. */
       readonly actionId?: string;
     }
   | {

@@ -236,6 +236,12 @@ on selection and semantic changes rather than on row renders or search input.
 See the SDK for snapshot limits; do not send transcripts or copy live status
 into group labels to force frequent refreshes.
 
+A project node may set `actionId` to a declared action. Declare the optional
+`ui.native-tree-actions` capability and emit that field only when it appears in
+`ctx.capabilities`. On supported web and desktop clients, clicking the heading's
+action invokes it with only that node's `projectId`; older and mobile clients
+keep the heading without the action. It never runs just from reading the tree.
+
 `collapsedByDefault` folds group and project headings. Native thread rows stay
 expanded; wrap a branch in a group when it needs a foldable heading.
 

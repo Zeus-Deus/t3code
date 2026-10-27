@@ -58,6 +58,10 @@ const fixture = Effect.gen(function* () {
         await ctx.ui.invalidate(["tree:native", "tree:native"]);
         return {nodes: [{id: "t", kind: "thread", threadId: "t"}]};
       });
+      ctx.trees.register("project-actions", () => ({nodes: [{
+        id: "p", kind: "project", projectId: "p",
+        ...(ctx.capabilities.includes("ui.native-tree-actions") ? {actionId: "echo"} : {}),
+      }]}));
       ctx.handle("action:card", () => ({card:{viewId:"card",summary:"Historical proposal",data:{planId:"one"},dataOwner:"forged"}}));
       ctx.handle("action:echo", async (input, invocation) => {
         await ctx.storage.set("value", input);
@@ -215,6 +219,37 @@ describe("PluginSupervisor real child", () => {
             summary: "Historical proposal",
             data: { planId: "one" },
           });
+        }),
+      ),
+  );
+  it.effect(
+    "lets a real worker omit project actions when the host does not grant their feature",
+    () =>
+      provide(
+        Effect.gen(function* () {
+          const supervisor = yield* PluginSupervisor.PluginSupervisor;
+          const input = yield* fixture;
+          for (const offered of [false, true]) {
+            const result = yield* supervisor.invoke(
+              {
+                ...input,
+                installationId: `${input.installationId}-${offered}`,
+                handler: "tree:project-actions",
+                capabilities: offered ? ["ui.native-tree-actions"] : [],
+              },
+              () => Effect.void,
+            );
+            expect(result.data).toEqual({
+              nodes: [
+                {
+                  id: "p",
+                  kind: "project",
+                  projectId: "p",
+                  ...(offered ? { actionId: "echo" } : {}),
+                },
+              ],
+            });
+          }
         }),
       ),
   );

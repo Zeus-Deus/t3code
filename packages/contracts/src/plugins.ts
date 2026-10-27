@@ -36,6 +36,7 @@ export const PLUGIN_CAPABILITIES = [
   "ui",
   "ui.sidebar-views",
   "ui.native-trees",
+  "ui.native-tree-actions",
   "ui.conversation-cards",
   "ui.changes",
   "worktrees.create",

@@ -5443,7 +5443,7 @@ it.effect(
         f.path.join(f.directory, "t3-plugin.json"),
         yield* encodeJson({
           ...manifest,
-          capabilities: [...manifest.capabilities, "ui.native-trees"],
+          capabilities: [...manifest.capabilities, "ui.native-trees", "ui.native-tree-actions"],
           nativeTrees: [{ id: "projects", title: "Projects" }],
         }),
       );
@@ -5452,7 +5452,7 @@ it.effect(
         installationId: installed.installationId,
         digest: installed.digest,
         grants: {
-          capabilities: ["threads.read", "ui", "ui.native-trees"],
+          capabilities: ["threads.read", "ui", "ui.native-trees", "ui.native-tree-actions"],
           projectIds: [projectId],
         },
       });
@@ -5490,12 +5490,78 @@ it.effect(
       yield* f.plugins.consent({
         installationId: enabled.installationId,
         digest: enabled.digest,
-        grants: { capabilities: ["threads.read", "ui", "ui.native-trees"], projectIds: [] },
+        grants: {
+          capabilities: ["threads.read", "ui", "ui.native-trees", "ui.native-tree-actions"],
+          projectIds: [],
+        },
       });
       expect((yield* f.plugins.invoke(action, actor).pipe(Effect.flip)).reason).toBe(
         "stale_generation",
       );
       expect(f.calls.filter((call) => call.handler === "action:review")).toHaveLength(1);
+    }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect(
+  "requires a granted native-tree-actions feature without blocking legacy project nodes",
+  () =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      yield* f.fs.writeFileString(
+        f.path.join(f.directory, "t3-plugin.json"),
+        yield* encodeJson({
+          ...manifest,
+          capabilities: [...manifest.capabilities, "ui.native-trees"],
+          optionalCapabilities: ["ui.native-tree-actions"],
+          nativeTrees: [{ id: "projects", title: "Projects" }],
+        }),
+      );
+      const installed = yield* f.install();
+      let enabled = yield* f.plugins.consent({
+        installationId: installed.installationId,
+        digest: installed.digest,
+        grants: { capabilities: ["threads.read", "ui.native-trees"], projectIds: [projectId] },
+      });
+      let offerAction = true;
+      f.setHandler(() =>
+        Effect.succeed({
+          data: {
+            nodes: [
+              {
+                id: "project",
+                kind: "project",
+                projectId,
+                ...(offerAction ? { actionId: "review" } : {}),
+              },
+            ],
+          },
+        }),
+      );
+      const request = () => ({
+        installationId: enabled.installationId,
+        generation: enabled.generation,
+        treeId: "projects",
+        operationId: "feature-gated-action",
+      });
+      const denied = yield* f.plugins.readTree(request(), actor).pipe(Effect.result);
+      expect(denied._tag).toBe("Failure");
+      if (denied._tag === "Failure") expect(denied.failure.reason).toBe("permission_denied");
+      offerAction = false;
+      expect((yield* f.plugins.readTree(request(), actor)).nodes).toEqual([
+        { id: "project", kind: "project", projectId },
+      ]);
+      offerAction = true;
+      enabled = yield* f.plugins.consent({
+        installationId: enabled.installationId,
+        digest: enabled.digest,
+        grants: {
+          capabilities: ["threads.read", "ui.native-trees", "ui.native-tree-actions"],
+          projectIds: [projectId],
+        },
+      });
+      expect((yield* f.plugins.readTree(request(), actor)).nodes).toEqual([
+        { id: "project", kind: "project", projectId, actionId: "review" },
+      ]);
     }).pipe(Effect.provide(base()), Effect.scoped),
 );
 
@@ -5508,7 +5574,7 @@ it.effect(
         f.path.join(f.directory, "t3-plugin.json"),
         yield* encodeJson({
           ...manifest,
-          capabilities: [...manifest.capabilities, "ui.native-trees"],
+          capabilities: [...manifest.capabilities, "ui.native-trees", "ui.native-tree-actions"],
           nativeTrees: [{ id: "projects", title: "Projects" }],
         }),
       );
@@ -5516,7 +5582,10 @@ it.effect(
       const enabled = yield* f.plugins.consent({
         installationId: installed.installationId,
         digest: installed.digest,
-        grants: { capabilities: ["threads.read", "ui.native-trees"], projectIds: [projectId] },
+        grants: {
+          capabilities: ["threads.read", "ui.native-trees", "ui.native-tree-actions"],
+          projectIds: [projectId],
+        },
       });
       f.setHandler(() =>
         Effect.succeed({

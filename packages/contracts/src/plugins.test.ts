@@ -71,6 +71,11 @@ it("keeps optional project actions in API 1 trees without requiring them from ol
   }
 });
 
+it("advertises native tree actions independently of API 1's existing native tree support", () => {
+  const feature = "ui.native-tree-actions";
+  expect(pluginCompatibility({ capabilities: ["ui.native-trees", feature] }).available).toBe(true);
+});
+
 it("decodes additive workflow choices, bounded native trees and historical card references", () => {
   expect(
     decodeThreadCreate({
