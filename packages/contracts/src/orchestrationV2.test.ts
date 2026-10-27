@@ -6,6 +6,7 @@ import { NodeId, RunAttemptId, TrimmedNonEmptyString } from "./index.ts";
 import {
   latestProviderTurnForAttempt,
   OrchestrationV2AppThreadJson,
+  OrchestrationV2ConversationMessageJson,
   OrchestrationV2ProviderCapabilities,
   OrchestrationV2ProviderThread,
   OrchestrationV2ProviderThreadJson,
@@ -667,4 +668,67 @@ it("decodes old thread history without independent launch provenance and preserv
   const related = decode({ ...thread, launchedFrom: { threadId: "source" } });
   expect(related).toHaveProperty("launchedFrom", { threadId: "source" });
   expect(related.lineage).toEqual(thread.lineage);
+  expect(decode(thread)).not.toHaveProperty("pluginBrief");
+  const bound = {
+    ...thread,
+    pluginBrief: {
+      pluginName: "Coordinator",
+      text: "Keep the project goal in view.\nAsk before edits.",
+    },
+    pluginBriefMessageId: "first-message",
+  };
+  const encoded = Schema.encodeSync(OrchestrationV2AppThreadJson)(decode(bound));
+  expect(encoded).toMatchObject(bound);
+});
+
+it("round-trips a first-message brief in message and turn history while keeping the user's text", () => {
+  const stamp = "2026-10-27T12:00:00.000Z";
+  const common = {
+    createdBy: "user",
+    creationSource: "web",
+    threadId: "project-conversation",
+    runId: "first-run",
+    nodeId: null,
+    text: "Build a command menu",
+    attachments: [],
+    updatedAt: stamp,
+  };
+  const message = {
+    ...common,
+    id: "first-message",
+    role: "user",
+    streaming: false,
+    createdAt: stamp,
+  };
+  const item = {
+    ...common,
+    id: "first-item",
+    type: "user_message",
+    messageId: message.id,
+    inputIntent: "turn_start",
+    providerThreadId: null,
+    providerTurnId: null,
+    nativeItemRef: null,
+    parentItemId: null,
+    ordinal: 0,
+    status: "completed",
+    title: null,
+    startedAt: stamp,
+    completedAt: stamp,
+  };
+  const pluginBrief = {
+    pluginName: "Coordinator",
+    text: "Plan first.\nKeep the user's goal intact.",
+  };
+  const decodeMessage = Schema.decodeUnknownSync(OrchestrationV2ConversationMessageJson);
+  const encodeMessage = Schema.encodeSync(OrchestrationV2ConversationMessageJson);
+  expect(decodeMessage(message)).not.toHaveProperty("pluginBrief");
+  expect(decodeOrchestrationV2TurnItemJson(item)).not.toHaveProperty("pluginBrief");
+  expect(encodeMessage(decodeMessage({ ...message, pluginBrief }))).toMatchObject({
+    text: common.text,
+    pluginBrief,
+  });
+  expect(
+    encodeOrchestrationV2TurnItemJson(decodeOrchestrationV2TurnItemJson({ ...item, pluginBrief })),
+  ).toMatchObject({ text: common.text, pluginBrief });
 });
