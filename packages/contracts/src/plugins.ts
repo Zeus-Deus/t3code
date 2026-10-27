@@ -36,7 +36,7 @@ export const PLUGIN_CAPABILITIES = [
   "ui",
   "ui.sidebar-views",
   "ui.native-trees",
-  "ui.native-tree-actions",
+  "ui.native-tree-conversations",
   "ui.conversation-cards",
   "ui.changes",
   "worktrees.create",
@@ -140,8 +140,9 @@ export const PluginTreeNode = Schema.Union([
     ...treeNodeFields,
     kind: Schema.Literal("project"),
     projectId: ProjectId,
+    threadId: Schema.optionalKey(ThreadId),
     actionId: Schema.optionalKey(identifier),
-  }),
+  }).check(Schema.makeFilter((node) => node.threadId === undefined || node.actionId === undefined)),
   Schema.Struct({ ...treeNodeFields, kind: Schema.Literal("thread"), threadId: ThreadId }),
 ]);
 export type PluginTreeNode = typeof PluginTreeNode.Type;
@@ -207,12 +208,13 @@ export const PluginThreadCreateInput = Schema.Struct({
   idempotencyKey: identifier,
   projectId: ProjectId,
   title: Schema.optionalKey(text(200).check(Schema.isMinLength(1))),
-  text: text(64_000).check(Schema.isMinLength(1)),
+  text: Schema.optionalKey(text(64_000).check(Schema.isMinLength(1))),
+  brief: Schema.optionalKey(text(4_000).check(Schema.isMinLength(1))),
   modelSelection: Schema.optionalKey(ModelSelection),
   runtimeMode: Schema.optionalKey(RuntimeMode),
   interactionMode: Schema.optionalKey(ProviderInteractionMode),
   workspaceStrategy: Schema.optionalKey(PluginWorkspaceStrategy),
-});
+}).check(Schema.makeFilter((input) => (input.text === undefined) !== (input.brief === undefined)));
 export type PluginThreadCreateInput = typeof PluginThreadCreateInput.Type;
 const pluginPageFields = {
   cursor: Schema.optionalKey(NonNegativeInt),

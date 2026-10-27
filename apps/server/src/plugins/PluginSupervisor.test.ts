@@ -60,7 +60,7 @@ const fixture = Effect.gen(function* () {
       });
       ctx.trees.register("project-actions", () => ({nodes: [{
         id: "p", kind: "project", projectId: "p",
-        ...(ctx.capabilities.includes("ui.native-tree-actions") ? {actionId: "echo"} : {}),
+        ...(ctx.capabilities.includes("ui.native-tree-conversations") ? {actionId: "echo"} : {}),
       }]}));
       ctx.handle("action:card", () => ({card:{viewId:"card",summary:"Historical proposal",data:{planId:"one"},dataOwner:"forged"}}));
       ctx.handle("action:echo", async (input, invocation) => {
@@ -235,7 +235,7 @@ describe("PluginSupervisor real child", () => {
                 ...input,
                 installationId: `${input.installationId}-${offered}`,
                 handler: "tree:project-actions",
-                capabilities: offered ? ["ui.native-tree-actions"] : [],
+                capabilities: offered ? ["ui.native-tree-conversations"] : [],
               },
               () => Effect.void,
             );

@@ -224,9 +224,10 @@ const CAPABILITY_TEXT: Record<
     detail: "Group and nest the threads it can read in its own sidebar layout. T3 draws the rows.",
     projectScoped: false,
   },
-  "ui.native-tree-actions": {
-    title: "Add actions to sidebar projects",
-    detail: "Offer a button to run a declared action for a project in its sidebar layout.",
+  "ui.native-tree-conversations": {
+    title: "Use project conversations",
+    detail:
+      "Open a project conversation from its sidebar heading and attach a brief to its first message.",
     projectScoped: false,
   },
   "ui.conversation-cards": {

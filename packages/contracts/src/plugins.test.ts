@@ -61,19 +61,44 @@ const decodeCardReference = Schema.decodeUnknownSync(PluginCardReference);
 const decodeThreadMetadata = Schema.decodeUnknownSync(PluginThreadMetadata);
 const decodePluginError = Schema.decodeUnknownSync(Schema.toCodecJson(PluginError));
 
-it("keeps optional project actions in API 1 trees without requiring them from older plugins", () => {
+it("keeps optional project conversations in API 1 trees with only one opening target", () => {
   const project = { id: "project", kind: "project", projectId: "p" };
   expect(decodeTreeSnapshot({ nodes: [project] }).nodes).toEqual([project]);
   const actionable = { ...project, actionId: "open-coordinator" };
   expect(decodeTreeSnapshot({ nodes: [actionable] }).nodes).toEqual([actionable]);
+  const conversation = { ...project, threadId: "coordinator" };
+  expect(decodeTreeSnapshot({ nodes: [conversation] }).nodes).toEqual([conversation]);
+  expect(() =>
+    decodeTreeSnapshot({ nodes: [{ ...conversation, actionId: "open-coordinator" }] }),
+  ).toThrow();
   for (const actionId of ["", 1, "x".repeat(201)]) {
     expect(() => decodeTreeSnapshot({ nodes: [{ ...project, actionId }] })).toThrow();
   }
 });
 
-it("advertises native tree actions independently of API 1's existing native tree support", () => {
-  const feature = "ui.native-tree-actions";
+it("advertises native tree conversations independently of API 1's existing native tree support", () => {
+  const feature = "ui.native-tree-conversations";
   expect(pluginCompatibility({ capabilities: ["ui.native-trees", feature] }).available).toBe(true);
+  expect(pluginCompatibility({ capabilities: ["ui.native-tree-actions"] }).available).toBe(false);
+});
+
+it("accepts exactly one initial text or first-message brief when creating a plugin thread", () => {
+  const request = { projectId: "p", idempotencyKey: "create" };
+  expect(decodeThreadCreate({ ...request, text: "Start now" })).toMatchObject({
+    text: "Start now",
+  });
+  expect(decodeThreadCreate({ ...request, brief: "Help with this project" })).toMatchObject({
+    brief: "Help with this project",
+  });
+  expect(decodeThreadCreate({ ...request, brief: "x".repeat(4_000) })).toHaveProperty("brief");
+  for (const content of [
+    {},
+    { text: "Start", brief: "Brief" },
+    { brief: "" },
+    { brief: "x".repeat(4_001) },
+  ]) {
+    expect(() => decodeThreadCreate({ ...request, ...content })).toThrow();
+  }
 });
 
 it("decodes additive workflow choices, bounded native trees and historical card references", () => {

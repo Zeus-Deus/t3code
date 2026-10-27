@@ -2297,8 +2297,12 @@ const make = Effect.gen(function* () {
       if (node.kind === "project") {
         projectId = node.projectId;
         if (
-          node.actionId !== undefined &&
-          !pluginCapabilityAllowed(current.record.installation, actor, "ui.native-tree-actions")
+          (node.actionId !== undefined || node.threadId !== undefined) &&
+          !pluginCapabilityAllowed(
+            current.record.installation,
+            actor,
+            "ui.native-tree-conversations",
+          )
         )
           return yield* pluginPermissionDenied();
         if (
@@ -2311,6 +2315,13 @@ const make = Effect.gen(function* () {
             reason: "invalid_result",
             message: "The tree names an undeclared project action.",
           });
+        if (node.threadId !== undefined) {
+          const thread = yield* threads
+            .getThreadShell(node.threadId)
+            .pipe(Effect.mapError(() => pluginPermissionDenied()));
+          if (thread === null || thread.deletedAt !== null || thread.projectId !== projectId)
+            return yield* pluginPermissionDenied();
+        }
       } else {
         const thread = yield* threads
           .getThreadShell(node.threadId)

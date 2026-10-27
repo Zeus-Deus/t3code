@@ -95,6 +95,14 @@ worktree workspace. Worktrees also require `worktrees.create` and an explicit
 base ref. The host enforces the caller's mode limits and records launch origin;
 an independent launch is not an owned subagent and does not inherit cancellation.
 
+Pass `text` to start a run immediately. With the optional
+`ui.native-tree-conversations` capability, pass `brief` instead to create an
+empty conversation without a run. The brief is limited to 4,000 characters and
+travels, attributed to the plugin, with the first eligible human message. T3
+shows the brief before sending and discloses its exact snapshot on that message;
+the message itself keeps the person's text. An explicitly supplied title stays
+in place. Never send both `text` and `brief`.
+
 Every `send` or `create` call requires an `idempotencyKey`, a stable name for
 that effect within the invocation. For example:
 
@@ -236,11 +244,14 @@ on selection and semantic changes rather than on row renders or search input.
 See the SDK for snapshot limits; do not send transcripts or copy live status
 into group labels to force frequent refreshes.
 
-A project node may set `actionId` to a declared action. Declare the optional
-`ui.native-tree-actions` capability and emit that field only when it appears in
-`ctx.capabilities`. On supported web and desktop clients, clicking the heading's
-action invokes it with only that node's `projectId`; older and mobile clients
-keep the heading without the action. It never runs just from reading the tree.
+A project node may name its conversation with `threadId`, or use `actionId` to
+open one through a declared action, never both. Declare the optional
+`ui.native-tree-conversations` capability and emit either field only when it
+appears in `ctx.capabilities`. Clicking the project name opens its conversation
+or invokes the action with only that node's `projectId`; folding has its own
+control. The conversation must belong to that exact project and appears as the
+heading rather than a duplicate thread row. Workers can nest directly under
+the heading. Reading a tree never creates a conversation or runs an action.
 
 `collapsedByDefault` folds group and project headings. Native thread rows stay
 expanded; wrap a branch in a group when it needs a foldable heading.

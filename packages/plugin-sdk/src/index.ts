@@ -17,7 +17,7 @@ export type PluginCapability =
   | "ui"
   | "ui.sidebar-views"
   | "ui.native-trees"
-  | "ui.native-tree-actions"
+  | "ui.native-tree-conversations"
   | "ui.conversation-cards"
   | "ui.changes"
   | "worktrees.create"
@@ -140,7 +140,9 @@ export type PluginTreeNode =
       readonly collapsedByDefault?: boolean;
       readonly kind: "project";
       readonly projectId: string;
-      /** Requires ui.native-tree-actions. Clicking passes only this project's projectId. */
+      /** Requires ui.native-tree-conversations. Opens this project's conversation. */
+      readonly threadId?: string;
+      /** Exclusive with threadId; invokes this plugin's declared action with only {projectId}. */
       readonly actionId?: string;
     }
   | {
@@ -160,10 +162,9 @@ export interface PluginModelSelection {
   readonly options?: readonly { readonly id: string; readonly value: string | boolean }[];
 }
 export type PluginRuntimeMode = "approval-required" | "auto-accept-edits" | "auto" | "full-access";
-export interface PluginThreadCreateInput {
+interface PluginThreadCreateOptions {
   readonly projectId: string;
   readonly title?: string;
-  readonly text: string;
   readonly idempotencyKey: string;
   readonly modelSelection?: PluginModelSelection;
   readonly runtimeMode?: PluginRuntimeMode;
@@ -177,6 +178,16 @@ export interface PluginThreadCreateInput {
         readonly startFromOrigin?: boolean;
       };
 }
+/** Text starts a run immediately; a brief (1–4,000 characters) creates an empty conversation.
+ * Brief creation requires ui.native-tree-conversations; its plugin-attributed snapshot travels
+ * with the first eligible human message, without replacing that message's displayed text.
+ */
+export type PluginThreadCreateInput = PluginThreadCreateOptions &
+  (
+    | { readonly text: string; readonly brief?: never }
+    | { readonly brief: string; readonly text?: never }
+  );
+
 export interface PluginPageInput {
   readonly cursor?: number;
   readonly limit?: number;

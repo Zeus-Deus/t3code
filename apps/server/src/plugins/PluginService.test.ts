@@ -5435,6 +5435,64 @@ it.effect("looks up each thread shell once when counting a backlog of finalized 
 );
 
 it.effect(
+  "validates a project conversation against its exact project and current thread access",
+  () =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      yield* f.fs.writeFileString(
+        f.path.join(f.directory, "t3-plugin.json"),
+        yield* encodeJson({
+          ...manifest,
+          capabilities: [...manifest.capabilities, "ui.native-trees"],
+          optionalCapabilities: ["ui.native-tree-conversations"],
+          nativeTrees: [{ id: "projects", title: "Projects" }],
+        }),
+      );
+      const installed = yield* f.install();
+      let enabled = yield* f.plugins.consent({
+        installationId: installed.installationId,
+        digest: installed.digest,
+        grants: {
+          capabilities: ["threads.read", "ui.native-trees", "ui.native-tree-conversations"],
+          projectIds: [projectId],
+        },
+      });
+      const node = { id: "project", kind: "project", projectId, threadId };
+      f.setHandler(() => Effect.succeed({ data: { nodes: [node] } }));
+      const request = () => ({
+        installationId: enabled.installationId,
+        generation: enabled.generation,
+        treeId: "projects",
+        operationId: "conversation-tree",
+      });
+      expect((yield* f.plugins.readTree(request(), actor)).nodes).toEqual([node]);
+      for (const inaccessible of [
+        null,
+        { ...shell, deletedAt: at },
+        { ...shell, projectId: ProjectId.make("other-project") },
+      ]) {
+        f.threadShells.set(threadId, inaccessible);
+        expect((yield* f.plugins.readTree(request(), actor).pipe(Effect.flip)).reason).toBe(
+          "permission_denied",
+        );
+      }
+      f.threadShells.set(threadId, shell);
+      expect(
+        (yield* f.plugins.readTree(request(), { ...actor, projectIds: [] }).pipe(Effect.flip))
+          .reason,
+      ).toBe("permission_denied");
+      enabled = yield* f.plugins.consent({
+        installationId: enabled.installationId,
+        digest: enabled.digest,
+        grants: { capabilities: ["threads.read", "ui.native-trees"], projectIds: [projectId] },
+      });
+      expect((yield* f.plugins.readTree(request(), actor).pipe(Effect.flip)).reason).toBe(
+        "permission_denied",
+      );
+    }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect(
   "keeps declared project tree actions scoped without invoking them during tree reads",
   () =>
     Effect.gen(function* () {
@@ -5443,7 +5501,11 @@ it.effect(
         f.path.join(f.directory, "t3-plugin.json"),
         yield* encodeJson({
           ...manifest,
-          capabilities: [...manifest.capabilities, "ui.native-trees", "ui.native-tree-actions"],
+          capabilities: [
+            ...manifest.capabilities,
+            "ui.native-trees",
+            "ui.native-tree-conversations",
+          ],
           nativeTrees: [{ id: "projects", title: "Projects" }],
         }),
       );
@@ -5452,7 +5514,7 @@ it.effect(
         installationId: installed.installationId,
         digest: installed.digest,
         grants: {
-          capabilities: ["threads.read", "ui", "ui.native-trees", "ui.native-tree-actions"],
+          capabilities: ["threads.read", "ui", "ui.native-trees", "ui.native-tree-conversations"],
           projectIds: [projectId],
         },
       });
@@ -5491,7 +5553,7 @@ it.effect(
         installationId: enabled.installationId,
         digest: enabled.digest,
         grants: {
-          capabilities: ["threads.read", "ui", "ui.native-trees", "ui.native-tree-actions"],
+          capabilities: ["threads.read", "ui", "ui.native-trees", "ui.native-tree-conversations"],
           projectIds: [],
         },
       });
@@ -5503,7 +5565,7 @@ it.effect(
 );
 
 it.effect(
-  "requires a granted native-tree-actions feature without blocking legacy project nodes",
+  "requires a granted native-tree-conversations feature without blocking legacy project nodes",
   () =>
     Effect.gen(function* () {
       const f = yield* fixture;
@@ -5512,7 +5574,7 @@ it.effect(
         yield* encodeJson({
           ...manifest,
           capabilities: [...manifest.capabilities, "ui.native-trees"],
-          optionalCapabilities: ["ui.native-tree-actions"],
+          optionalCapabilities: ["ui.native-tree-conversations"],
           nativeTrees: [{ id: "projects", title: "Projects" }],
         }),
       );
@@ -5555,7 +5617,7 @@ it.effect(
         installationId: enabled.installationId,
         digest: enabled.digest,
         grants: {
-          capabilities: ["threads.read", "ui.native-trees", "ui.native-tree-actions"],
+          capabilities: ["threads.read", "ui.native-trees", "ui.native-tree-conversations"],
           projectIds: [projectId],
         },
       });
@@ -5574,7 +5636,11 @@ it.effect(
         f.path.join(f.directory, "t3-plugin.json"),
         yield* encodeJson({
           ...manifest,
-          capabilities: [...manifest.capabilities, "ui.native-trees", "ui.native-tree-actions"],
+          capabilities: [
+            ...manifest.capabilities,
+            "ui.native-trees",
+            "ui.native-tree-conversations",
+          ],
           nativeTrees: [{ id: "projects", title: "Projects" }],
         }),
       );
@@ -5583,7 +5649,7 @@ it.effect(
         installationId: installed.installationId,
         digest: installed.digest,
         grants: {
-          capabilities: ["threads.read", "ui.native-trees", "ui.native-tree-actions"],
+          capabilities: ["threads.read", "ui.native-trees", "ui.native-tree-conversations"],
           projectIds: [projectId],
         },
       });
