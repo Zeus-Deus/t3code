@@ -144,18 +144,40 @@ export function SidebarProjectThreadTree<TThread>(props: {
     <Fragment key={row.key}>
       {props.renderRow(row.thread)}
       {row.children.length > 0 ? (
-        <li role="presentation" className="ml-[18px] list-none pl-2">
-          <ul
-            role="presentation"
-            data-parent-thread-key={row.key}
-            className="relative flex flex-col gap-px before:pointer-events-none before:absolute before:-left-2 before:top-0 before:bottom-4 before:border-l before:border-sidebar-border/70 [&>li[data-thread-item]]:relative [&>li[data-thread-item]]:before:pointer-events-none [&>li[data-thread-item]]:before:absolute [&>li[data-thread-item]]:before:-left-2 [&>li[data-thread-item]]:before:top-0 [&>li[data-thread-item]]:before:h-4 [&>li[data-thread-item]]:before:w-2 [&>li[data-thread-item]]:before:rounded-bl-md [&>li[data-thread-item]]:before:border-b [&>li[data-thread-item]]:before:border-l [&>li[data-thread-item]]:before:border-sidebar-border/70"
-          >
-            <SidebarProjectThreadTree rows={row.children} renderRow={props.renderRow} />
-          </ul>
-        </li>
+        <SidebarThreadNest parentThreadKey={row.key}>
+          <SidebarProjectThreadTree rows={row.children} renderRow={props.renderRow} />
+        </SidebarThreadNest>
       ) : null}
     </Fragment>
   ));
+}
+
+/** Insets what sits under a thread, or under a conversation's heading, behind a guide rail. */
+export function SidebarThreadNest(props: {
+  parentThreadKey?: string;
+  /** Plugin-tree headings above the one this nests under, which keep their own indent. */
+  depth?: number;
+  children: ReactNode;
+}) {
+  const nest = (
+    <li role="presentation" className="ml-[18px] list-none pl-2">
+      <ul
+        role="presentation"
+        data-parent-thread-key={props.parentThreadKey}
+        className="relative flex flex-col gap-px before:pointer-events-none before:absolute before:-left-2 before:top-0 before:bottom-4 before:border-l before:border-sidebar-border/70 [&>li[data-thread-item]]:relative [&>li[data-thread-item]]:before:pointer-events-none [&>li[data-thread-item]]:before:absolute [&>li[data-thread-item]]:before:-left-2 [&>li[data-thread-item]]:before:top-0 [&>li[data-thread-item]]:before:h-4 [&>li[data-thread-item]]:before:w-2 [&>li[data-thread-item]]:before:rounded-bl-md [&>li[data-thread-item]]:before:border-b [&>li[data-thread-item]]:before:border-l [&>li[data-thread-item]]:before:border-sidebar-border/70"
+      >
+        {props.children}
+      </ul>
+    </li>
+  );
+  if (!props.depth) return nest;
+  return (
+    <li role="presentation" className={cn("list-none", depthIndent(props.depth))}>
+      <ul role="presentation" className="flex flex-col gap-px">
+        {nest}
+      </ul>
+    </li>
+  );
 }
 
 function ProjectAge(props: { timestamp: string }) {

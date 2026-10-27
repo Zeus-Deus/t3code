@@ -270,6 +270,7 @@ import {
   SidebarQuietProjectsToggle,
   SidebarViewSwitch,
   SidebarProjectThreadTree,
+  SidebarThreadNest,
 } from "./sidebar/SidebarProjectView";
 import {
   useSidebarProjectFolds,
@@ -3612,14 +3613,39 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                       const quietProjectsToggleShown =
                         projectLayout !== null && projectLayout.quietSections.length > 0;
                       if (projectLayout !== null) {
+                        // From a conversation's heading down, each heading nests what it holds,
+                        // as a thread nests its children; depths restart inside each nest.
+                        const nests: { key: string; depth: number; items: ReactNode[] }[] = [];
+                        const target = () => nests.at(-1)?.items ?? items;
+                        const nestBase = () => (nests.at(-1)?.depth ?? -1) + 1;
+                        const closeNests = (depth: number) => {
+                          for (
+                            let top = nests.at(-1);
+                            top !== undefined && top.depth >= depth;
+                            top = nests.at(-1)
+                          ) {
+                            nests.pop();
+                            if (top.items.length === 0) continue;
+                            target().push(
+                              <SidebarThreadNest
+                                key={`nest:${top.key}`}
+                                depth={top.depth - nestBase()}
+                              >
+                                {top.items}
+                              </SidebarThreadNest>,
+                            );
+                          }
+                        };
                         const renderSection = (section: SidebarProjectSection) => {
                           const tree = section.tree;
+                          closeNests(tree?.depth ?? 0);
+                          const base = nestBase();
                           const heading = tree === undefined ? undefined : tree.heading;
                           if (heading !== null) {
                             const header = {
                               project: section.group,
                               title: heading?.kind === "group" ? heading.title : undefined,
-                              depth: tree?.depth ?? 0,
+                              depth: (tree?.depth ?? 0) - base,
                               sectionKey: section.key,
                               liveCount: section.liveCount,
                               lastActivityAt: section.lastActivityAt,
@@ -3644,7 +3670,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                                     conversation.projectId,
                                   )
                                 : null;
-                            items.push(
+                            target().push(
                               selectedTree !== null && conversation !== undefined ? (
                                 <PluginTreeProjectHeading
                                   key={`project:${section.key}`}
@@ -3684,10 +3710,17 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                                 />
                               ),
                             );
+                            if (
+                              tree !== undefined &&
+                              (conversation !== undefined || nests.length > 0)
+                            ) {
+                              nests.push({ key: section.key, depth: tree.depth, items: [] });
+                            }
                           }
                           // A heading's rows sit flush with it, as in the project view.
-                          const rowDepth = tree === undefined ? 0 : Math.max(tree.rowDepth - 1, 0);
-                          items.push(
+                          const rowDepth =
+                            tree === undefined ? 0 : Math.max(tree.rowDepth - 1 - nestBase(), 0);
+                          target().push(
                             <SidebarProjectThreadTree
                               key={`tree:${section.key}`}
                               rows={section.rows}
@@ -3704,6 +3737,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                           projectRowCount += section.threads.length;
                         };
                         for (const section of projectLayout.sections) renderSection(section);
+                        closeNests(0);
                         if (projectLayout.quietSections.length > 0) {
                           items.push(
                             <SidebarQuietProjectsToggle
