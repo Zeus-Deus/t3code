@@ -10,3 +10,4 @@ export * from "./changes.ts";
 export * from "./nativeTrees.ts";
 export * from "./cards.ts";
 export * from "./startPage.ts";
+export * from "./treeCreate.ts";
