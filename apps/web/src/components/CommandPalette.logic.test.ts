@@ -13,6 +13,7 @@ import {
   createCommandPaletteSearchState,
   reduceCommandPaletteSearchState,
   type CommandPaletteUiState,
+  createProjectPicker,
 } from "./CommandPalette.logic";
 
 describe("linked pull request thread navigation", () => {
@@ -916,5 +917,61 @@ describe("returning from file and content search", () => {
     expect(closed).toEqual({ open: false, mode: "files", openIntent: null, session: 0 });
     expect(reduceCommandPaletteUiState(closed, { _tag: "BackToCommand" })).toEqual(closed);
     expect(reduceCommandPaletteUiState(closed, { _tag: "SetOpen", open: true })).toEqual(root);
+  });
+});
+
+describe("createProjectPicker", () => {
+  const environmentId = EnvironmentId.make("environment-remote");
+  const project = { environmentId, projectId: ProjectId.make("project-1") };
+  const pickerFor = () => {
+    const choose = vi.fn();
+    return { choose, choice: { environmentIds: [environmentId], choose } };
+  };
+
+  it("hands a chosen project to the live choice once", () => {
+    const picker = createProjectPicker();
+    const { choose, choice } = pickerFor();
+    picker.set(choice);
+    const attempt = picker.attempt(choice);
+    expect(attempt && picker.deliver(attempt, project)).toBe(true);
+    expect(attempt && picker.deliver(attempt, project)).toBe(false);
+    expect(picker.attempt(choice)).toBeNull();
+    expect(choose).toHaveBeenCalledTimes(1);
+    expect(choose).toHaveBeenCalledWith(project);
+  });
+
+  it("drops a pending add-folder once the palette closes or returns to its root", () => {
+    const picker = createProjectPicker();
+    const { choose, choice } = pickerFor();
+    picker.set(choice);
+    const pending = picker.attempt(choice);
+    picker.set(null);
+    expect(pending && picker.deliver(pending, project)).toBe(false);
+    expect(picker.attempt(choice)).toBeNull();
+    expect(choose).not.toHaveBeenCalled();
+  });
+
+  it("drops a pending add-folder when another choice replaces it", () => {
+    const picker = createProjectPicker();
+    const first = pickerFor();
+    const second = pickerFor();
+    picker.set(first.choice);
+    const pending = picker.attempt(first.choice);
+    picker.set(second.choice);
+    expect(pending && picker.deliver(pending, project)).toBe(false);
+    expect(first.choose).not.toHaveBeenCalled();
+    expect(second.choose).not.toHaveBeenCalled();
+  });
+
+  it("drops a pending add-folder whose view was left, but keeps the choice for another pick", () => {
+    const picker = createProjectPicker();
+    const { choose, choice } = pickerFor();
+    picker.set(choice);
+    const pending = picker.attempt(choice);
+    picker.leaveView();
+    expect(pending && picker.deliver(pending, project)).toBe(false);
+    const next = picker.attempt(choice);
+    expect(next && picker.deliver(next, project)).toBe(true);
+    expect(choose).toHaveBeenCalledTimes(1);
   });
 });

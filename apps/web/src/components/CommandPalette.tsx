@@ -193,6 +193,8 @@ import {
   remoteProjectInputPlaceholder,
   reduceCommandPaletteSearchState,
   type SearchOverlayMode,
+  createProjectPicker,
+  type ProjectPickerAttempt,
 } from "./CommandPalette.logic";
 import { resolveEnvironmentOptionLabel } from "./BranchToolbar.logic";
 import { CommandPaletteContent } from "./CommandPaletteContent";
@@ -494,6 +496,11 @@ function OpenCommandPaletteDialog(props: {
   // Set only by the choose-project intent and dropped on returning to the root list, so an
   // ordinary add-project flow never hands its project to a caller.
   const [projectChoice, setProjectChoice] = useState<CommandPaletteProjectChoice | null>(null);
+  const [projectPicker] = useState(createProjectPicker);
+  const selectProjectChoice = (choice: CommandPaletteProjectChoice | null) => {
+    projectPicker.set(choice);
+    setProjectChoice(choice);
+  };
   const [addProjectCloneFlow, setAddProjectCloneFlow] = useState<AddProjectCloneFlow | null>(null);
   const [newProjectFlow, setNewProjectFlow] = useState<{
     readonly environmentId: EnvironmentId;
@@ -732,8 +739,9 @@ function OpenCommandPaletteDialog(props: {
       browseNavigation.invalidate();
       // A replaced or closed session must not report its in-flight lookup.
       cloneLookupGeneration.current += 1;
+      projectPicker.set(null);
     },
-    [browseNavigation],
+    [browseNavigation, projectPicker],
   );
 
   const openProjectFromSearch = async (project: (typeof projects)[number]) => {
@@ -851,9 +859,10 @@ function OpenCommandPaletteDialog(props: {
     browseNavigation.invalidate();
     setAddProjectCloneFlow(null);
     setNewProjectFlow(null);
+    projectPicker.leaveView();
     if (viewStack.length <= 1) {
       setAddProjectEnvironmentId(null);
-      setProjectChoice(null);
+      selectProjectChoice(null);
     } else if (newProjectFlow?.sourcesEnvironmentId) {
       setAddProjectEnvironmentId(newProjectFlow.sourcesEnvironmentId);
     }
@@ -1165,10 +1174,10 @@ function OpenCommandPaletteDialog(props: {
     }
   };
 
-  const chooseProject = (choice: CommandPaletteProjectChoice, projectRef: ScopedProjectRef) => {
+  const deliverProject = (attempt: ProjectPickerAttempt, projectRef: ScopedProjectRef) => {
+    if (!projectPicker.deliver(attempt, projectRef)) return;
     setProjectChoice(null);
     setOpen(false);
-    choice.choose(projectRef);
   };
 
   const openChosenProjectFolderFlow = async (
@@ -1225,8 +1234,12 @@ function OpenCommandPaletteDialog(props: {
         .map((project) => ({ ...project, displayName: project.title })),
       projectGroupByTargetKey,
       locationByEnvironmentId: projectEnvironmentLocationById,
-      runProject: async (project) =>
-        chooseProject(choice, scopeProjectRef(project.environmentId, project.id)),
+      runProject: async (project) => {
+        const attempt = projectPicker.attempt(choice);
+        if (attempt !== null) {
+          deliverProject(attempt, scopeProjectRef(project.environmentId, project.id));
+        }
+      },
     });
     return [
       {
@@ -1757,7 +1770,11 @@ function OpenCommandPaletteDialog(props: {
       );
       return;
     }
-    if (projectChoice !== null && !projectChoice.environmentIds.includes(input.environmentId)) {
+    // Bound before any await: a picker that closed, went back, or changed meanwhile gets nothing,
+    // and its folder never falls through to opening a draft.
+    const attempt = projectPicker.attempt(projectChoice);
+    if (projectChoice !== null && attempt === null) return;
+    if (attempt !== null && !attempt.choice.environmentIds.includes(input.environmentId)) {
       toastManager.add(
         stackedThreadToast({
           type: "error",
@@ -1798,8 +1815,8 @@ function OpenCommandPaletteDialog(props: {
       projects.filter((project) => project.environmentId === input.environmentId),
       cwd,
     );
-    if (existing && projectChoice !== null) {
-      chooseProject(projectChoice, scopeProjectRef(existing.environmentId, existing.id));
+    if (existing && attempt !== null) {
+      deliverProject(attempt, scopeProjectRef(existing.environmentId, existing.id));
       return;
     }
     if (existing) {
@@ -1869,8 +1886,8 @@ function OpenCommandPaletteDialog(props: {
       }
       return;
     }
-    if (projectChoice !== null) {
-      chooseProject(projectChoice, scopeProjectRef(input.environmentId, projectId));
+    if (attempt !== null) {
+      deliverProject(attempt, scopeProjectRef(input.environmentId, projectId));
       return;
     }
 

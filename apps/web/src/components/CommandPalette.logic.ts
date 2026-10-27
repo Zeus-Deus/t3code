@@ -26,6 +26,7 @@ import {
   type EnvironmentMachineKind,
   type FilesystemBrowseEntry,
   type KeybindingCommand,
+  type ScopedProjectRef,
   type SourceControlDiscoveryResult,
   type SourceControlRepositoryInfo,
   THREAD_JUMP_KEYBINDING_COMMANDS,
@@ -180,6 +181,39 @@ export function resolveAddProjectEntry(
   if (options.length === 0) return { kind: "connect-environment" };
   if (options.length > 1 || defaultEnvironmentId === null) return { kind: "choose-environment" };
   return { kind: "choose-source", environmentId: defaultEnvironmentId };
+}
+
+export interface ProjectPickerAttempt {
+  readonly choice: CommandPaletteProjectChoice;
+  readonly epoch: number;
+}
+
+/**
+ * The palette's live project choice. An add-folder awaits its create, so it holds an attempt that
+ * lapses when the palette closes, returns to its root, takes another choice, or leaves a view;
+ * a lapsed attempt delivers nothing, and the choice stays live for another pick.
+ */
+export function createProjectPicker() {
+  let live: CommandPaletteProjectChoice | null = null;
+  let epoch = 0;
+  return {
+    set: (choice: CommandPaletteProjectChoice | null): void => {
+      live = choice;
+      epoch += 1;
+    },
+    leaveView: (): void => {
+      epoch += 1;
+    },
+    attempt: (choice: CommandPaletteProjectChoice | null): ProjectPickerAttempt | null =>
+      choice !== null && choice === live ? { choice, epoch } : null,
+    deliver: (attempt: ProjectPickerAttempt, project: ScopedProjectRef): boolean => {
+      if (attempt.choice !== live || attempt.epoch !== epoch) return false;
+      live = null;
+      epoch += 1;
+      attempt.choice.choose(project);
+      return true;
+    },
+  };
 }
 
 export interface CommandPaletteThreadContentMatch {
