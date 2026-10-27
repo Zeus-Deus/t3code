@@ -174,6 +174,8 @@ interface SidebarProjectHeadingConversation {
   readonly label: string;
   /** Its thread is the open one. */
   readonly selected: boolean;
+  /** Its thread is among the threads the person selected. */
+  readonly inSelection: boolean;
   readonly busy: boolean;
   /** The thread's status, in the icon column its worker rows use. */
   readonly status: ReactNode;
@@ -289,15 +291,21 @@ export function SidebarProjectSectionHeader(props: {
             aria-label={conversation.label}
             aria-current={conversation.selected ? "page" : undefined}
             aria-busy={conversation.busy || undefined}
+            data-selected={conversation.inSelection || undefined}
             disabled={conversation.busy}
-            onClick={conversation.onOpen}
+            onClick={(event) => {
+              event.stopPropagation();
+              conversation.onOpen(event);
+            }}
             onContextMenu={openSettings}
             className={cn(
               headingClassName,
               "relative cursor-pointer disabled:cursor-default",
               conversation.selected
                 ? "bg-sidebar-row-active text-sidebar-foreground light:shadow-xs light:ring-1 light:ring-inset light:ring-sidebar-border/70"
-                : "hover:bg-sidebar-row-hover",
+                : conversation.inSelection
+                  ? "bg-sidebar-row-selected text-sidebar-foreground light:ring-1 light:ring-inset light:ring-sidebar-border/70"
+                  : "hover:bg-sidebar-row-hover",
             )}
           >
             <span className="flex size-4 shrink-0 items-center justify-center">{icon}</span>

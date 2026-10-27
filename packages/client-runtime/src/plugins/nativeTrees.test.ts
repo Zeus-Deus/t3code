@@ -323,6 +323,7 @@ describe("buildPluginTreeLayout", () => {
     expect(heading?.kind === "project" ? heading.conversation : null).toEqual({
       kind: "thread",
       environmentId: local,
+      projectId: "web",
       thread: coordinator,
       key: key(coordinator),
     });

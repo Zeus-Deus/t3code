@@ -36,21 +36,16 @@ export const pluginTreeConversationsGranted = (installation: PluginInstallation)
 
 /**
  * What a project heading opens: the thread it stands for, or a declared action that starts one,
- * run with only this project's id.
+ * run with only this project's id. Its environment and project are the node's own, even when the
+ * heading shows a project merged across environments.
  */
-export type PluginTreeConversation<TThread> =
-  | {
-      readonly kind: "thread";
-      readonly environmentId: EnvironmentId;
-      readonly thread: TThread;
-      readonly key: string;
-    }
-  | {
-      readonly kind: "action";
-      readonly environmentId: EnvironmentId;
-      readonly projectId: ProjectId;
-      readonly actionId: string;
-    };
+export type PluginTreeConversation<TThread> = {
+  readonly environmentId: EnvironmentId;
+  readonly projectId: ProjectId;
+} & (
+  | { readonly kind: "thread"; readonly thread: TThread; readonly key: string }
+  | { readonly kind: "action"; readonly actionId: string }
+);
 
 export type PluginTreeHeading<TProject, TThread> =
   | { readonly kind: "group"; readonly title: string }
@@ -300,7 +295,7 @@ export function buildPluginTreeLayout<TProject, TThread extends PluginTreeThread
       const thread = threadsByKey.get(key);
       if (thread === undefined || placedKeys.has(key)) return null;
       placedKeys.add(key);
-      return { kind: "thread", environmentId, thread, key };
+      return { kind: "thread", environmentId, projectId: node.projectId, thread, key };
     };
     interface Resolved {
       /** The node's own heading or row; null when it is skipped or merged into another. */

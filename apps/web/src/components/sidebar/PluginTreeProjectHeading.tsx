@@ -8,6 +8,7 @@ import type { ScopedThreadRef } from "@t3tools/contracts";
 import { useRouter } from "@tanstack/react-router";
 import { useState, type ComponentProps, type MouseEvent as ReactMouseEvent } from "react";
 
+import { useThreadSelectionStore } from "../../threadSelectionStore";
 import { usePluginActionRunner } from "../plugins/usePluginActions";
 import { usePluginTreeInstallation } from "./pluginTreeSources";
 import { SidebarProjectSectionHeader } from "./SidebarProjectView";
@@ -41,6 +42,9 @@ export function PluginTreeProjectHeading(
   } = props;
   const name = header.project?.displayName ?? "";
   const where = environmentLabel === null ? "" : ` on ${environmentLabel}`;
+  const inSelection = useThreadSelectionStore(
+    (state) => conversation.kind === "thread" && state.selectedThreadKeys.has(conversation.key),
+  );
   if (conversation.kind === "thread") {
     const { thread } = conversation;
     return (
@@ -49,6 +53,7 @@ export function PluginTreeProjectHeading(
         conversation={{
           label: `Open ${name}${where}`,
           selected: routeThreadKey === conversation.key,
+          inSelection,
           busy: false,
           environmentLabel,
           jumpHint: jumpLabel === null ? null : <JumpHintBadge label={jumpLabel} />,
@@ -108,6 +113,7 @@ function PluginTreeActionHeading(
       conversation={{
         label: `${label}, ${declared.title}`,
         selected: false,
+        inSelection: false,
         busy: running,
         environmentLabel,
         jumpHint: null,

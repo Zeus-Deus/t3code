@@ -1343,21 +1343,27 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   });
 
   const openProjectSettings = useStableCallback(
-    (projectGroup: SidebarProjectSnapshot, projectRef?: ScopedProjectRef) => {
+    (
+      projectGroup: SidebarProjectSnapshot,
+      projectRef?: ScopedProjectRef,
+      /** Open the settings on the project ref's own machine, not the merged project's first. */
+      onMachine = false,
+    ) => {
       if (isMobile) {
         setOpenMobile(false);
       }
-      void router.navigate({
-        to: "/projects/$projectKey",
-        params: {
-          projectKey: getSidebarProjectSettingsKey(
-            projectGroup,
-            projectGroupingSettings,
-            projects,
-            projectRef,
-          ),
-        },
-      });
+      const projectKey = getSidebarProjectSettingsKey(
+        projectGroup,
+        projectGroupingSettings,
+        projects,
+        projectRef,
+      );
+      void (onMachine && projectRef !== undefined
+        ? router.navigate({
+            to: "/settings/projects",
+            search: { project: projectKey, machine: projectRef.environmentId },
+          })
+        : router.navigate({ to: "/projects/$projectKey", params: { projectKey } }));
     },
   );
   const handleProjectSettings = useStableCallback(
@@ -3106,12 +3112,10 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     openCommandPalette({ open: "new-thread-in" });
   };
 
-  const startThreadInProject = useStableCallback((project: SidebarProjectSnapshot) => {
+  const startThreadInProjectRef = useStableCallback((projectRef: ScopedProjectRef) => {
     if (isMobile) setOpenMobile(false);
     void (async () => {
-      const result = await settlePromise(() =>
-        handleNewThreadRef.current(scopeProjectRef(project.environmentId, project.id)),
-      );
+      const result = await settlePromise(() => handleNewThreadRef.current(projectRef));
       if (result._tag === "Failure") {
         const error = squashAtomCommandFailure(result);
         toastManager.add(
@@ -3124,6 +3128,9 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       }
     })();
   });
+  const startThreadInProject = useStableCallback((project: SidebarProjectSnapshot) =>
+    startThreadInProjectRef(scopeProjectRef(project.environmentId, project.id)),
+  );
   const openProjectSettingsFromHeader = useStableCallback(
     (event: ReactMouseEvent, project: SidebarProjectSnapshot) => {
       event.preventDefault();
@@ -3624,25 +3631,51 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                               onNewThread: startThreadInProject,
                               onOpenSettings: openProjectSettingsFromHeader,
                             };
+                            const conversation =
+                              heading?.kind === "project" ? heading.conversation : undefined;
+                            const splitEnvironmentId =
+                              heading?.kind === "project" ? heading.environmentId : undefined;
+                            // A conversation's heading may show a project merged across
+                            // environments; its own actions stay on the conversation's project.
+                            const physical =
+                              conversation !== undefined &&
+                              projectByKey.has(
+                                `${conversation.environmentId}:${conversation.projectId}`,
+                              )
+                                ? scopeProjectRef(
+                                    conversation.environmentId,
+                                    conversation.projectId,
+                                  )
+                                : null;
                             items.push(
-                              selectedTree !== null &&
-                                heading?.kind === "project" &&
-                                heading.conversation !== undefined ? (
+                              selectedTree !== null && conversation !== undefined ? (
                                 <PluginTreeProjectHeading
                                   key={`project:${section.key}`}
                                   {...header}
+                                  {...(physical === null
+                                    ? {}
+                                    : {
+                                        onNewThread: () => startThreadInProjectRef(physical),
+                                        onOpenSettings: (
+                                          event: ReactMouseEvent,
+                                          group: SidebarProjectSnapshot,
+                                        ) => {
+                                          event.preventDefault();
+                                          openProjectSettings(group, physical, true);
+                                        },
+                                      })}
                                   choice={selectedTree}
-                                  conversation={heading.conversation}
+                                  conversation={conversation}
                                   environmentLabel={
-                                    heading.environmentId === undefined
+                                    splitEnvironmentId === undefined
                                       ? null
-                                      : (environmentLabelById.get(heading.environmentId) ??
-                                        heading.environmentId)
+                                      : (environmentLabelById.get(splitEnvironmentId) ??
+                                        splitEnvironmentId)
                                   }
                                   routeThreadKey={routeRowThreadKey}
                                   jumpLabel={
-                                    showJumpHints && heading.conversation.kind === "thread"
-                                      ? (jumpLabelByKey.get(heading.conversation.key) ?? null)
+                                    showJumpHints && conversation.kind === "thread"
+                                      ? (jumpLabelByKey.get(conversation.key) ?? null)
                                       : null
                                   }
                                   onThreadClick={handleThreadClick}

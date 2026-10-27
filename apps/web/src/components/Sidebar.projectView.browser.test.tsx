@@ -1,4 +1,8 @@
-import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
+import {
+  scopedThreadKey,
+  scopeProjectRef,
+  scopeThreadRef,
+} from "@t3tools/client-runtime/environment";
 import { pluginSidebarTreeKey, pluginSidebarViewKey } from "@t3tools/client-runtime/plugins";
 import {
   EnvironmentId,
@@ -50,6 +54,8 @@ const data = vi.hoisted(() => {
     // Plugin action invocations, answered by `answerInvoke`.
     invokes: [] as Array<{ environmentId: string; input: unknown }>,
     answerInvoke: () => Promise.resolve({}) as Promise<unknown>,
+    // Projects new threads were started in.
+    newThreads: [] as unknown[],
   };
   return {
     read: () => snapshot,
@@ -231,7 +237,9 @@ vi.mock("../hooks/useThreadActions", async (original) => ({
 vi.mock("../hooks/useHandleNewThread", async (original) => ({
   ...(await original<object>()),
   useHandleNewThread: () => ({
-    handleNewThread: async () => {},
+    handleNewThread: async (projectRef: unknown) => {
+      data.read().newThreads.push(projectRef);
+    },
     activeDraftThread: null,
     activeThread: null,
     defaultProjectRef: null,
@@ -1143,6 +1151,16 @@ describe("Sidebar plugin tree", () => {
       expect.objectContaining({ params: { environmentId: laptop, threadId: placed.id } }),
     );
 
+    // Selection reaches the heading's thread once, in tree order, and shows on the heading.
+    await userEvent.click(open, { modifiers: ["ControlOrMeta"] });
+    await expect.element(open).toHaveAttribute("data-selected", "true");
+    await userEvent.click(page.getByText("fresh", { exact: true }), { modifiers: ["Shift"] });
+    expect([...useThreadSelectionStore.getState().selectedThreadKeys]).toEqual(
+      [coordinator, placed, fresh].map((entry) => scopedThreadKey(routeTo(entry))),
+    );
+    await act(() => useThreadSelectionStore.getState().clearSelection());
+    await expect.element(open).not.toHaveAttribute("data-selected");
+
     const calls = navigate.mock.calls.length;
     await userEvent.click(page.getByRole("button", { name: "Collapse App, 2 active" }));
     await expect.poll(rowTitles).toEqual(["elsewhere"]);
@@ -1229,5 +1247,61 @@ describe("Sidebar plugin tree", () => {
     await expect.element(onServer).not.toBeInTheDocument();
     await expect.element(page.getByText("a", { exact: true })).toBeVisible();
     expect(data.read().invokes).toHaveLength(1);
+  });
+  it("starts threads and opens settings on a split heading's own environment", async () => {
+    const coordinator = thread("coordinator", server, "p9");
+    const conversation = (environmentId: EnvironmentId, projectId: string): PluginTreeNode =>
+      environmentId === server
+        ? {
+            id: "app",
+            kind: "project",
+            projectId: ProjectId.make(projectId),
+            threadId: coordinator.id,
+          }
+        : {
+            id: "app",
+            kind: "project",
+            projectId: ProjectId.make(projectId),
+            actionId: "coordinate",
+          };
+    setupTree({
+      threads: [coordinator],
+      route: null,
+      trees: new Map([
+        [laptop, [conversation(laptop, "p1")]],
+        [server, [conversation(server, "p9")]],
+      ]),
+    });
+    data.update({ installations: [treeConversationPlugin()], newThreads: [] });
+    await using screen = await renderSidebar();
+    using navigate = vi.spyOn(screen.router!, "navigate").mockResolvedValue(undefined);
+
+    const onServer = page.getByRole("button", { name: "Open App on Server", exact: true });
+    await expect.element(onServer).toBeVisible();
+    const serverHeading = page.getByTestId("sidebar-project-section").filter({ has: onServer });
+    // Both headings show the logical App, whose first member is the laptop's.
+    await userEvent.click(serverHeading.getByRole("button", { name: "New thread in App" }));
+    expect(data.read().newThreads).toEqual([scopeProjectRef(server, ProjectId.make("p9"))]);
+
+    onServer
+      .element()
+      .dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+    expect(navigate).toHaveBeenLastCalledWith({
+      to: "/settings/projects",
+      search: { project: "repo:app", machine: server },
+    });
+
+    // The laptop's heading keeps its own project.
+    const onLaptop = page.getByRole("button", { name: "App on Laptop, Start coordinator" });
+    await userEvent.click(
+      page
+        .getByTestId("sidebar-project-section")
+        .filter({ has: onLaptop })
+        .getByRole("button", { name: "New thread in App" }),
+    );
+    expect(data.read().newThreads).toEqual([
+      scopeProjectRef(server, ProjectId.make("p9")),
+      scopeProjectRef(laptop, ProjectId.make("p1")),
+    ]);
   });
 });
