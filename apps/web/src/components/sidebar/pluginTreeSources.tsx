@@ -11,11 +11,12 @@ import {
   type PluginSidebarTreeOption,
   type PluginTreeSource,
 } from "@t3tools/client-runtime/plugins";
-import type {
-  EnvironmentId,
-  PluginInstallation,
-  PluginTreeNode,
-  ThreadId,
+import {
+  ProjectId,
+  type EnvironmentId,
+  type PluginInstallation,
+  type PluginTreeNode,
+  type ThreadId,
 } from "@t3tools/contracts";
 import { useEffect, useRef } from "react";
 import { create } from "zustand";
@@ -47,6 +48,8 @@ interface TreeSnapshot {
    * tree exclusive. Known from the catalogue, so owned conversations show before any read lands.
    */
   readonly projects: TreeProjects;
+  /** Its granted project ids, one per line: owned conversations show only in these. */
+  readonly grantedProjects: string;
 }
 
 type TreeProjects = "none" | "owned" | "exclusive";
@@ -66,6 +69,7 @@ interface PluginTreeSnapshotState {
           readonly generation: string;
           readonly conversations: boolean;
           readonly projects: TreeProjects;
+          readonly grantedProjects: string;
         }
       | {
           readonly kind: "ready";
@@ -73,6 +77,7 @@ interface PluginTreeSnapshotState {
           readonly generation: string;
           readonly conversations: boolean;
           readonly projects: TreeProjects;
+          readonly grantedProjects: string;
           readonly nodes: ReadonlyArray<PluginTreeNode>;
         }
       | { readonly kind: "withdrawn" },
@@ -101,6 +106,7 @@ const usePluginTreeSnapshotStore = create<PluginTreeSnapshotState>()((set) => ({
         sameIdentity &&
         previous.conversations === update.conversations &&
         previous.projects === update.projects &&
+        previous.grantedProjects === update.grantedProjects &&
         state.key === key
       )
         return state;
@@ -113,6 +119,7 @@ const usePluginTreeSnapshotStore = create<PluginTreeSnapshotState>()((set) => ({
           update.kind === "identity" && sameIdentity ? previous.failed : update.kind === "failed",
         conversations: update.conversations,
         projects: update.projects,
+        grantedProjects: update.grantedProjects,
       });
       return { key, snapshots };
     }),
@@ -177,6 +184,7 @@ function PluginTreeSnapshotSource(props: {
       : installation.manifest.nativeTrees?.find((tree) => tree.id === treeId)?.unplaced === "omit"
         ? "exclusive"
         : "owned";
+  const grantedProjects = installation?.grants.projectIds.join("\n") ?? "";
   const revision = usePluginChangeRevision(
     installationId === null ? null : environmentId,
     installationId === null || generation === null
@@ -198,6 +206,7 @@ function PluginTreeSnapshotSource(props: {
       generation,
       conversations,
       projects,
+      grantedProjects,
     });
     if (revision === undefined) return;
     let cancelled = false;
@@ -207,6 +216,7 @@ function PluginTreeSnapshotSource(props: {
       generation,
       conversations,
       projects,
+      grantedProjects,
     });
     void latestRead
       .current({
@@ -225,9 +235,17 @@ function PluginTreeSnapshotSource(props: {
                 generation,
                 conversations,
                 projects,
+                grantedProjects,
                 nodes: result.value.nodes,
               }
-            : { kind: "failed", installationId, generation, conversations, projects },
+            : {
+                kind: "failed",
+                installationId,
+                generation,
+                conversations,
+                projects,
+                grantedProjects,
+              },
         );
       });
     return () => {
@@ -243,6 +261,7 @@ function PluginTreeSnapshotSource(props: {
     revision,
     conversations,
     projects,
+    grantedProjects,
     // oxlint-disable-next-line react/exhaustive-effect-dependencies -- A snooze ending reads again.
     snoozeWake,
     report,
@@ -337,6 +356,10 @@ export function usePluginTreeSources(
                 installationId: snapshot.installationId,
                 treeId: choice.tree.id,
                 exclusive: snapshot.projects === "exclusive",
+                projectIds: snapshot.grantedProjects
+                  .split("\n")
+                  .filter((id) => id !== "")
+                  .map((id) => ProjectId.make(id)),
               },
             }),
       },

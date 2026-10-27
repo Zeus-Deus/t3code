@@ -138,6 +138,8 @@ export interface PluginTreeSource {
     readonly installationId: string;
     readonly treeId: string;
     readonly exclusive: boolean;
+    /** Projects it may read now; an owned conversation elsewhere stays in Activity instead. */
+    readonly projectIds: ReadonlyArray<ProjectId>;
   };
 }
 
@@ -150,7 +152,9 @@ const ownsThread = (source: PluginTreeSource, thread: PluginTreeThread) =>
   thread.environmentId === source.environmentId &&
   thread.lineage.parentThreadId === null &&
   thread.pluginOwner?.installationId === source.projects.installationId &&
-  thread.pluginOwner.treeId === source.projects.treeId;
+  thread.pluginOwner.treeId === source.projects.treeId &&
+  thread.projectId !== undefined &&
+  source.projects.projectIds.includes(thread.projectId);
 
 const conversationThreadId = (source: PluginTreeSource, node: PluginTreeNode) =>
   node.kind === "project" && source.conversations === true ? node.threadId : undefined;

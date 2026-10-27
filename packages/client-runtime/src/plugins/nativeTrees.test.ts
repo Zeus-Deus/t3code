@@ -40,11 +40,17 @@ const exclusiveSource = (
   environmentId: EnvironmentId,
   nodes: ReadonlyArray<PluginTreeNode> = [],
   exclusive = true,
+  projectIds = ["shelf", "old", "busy", "remote-project", "app-local"],
 ): PluginTreeSource => ({
   environmentId,
   nodes,
   conversations: true,
-  projects: { installationId: "inst-1", treeId: "projects", exclusive },
+  projects: {
+    installationId: "inst-1",
+    treeId: "projects",
+    exclusive,
+    projectIds: projectIds.map((id) => ProjectId.make(id)),
+  },
 });
 const key = (entry: Pick<Thread, "id" | "environmentId">) => `${entry.environmentId}:${entry.id}`;
 
@@ -637,6 +643,16 @@ describe("buildPluginTreeLayout with owned project conversations", () => {
     });
     // The unrelated thread is not placed, so it stays wherever Activity lists it.
     expect(result.placedKeys).toEqual(new Set([key(shelf), key(worker)]));
+  });
+
+  it("heads only conversations in projects it may still read", () => {
+    const threads = [owned("shelf-main", "shelf"), owned("revoked-main", "revoked")];
+    const granted = layout({ sources: [exclusiveSource(local, [], true, ["shelf", "revoked"])], threads });
+    expect(outline(granted)).toEqual(["shelf 0: []", "revoked 0: []"]);
+    // With the project's grant gone the conversation is Activity's again, not the tree's.
+    const revoked = layout({ sources: [exclusiveSource(local, [], true, ["shelf"])], threads });
+    expect(outline(revoked)).toEqual(["shelf 0: []"]);
+    expect(revoked.placedKeys).toEqual(new Set([key(threads[0]!)]));
   });
 
   it("never lists an owned conversation twice, and prefers it to a stale start action", () => {

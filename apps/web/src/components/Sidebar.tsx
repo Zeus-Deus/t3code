@@ -3642,17 +3642,20 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                         );
                       };
                       const from = isContextDrag ? null : (dragState?.activeSection ?? null);
-                      const items: ReactNode[] = [
-                        <SidebarDraftBlock
-                          key="draft-sessions"
-                          projectByKey={projectByKey}
-                          projectDisplayNameByKey={projectDisplayNameByKey}
-                          scopedProjectKeys={scopedProjectKeys}
-                          routeDraftId={routeDraftIdForRows}
-                          onNavigateToDraft={navigateToDraft}
-                          onDraftContextMenu={handleDraftContextMenu}
-                        />,
-                      ];
+                      // An exclusive tree lists only its own conversations; drafts stay in Activity.
+                      const items: ReactNode[] = exclusiveTree
+                        ? []
+                        : [
+                            <SidebarDraftBlock
+                              key="draft-sessions"
+                              projectByKey={projectByKey}
+                              projectDisplayNameByKey={projectDisplayNameByKey}
+                              scopedProjectKeys={scopedProjectKeys}
+                              routeDraftId={routeDraftIdForRows}
+                              onNavigateToDraft={navigateToDraft}
+                              onDraftContextMenu={handleDraftContextMenu}
+                            />,
+                          ];
                       let projectRowCount = 0;
                       // The quiet-projects toggle opens the bottom group, so only it takes the
                       // free space; the shelves below it stay attached.
@@ -3991,7 +3994,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
           ) : null}
           {!isSearchingThreads &&
           !hasProjectFolders &&
-          visibleDraftSessionCount === 0 &&
+          (exclusiveTree || visibleDraftSessionCount === 0) &&
           (projectLayout === null ||
             projectLayout.sections.length + projectLayout.quietSections.length === 0) &&
           // An exclusive tree lists nothing else, so no section means it is empty.

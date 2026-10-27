@@ -239,7 +239,12 @@ it("lays out an exclusive tree from its serving identity before and after a fail
   const identity = {
     environmentId: "env-laptop",
     conversations: true,
-    projects: { installationId: "inst-projects", treeId: "projects", exclusive: true },
+    projects: {
+      installationId: "inst-projects",
+      treeId: "projects",
+      exclusive: true,
+      projectIds: [],
+    },
   };
   // Still reading: owned conversations can already head the tree, which is not yet "empty".
   await vi.waitFor(() =>

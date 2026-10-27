@@ -23,6 +23,7 @@ import type { Thread } from "../types";
 import { selectActiveRightPanelSurface, useRightPanelStore } from "../rightPanelStore";
 import { useThreadSelectionStore } from "../threadSelectionStore";
 import { useUiStateStore } from "../uiStateStore";
+import { DraftId, useComposerDraftStore } from "../composerDraftStore";
 import { threadFamilies } from "../state/threads";
 import { PluginSidebarViewSources } from "./plugins/PluginCatalogueSubscriptions";
 import Sidebar from "./Sidebar";
@@ -276,7 +277,16 @@ vi.mock("./sidebar/SidebarChrome", () => ({
   SidebarChromeHeader: () => null,
   SidebarChromeFooter: () => null,
 }));
-vi.mock("./sidebar/SidebarDraftBlock", () => ({ SidebarDraftBlock: () => null }));
+vi.mock("./sidebar/SidebarDraftBlock", async () => {
+  const { useComposerDraftStore } = await import("../composerDraftStore");
+  return {
+    SidebarDraftBlock: () =>
+      Object.keys(useComposerDraftStore((store) => store.draftThreadsByThreadKey)).length ===
+      0 ? null : (
+        <li data-testid="draft-block" />
+      ),
+  };
+});
 vi.mock("./chat/ThreadContextDragGhost", () => ({ ThreadContextDragGhost: () => null }));
 vi.mock("./ProjectFavicon", () => ({ ProjectFavicon: () => null }));
 // Rows are the native row component in the app; here they expose only what this test reads.
@@ -724,7 +734,7 @@ function treeConversationPlugin(): PluginInstallation {
 }
 
 /** Owns conversations in an exclusive "focus" tree, with access to the laptop's `p1`. */
-function ownedTreePlugin(enabled = true): PluginInstallation {
+function ownedTreePlugin(enabled = true, projectIds = ["p1"]): PluginInstallation {
   const base = treeConversationPlugin();
   const capabilities = [...base.grants.capabilities, "ui.native-tree-projects" as const];
   return {
@@ -744,7 +754,7 @@ function ownedTreePlugin(enabled = true): PluginInstallation {
         },
       ],
     },
-    grants: { capabilities, projectIds: [ProjectId.make("p1")] },
+    grants: { capabilities, projectIds: projectIds.map((id) => ProjectId.make(id)) },
   };
 }
 
@@ -1018,6 +1028,36 @@ describe("Sidebar plugin tree", () => {
     await expect.poll(rowTitles).toEqual(["launched", "loose", "main"]);
   });
 
+  it("gives an owned conversation back to Activity once its project's grant is revoked", async () => {
+    const owner = { installationId: "inst-projects", treeId: "focus" };
+    const onLaptop = { ...thread("on-laptop", laptop, "p1"), pluginOwner: owner };
+    const onServer = { ...thread("on-server", server, "p9"), pluginOwner: owner };
+    setupTree({
+      threads: [onLaptop, onServer],
+      route: null,
+      trees: new Map([
+        [laptop, []],
+        [server, []],
+      ]),
+    });
+    data.update({ installations: [ownedTreePlugin(true, ["p1", "p9"])] });
+    await using _screen = await renderSidebar();
+    await expect
+      .element(page.getByRole("button", { name: "Open App on Server", exact: true }))
+      .toBeVisible();
+    await expect
+      .element(page.getByRole("button", { name: "Open App on Laptop", exact: true }))
+      .toBeVisible();
+
+    await act(() => data.update({ installations: [ownedTreePlugin(true, ["p1"])] }));
+    await expect.element(page.getByRole("button", { name: "Open App", exact: true })).toBeVisible();
+    await expect
+      .element(page.getByRole("button", { name: "Open App on Server", exact: true }))
+      .not.toBeInTheDocument();
+    await userEvent.click(page.getByRole("button", { name: "Toggle Focus view", exact: true }));
+    await expect.poll(rowTitles).toEqual(["on-server"]);
+  });
+
   it("tells a loaded empty exclusive tree from one still loading", async () => {
     const loose = thread("loose", laptop, "p1");
     setupTree({
@@ -1033,17 +1073,32 @@ describe("Sidebar plugin tree", () => {
       // The change subscription has not reported, so no read starts yet.
       treeRevision: undefined,
     });
+    // An unrelated draft with content belongs to Activity, not this tree.
+    const draftId = DraftId.make("draft-unrelated");
+    useComposerDraftStore
+      .getState()
+      .setProjectDraftThreadId(scopeProjectRef(laptop, ProjectId.make("p1")), draftId);
+    useComposerDraftStore.getState().setPrompt(draftId, "Unrelated idea");
+    using _drafts = {
+      [Symbol.dispose]: () => useComposerDraftStore.getState().clearDraftThread(draftId),
+    };
     await using _screen = await renderSidebar();
     // The tree's create action heads it from the start; its empty text waits for a read.
     const create = page.getByRole("button", { name: "New project", exact: true });
     await expect.element(create).toBeVisible();
+    await expect.poll(rowTitles).toEqual([]);
     expect(data.read().treeReads).toEqual([]);
-    expect(rowTitles()).toEqual([]);
     expect(page.getByText("Start a project.").elements()).toHaveLength(0);
     await act(() => data.update({ treeRevision: 0 }));
     await expect.element(page.getByText("Start a project.")).toBeVisible();
     await expect.element(create).toBeVisible();
+    expect(page.getByTestId("draft-block").elements()).toHaveLength(0);
     expect(rowTitles()).toEqual([]);
+
+    // Activity still shows the draft.
+    await userEvent.click(page.getByRole("button", { name: "Toggle Focus view", exact: true }));
+    await expect.element(page.getByTestId("draft-block")).toBeInTheDocument();
+    expect(rowTitles()).toEqual(["loose"]);
   });
 
   it("says when the tree could not load and the sidebar shows activity instead", async () => {
