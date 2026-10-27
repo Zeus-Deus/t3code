@@ -92,7 +92,7 @@ function PluginTreeProjectActionRow(props: {
               aria-busy={running || undefined}
               disabled={running}
               onClick={run}
-              className="flex h-8 w-full min-w-0 cursor-pointer items-center gap-2.5 rounded-md px-2.5 text-left text-sm text-secondary-label/70 outline-none select-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring enabled:hover:bg-sidebar-row-hover enabled:hover:text-foreground disabled:cursor-default disabled:opacity-60"
+              className="flex h-8 w-full min-w-0 cursor-pointer items-center gap-2.5 rounded-md px-2.5 text-left text-sm text-secondary-label outline-none select-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring enabled:hover:bg-sidebar-row-hover enabled:hover:text-foreground disabled:cursor-default disabled:opacity-60"
             />
           }
         >
