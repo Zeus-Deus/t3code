@@ -786,6 +786,8 @@ const registerDeviceScreenshot = Effect.fn("McpHttpServer.registerDeviceScreensh
 const isOrchestratorMcpFailure = Schema.is(OrchestratorMcpFailure);
 const isDeviceToolError = Schema.is(DeviceToolError);
 
+const decodePluginInvokeResult = Schema.decodeUnknownSync(PluginInvokeTool.successSchema);
+
 /**
  * Plugin results can carry images the host verified. The generic toolkit would serialize their
  * base64 into text; the model needs them as image content, and only when the caller wants them.
@@ -845,13 +847,11 @@ const registerPluginInvoke = Effect.fn("McpHttpServer.registerPluginInvoke")(fun
                 isError: true,
                 content: [{ type: "text", text: JSON.stringify(encodedResult) }],
               });
-            const { images, ...result } = encodedResult as {
-              readonly images?: ReadonlyArray<{ readonly mimeType: string; readonly data: string }>;
-              readonly [key: string]: unknown;
-            };
+            const { images, ...result } = decodePluginInvokeResult(encodedResult);
             const includeImages =
-              (payload as { readonly includeImages?: boolean } | undefined)?.includeImages !==
-              false;
+              typeof payload !== "object" ||
+              payload === null ||
+              Reflect.get(payload, "includeImages") !== false;
             const metadata =
               images === undefined || images.length === 0
                 ? result

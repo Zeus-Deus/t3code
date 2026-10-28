@@ -64,7 +64,7 @@ function setup(answer: (input: PluginInvokeInput) => Promise<PluginInvokeResult>
     installationId: "inst-realms",
     generation: "gen-1",
     manifest: {
-      id: "zeus-deus.t3code-realms",
+      id: "example.t3code-realms",
       name: "Realms",
       version: "0.1.0",
       apiVersion: 1,

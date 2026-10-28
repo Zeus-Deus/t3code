@@ -384,7 +384,7 @@ function projectsPlugin(enabled = true, rules: ProjectsRules = {}): PluginInstal
     installationId: "inst-projects",
     generation: "gen-1",
     manifest: {
-      id: "zeus-deus.projects",
+      id: "example.projects",
       name: "Projects",
       version: "0.1.0",
       apiVersion: 1,
@@ -434,7 +434,7 @@ function setup(input: {
     window.localStorage.setItem(
       "t3code:sidebar:view",
       JSON.stringify({
-        key: pluginSidebarViewKey("zeus-deus.projects", "projects"),
+        key: pluginSidebarViewKey("example.projects", "projects"),
         environmentId: laptop,
         pluginName: "Projects",
         view: projectsView(input.rules ?? {}),
@@ -792,9 +792,9 @@ function setupTree(input: {
     "t3code:sidebar:view",
     JSON.stringify({
       kind: "tree",
-      key: pluginSidebarTreeKey("zeus-deus.projects", "focus"),
+      key: pluginSidebarTreeKey("example.projects", "focus"),
       environmentId: laptop,
-      pluginId: "zeus-deus.projects",
+      pluginId: "example.projects",
       pluginName: "Projects",
       tree: { id: "focus", title: "Focus" },
     }),

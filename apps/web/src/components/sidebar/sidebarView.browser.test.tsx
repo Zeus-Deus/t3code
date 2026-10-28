@@ -194,7 +194,7 @@ describe("sidebar view choice", () => {
 
   it("names the owning plugin when two plugins offer views with the same title", async () => {
     setup([
-      projectsPlugin({ manifest: { ...projectsPlugin().manifest, id: "zeus-deus.projects" } }),
+      projectsPlugin({ manifest: { ...projectsPlugin().manifest, id: "example.projects" } }),
       projectsTreePlugin(),
     ]);
     await using _screen = await render(<Harness />);
@@ -214,7 +214,7 @@ describe("sidebar view choice", () => {
       .element(menuChoice("Projects (Projects)"))
       .toHaveAttribute("aria-checked", "false");
     await userEvent.click(menuChoice("Projects (Projects)"));
-    await expect.element(selectedChoice()).toHaveTextContent("view zeus-deus.projects/projects");
+    await expect.element(selectedChoice()).toHaveTextContent("view example.projects/projects");
 
     await userEvent.click(viewMenu());
     await userEvent.click(menuChoice("Activity"));
