@@ -15,6 +15,7 @@ import {
   movedSettingsPath,
   searchSettings,
   SETTINGS_SEARCH_ITEMS,
+  SETTINGS_NAV_GROUPS,
   sourceControlHostSearchItems,
   sourceControlHostSettingsSearchId,
   type SettingsSearchItem,
@@ -52,6 +53,14 @@ const ITEMS: ReadonlyArray<SettingsSearchItem> = [
 ];
 
 describe("searchSettings", () => {
+  it("keeps Plugins reachable from the settings navigation and search", () => {
+    const pluginPage = searchSettings("plugins").find((item) => item.id === "plugins");
+    expect(pluginPage?.to).toBe("/settings/plugins");
+    expect(searchSettings("extensions")).toContainEqual(pluginPage);
+    const navPaths = SETTINGS_NAV_GROUPS.flatMap((group) => group.paths);
+    expect(navPaths.filter((path) => path === pluginPage?.to)).toEqual(["/settings/plugins"]);
+  });
+
   it("matches titles, sections, and remembered setting details", () => {
     expect(searchSettings("word", ITEMS).map((item) => item.id)).toEqual(["word-wrap"]);
     expect(searchSettings("network", ITEMS).map((item) => item.id)).toEqual(["network-access"]);
