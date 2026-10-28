@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { create } from "zustand";
 
 import {
+  type ProjectPicker,
   type CommandPaletteUiAction,
   type CommandPaletteUiState,
   reduceCommandPaletteUiState,
@@ -60,11 +61,20 @@ export function isCommandPaletteMounted(): boolean {
  * Marks the palette as mounted while the calling component is. An unmounted
  * palette cannot stay open, so the last unmount resets the store.
  */
-export function useCommandPaletteMount(): void {
+export function useCommandPaletteMount(projectPicker?: ProjectPicker): void {
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- The palette's mount gates its global shortcuts, and leaving the route while it is open calls no close handler, so only unmount can reset the store.
   useEffect(() => {
     mountedPalettes += 1;
+    const unsubscribe =
+      projectPicker === undefined
+        ? () => {}
+        : useCommandPaletteStore.subscribe((state, previous) => {
+            if (!state.open || state.mode !== "command" || state.session !== previous.session)
+              projectPicker.set(null);
+          });
     return () => {
+      unsubscribe();
+      projectPicker?.set(null);
       mountedPalettes -= 1;
       if (mountedPalettes === 0) {
         useCommandPaletteStore.setState(
@@ -73,5 +83,5 @@ export function useCommandPaletteMount(): void {
         );
       }
     };
-  }, []);
+  }, [projectPicker]);
 }

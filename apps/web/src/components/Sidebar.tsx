@@ -1,5 +1,9 @@
 import { attachSidebarTree, SIDEBAR_TREE_PROPS } from "../lib/sidebarTree";
-import { type EnvironmentId, type PluginSidebarView, type ScopedProjectRef } from "@t3tools/contracts";
+import {
+  type EnvironmentId,
+  type PluginSidebarView,
+  type ScopedProjectRef,
+} from "@t3tools/contracts";
 import type { EnvironmentServerConfig } from "@t3tools/client-runtime/connection";
 import {
   buildPluginTreeLayout,
@@ -718,13 +722,19 @@ function useSidebarThreads(input: {
             now: Date.parse(partition.snoozeNow),
           });
   const orderedThreads = [
-    ...(projectLayout === null ? [
-    ...pinnedThreads,
-    ...(projectFolders === null
-      ? activeThreads
-      : projectFolders.flatMap((folder) => folder.threads)),
-    ...visibleWorkingThreads
-    ] : projectLayout.sections.flatMap((section) => section.tree?.conversationThread ? [section.tree.conversationThread, ...section.threads] : section.threads)),
+    ...(projectLayout === null
+      ? [
+          ...pinnedThreads,
+          ...(projectFolders === null
+            ? activeThreads
+            : projectFolders.flatMap((folder) => folder.threads)),
+          ...visibleWorkingThreads,
+        ]
+      : projectLayout.sections.flatMap((section) =>
+          section.tree?.conversationThread
+            ? [section.tree.conversationThread, ...section.threads]
+            : section.threads,
+        )),
     ...visibleSnoozedThreads,
     ...renderedSettledThreads,
   ];
@@ -747,7 +757,6 @@ function useSidebarThreads(input: {
     workingThreads,
     snoozedThreads,
     settledThreads,
-    isHiddenFromActivity,
     threads,
     workingShelfEnabled,
     projectLayout,
@@ -802,7 +811,12 @@ function partitionSidebarThreads(input: SidebarThreadPartitionInput) {
     sortActiveBySend,
   } = input;
   const preciseNow = new Date().toISOString();
-  const visible = filterSidebarV2VisibleThreads(threads, scopedProjectKeys, delegatedUnderParent, input.showDelegatedThreads);
+  const visible = filterSidebarV2VisibleThreads(
+    threads,
+    scopedProjectKeys,
+    delegatedUnderParent,
+    input.showDelegatedThreads,
+  );
   const inboxObservation = inboxReturns.observe(workingShelfEnabled ? threads : null);
   const pinned: EnvironmentThreadShell[] = [];
   const active: EnvironmentThreadShell[] = [];
@@ -1269,6 +1283,8 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
             ),
           ),
         );
+  const sidebarView = useSidebarView();
+  const treeOwners = usePluginTreeOwnerGrants();
   const threads = useQuietThreadShells();
   const routeRowThreadKey =
     routeThreadRef === null
@@ -1280,6 +1296,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
               routeThreadRef.threadId,
               routeThreadRef.environmentId,
               threads,
+              sidebarView.selected !== null,
             ),
           ),
         );
@@ -1295,7 +1312,15 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     isSearching: isSearchingThreads,
     scopedProjectKeys: chosenScopeProjectKeys,
     delegatedUnderParent,
-    findThread: (key) => threads.find((candidate) => threadShellKey(candidate) === key),
+    findThread: (key) =>
+      threads.find(
+        (candidate) =>
+          threadShellKey(candidate) === key &&
+          !(
+            sidebarView.selected === null &&
+            isPluginTreeOwnedThread(candidate, treeOwners.get(candidate.environmentId))
+          ),
+      ),
   });
   const projectScopeKeys = revealWidensScope ? [] : chosenProjectScopeKeys;
   const projectScopeKey = projectScopeKeys.length === 0 ? null : projectScopeKeys.join("\n");
@@ -1315,7 +1340,11 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     clearSelection();
     setPersistedProjectScopeKeys([]);
   }, [clearSelection, revealWidensScope, setPersistedProjectScopeKeys]);
-  const revealActiveRow = useActiveRowReveal(routeReveal, routeRowThreadKey);
+  const revealActiveRow = useActiveRowReveal(
+    routeReveal,
+    routeRowThreadKey,
+    sidebarView.selected?.key ?? null,
+  );
   const showProjectEnvironments = projectGroupsSpanEnvironments(projectGroups);
   const scratchMachineLabelFor = (
     thread: Pick<SidebarThreadSummary, "environmentId" | "projectId">,
@@ -1443,7 +1472,6 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     },
   );
 
-  const sidebarView = useSidebarView();
   const {
     foldedKeys: foldedProjectKeys,
     toggleFold: toggleProjectFold,
@@ -1456,7 +1484,6 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       ? sidebarView.selected
       : null;
   const treeSources = usePluginTreeSources(selectedTree);
-  const treeOwners = usePluginTreeOwnerGrants();
   const treeConversationEnvironmentIds = new Set(
     treeSources?.flatMap((source) => (source.conversations ? [source.environmentId] : [])),
   );
@@ -1509,7 +1536,6 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     pinnedKeysById,
     activeKeysById,
     snoozeWakeTick,
-    isHiddenFromActivity,
   } = useSidebarThreads({
     projectScopeKey,
     scopedProjectKeys,
@@ -1519,12 +1545,16 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     threads,
     delegatedUnderParent,
     routeRowThreadKey,
-    folderGroups: projectViewRules === null && boringSidebarEnabled
-      ? scopedProjectGroups.length === 0
-        ? projectGroups
-        : scopedProjectGroups
-      : null,
-    projectView: projectViewRules === null ? null : { rules: projectViewRules, groups: projectGroups, foldedKeys: foldedProjectKeys },
+    folderGroups:
+      projectViewRules === null && boringSidebarEnabled
+        ? scopedProjectGroups.length === 0
+          ? projectGroups
+          : scopedProjectGroups
+        : null,
+    projectView:
+      projectViewRules === null
+        ? null
+        : { rules: projectViewRules, groups: projectGroups, foldedKeys: foldedProjectKeys },
     keepEmptyFolders: scopedProjectGroups.length > 0,
   });
 
@@ -3159,7 +3189,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   const startThreadInProjectRef = useStableCallback((projectRef: ScopedProjectRef) => {
     if (isMobile) setOpenMobile(false);
     void (async () => {
-      const result = await settlePromise(() => handleNewThreadRef.current(projectRef));
+      const result = await settlePromise(() => handleNewThread(projectRef));
       if (result._tag === "Failure") {
         const error = squashAtomCommandFailure(result);
         toastManager.add(
@@ -3181,11 +3211,6 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       openProjectSettings(project);
     },
   );
-  const selectSidebarView = (option: Parameters<typeof sidebarView.select>[0]) => {
-    // The open thread may sit elsewhere in the other arrangement; bring it into view again.
-    routeReveal.pendingKey = routeRowThreadKey;
-    sidebarView.select(option);
-  };
   const sidebarViewOptions =
     sidebarView.selected !== null &&
     !sidebarView.options.some((option) => option.key === sidebarView.selected?.key)
@@ -3523,7 +3548,8 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                         section: SidebarSection,
                         folderRowOrDone?: string | boolean,
                       ) => {
-                        const folderRow = typeof folderRowOrDone === "string" ? folderRowOrDone : undefined;
+                        const folderRow =
+                          typeof folderRowOrDone === "string" ? folderRowOrDone : undefined;
                         const markSettledDone = folderRowOrDone === true;
 
                         const threadKey = scopedThreadKey(
@@ -3531,13 +3557,16 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                         );
                         const isCard =
                           section === "active" || section === "pinned" || section === "working";
-                        const rowVariant = projectLayout !== null ? "project" : folderRow
-                          ? folderRowsMultiline
-                            ? "folder-multiline"
-                            : "folder"
-                          : isCard
-                            ? "card"
-                            : "slim";
+                        const rowVariant =
+                          projectLayout !== null
+                            ? "project"
+                            : folderRow
+                              ? folderRowsMultiline
+                                ? "folder-multiline"
+                                : "folder"
+                              : isCard
+                                ? "card"
+                                : "slim";
                         return (
                           <SortableThreadRow
                             key={threadKey}
@@ -3745,6 +3774,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                                         splitEnvironmentId)
                                   }
                                   routeThreadKey={routeRowThreadKey}
+                                  revealRef={revealActiveRow}
                                   jumpLabel={
                                     showJumpHints && conversation.kind === "thread"
                                       ? (jumpLabelByKey.get(conversation.key) ?? null)

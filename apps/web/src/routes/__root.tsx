@@ -10,7 +10,7 @@ import {
   useRouter,
 } from "@tanstack/react-router";
 import { Check, Copy } from "lucide";
-import { useEffect, useEffectEvent, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useState } from "react";
 
 import { APP_DISPLAY_NAME, APP_VERSION } from "../branding";
 import { AppSidebarLayout } from "../components/AppSidebarLayout";
@@ -354,7 +354,6 @@ function EventRouter({
   useEffect(() => {
     handleWelcome(serverWelcome);
   }, [serverWelcome]);
-
 
   return null;
 }

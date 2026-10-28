@@ -63,6 +63,7 @@ function NearViewport(props: { readonly children: ReactNode }) {
   const boxRef = useRef<HTMLDivElement>(null);
   const [near, setNear] = useState(false);
   const [reservedHeight, setReservedHeight] = useState(CARD_FRAME_INITIAL_HEIGHT);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- owns the card’s IntersectionObserver and releases it when the DOM card unmounts
   useEffect(() => {
     const box = boxRef.current;
     if (box === null) return;

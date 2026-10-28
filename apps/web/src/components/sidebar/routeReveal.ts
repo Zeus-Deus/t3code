@@ -30,14 +30,19 @@ export function completeSidebarRouteReveal(reveal: SidebarRouteReveal): void {
 // Each route change and each mount scroll to the open thread once. Render records
 // the route, so a thread left before its row mounted still counts as a change.
 // The row can mount after the route, once its shells arrive, so its ref scrolls.
-export function useActiveRowReveal(reveal: SidebarRouteReveal, routeKey: string | null) {
-  const mountRevealOwed = useRef(true);
+export function useActiveRowReveal(
+  reveal: SidebarRouteReveal,
+  routeKey: string | null,
+  viewKey: string | null = null,
+) {
+  const mountReveal = useRef({ viewKey, owed: true });
   pendingSidebarRouteReveal(reveal, routeKey);
   return (row: HTMLElement | null, rowKey: string) => {
     if (row === null) return;
-    if (reveal.pendingKey !== rowKey && !mountRevealOwed.current) return;
+    if (mountReveal.current.viewKey !== viewKey) mountReveal.current = { viewKey, owed: true };
+    if (reveal.pendingKey !== rowKey && !mountReveal.current.owed) return;
     completeSidebarRouteReveal(reveal);
-    mountRevealOwed.current = false;
+    mountReveal.current.owed = false;
     row.scrollIntoView({ block: "nearest" });
   };
 }

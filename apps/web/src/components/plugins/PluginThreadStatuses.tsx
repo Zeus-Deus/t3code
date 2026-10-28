@@ -75,10 +75,12 @@ function usePluginThreadStatuses(
       : { environmentId: threadRef.environmentId, threadId: threadRef.threadId, projectId };
 
   const latestInvoke = useRef(invoke);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- keeps the long-lived status poller on the current scoped invocation command
   useEffect(() => {
     latestInvoke.current = invoke;
   });
   const [poller, setPoller] = useState<PluginThreadStatusPoller | null>(null);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- owns the status poller, focus listener and timer until the thread view unmounts
   useEffect(() => {
     const next = createPluginThreadStatusPoller({
       operationId: newPluginOperationId,
@@ -97,6 +99,7 @@ function usePluginThreadStatuses(
     };
   }, []);
   // Reconciling is cheap and idempotent, so it follows every render rather than a dependency list.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- keeps the external status poller’s target and visibility in step with the mounted document
   useEffect(() => {
     poller?.update({ target, entries, visible });
   });
@@ -118,6 +121,7 @@ function usePluginThreadStatuses(
           )
           .join(",");
   const seenStatusRevision = useRef(statusRevision);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- forwards mounted status-change notifications to the external poller
   useEffect(() => {
     const seen = seenStatusRevision.current;
     seenStatusRevision.current = statusRevision;

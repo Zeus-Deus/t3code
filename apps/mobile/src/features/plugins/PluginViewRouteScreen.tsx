@@ -188,11 +188,13 @@ function PluginViewDocument(props: {
   const hostRef = useRef<PluginViewHost | null>(null);
   const live = { props, theme, thread, invoke, applyIntents, navigation, features, readCardView };
   const latest = useRef(live);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- keeps the native WebView’s long-lived protocol callbacks on the current host context
   useEffect(() => {
     latest.current = live;
   });
 
   const cardKey = card === null ? null : JSON.stringify(card);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- owns the plugin document request for this WebView identity and retires its result when the screen changes
   useEffect(() => {
     let cancelled = false;
     const current = latest.current;
@@ -222,6 +224,7 @@ function PluginViewDocument(props: {
     // oxlint-disable-next-line react/exhaustive-effect-dependencies -- Retry asks for the document again.
   }, [readView, environmentId, installationId, generation, view.id, cardKey, featureKey, attempt]);
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- owns the native WebView protocol bridge and releases it when the document unmounts
   useEffect(() => {
     if (loaded === null) return;
     const context = (): PluginViewContext => {
@@ -306,6 +309,7 @@ function PluginViewDocument(props: {
     // oxlint-disable-next-line react/exhaustive-effect-dependencies -- A reloaded document needs a new host.
   }, [loaded, environmentId, installationId, generation, view.id, attempt]);
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- sends the current theme to the mounted WebView protocol bridge
   useEffect(() => {
     hostRef.current?.sendContext();
     // oxlint-disable-next-line react/exhaustive-effect-dependencies -- A theme change is resent.
@@ -319,6 +323,7 @@ function PluginViewDocument(props: {
     topic,
   });
   const seenRevision = useRef(revision);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- forwards change-stream notifications to the mounted WebView protocol bridge
   useEffect(() => {
     if (revision === null || revision === undefined) return;
     const seen = seenRevision.current;

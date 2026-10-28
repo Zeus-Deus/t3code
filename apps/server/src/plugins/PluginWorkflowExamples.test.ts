@@ -27,7 +27,7 @@ import * as Supervisor from "./PluginSupervisor.ts";
 import { inspectPluginSource } from "./pluginSource.ts";
 
 const root = NodePath.resolve(import.meta.dirname, "fixtures/consumers");
-const source = Schema.decodeUnknownSync(PluginThreadMetadata)({
+const source = Schema.decodeSync(PluginThreadMetadata)({
   id: "source:/one",
   projectId: "project:/one",
   title: "Source",

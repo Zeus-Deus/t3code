@@ -2549,6 +2549,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   useEffect(() => {
     return setContextInsertionHandler(composerDraftTarget, insertContextReferencesAtCaretStable);
   }, [composerDraftTarget, insertContextReferencesAtCaretStable, setContextInsertionHandler]);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- registers the mounted composer’s insertion handler and releases it on unmount
   useEffect(
     () =>
       registerPluginComposerInserter(composerDraftTarget, (text) =>

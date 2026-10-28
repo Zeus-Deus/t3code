@@ -183,9 +183,7 @@ const make = Effect.gen(function* () {
   ) {
     yield* prepare;
     yield* sql.withTransaction(
-      Effect.gen(function* () {
-        yield* sql`INSERT INTO plugin_run_deliveries(installation_id,generation,run_id) VALUES(${input.installationId},${input.generation},${input.runId}) ON CONFLICT DO NOTHING`;
-      }),
+      sql`INSERT INTO plugin_run_deliveries(installation_id,generation,run_id) VALUES(${input.installationId},${input.generation},${input.runId}) ON CONFLICT DO NOTHING`,
     );
   }, Effect.mapError(failed));
   const prune = Effect.fn("PluginReceipts.prune")(function* (

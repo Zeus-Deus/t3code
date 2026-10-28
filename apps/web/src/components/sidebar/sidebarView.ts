@@ -18,9 +18,11 @@ const SIDEBAR_VIEW_KEY = "t3code:sidebar:view";
 const SidebarViewPreference = Schema.NullOr(PluginSidebarChoice);
 const PENDING: PluginSidebarViewSource = { status: "pending" };
 
+type SidebarViewSource = PluginSidebarViewSource & { readonly createKeys?: ReadonlyArray<string> };
+
 interface SidebarViewSourceState {
-  readonly sources: ReadonlyMap<EnvironmentId, PluginSidebarViewSource>;
-  readonly report: (environmentId: EnvironmentId, source: PluginSidebarViewSource | null) => void;
+  readonly sources: ReadonlyMap<EnvironmentId, SidebarViewSource>;
+  readonly report: (environmentId: EnvironmentId, source: SidebarViewSource | null) => void;
 }
 
 /** Filled by the per-environment plugin catalogue subscriptions. */
@@ -71,6 +73,7 @@ export function useSidebarView() {
     selected !== null &&
     remembered !== null &&
     JSON.stringify(selected) !== JSON.stringify(remembered);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- keeps the persisted offline sidebar preference current with declarations from connected environments
   useEffect(() => {
     if (staleRemembered && selected !== null) setRemembered(selected);
   }, [selected, setRemembered, staleRemembered]);

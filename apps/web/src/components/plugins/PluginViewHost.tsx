@@ -112,6 +112,7 @@ export function PluginViewFrame(props: {
     router,
   };
   const latest = useRef(live);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- keeps the iframe’s long-lived protocol callbacks on the current host context
   useEffect(() => {
     latest.current = live;
   });
@@ -119,6 +120,7 @@ export function PluginViewFrame(props: {
   const { installationId, generation } = installation;
   const card = props.card ?? null;
   const cardKey = card === null ? null : JSON.stringify(card);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- owns the plugin document request for this iframe identity and retires its result when the frame changes
   useEffect(() => {
     let cancelled = false;
     const current = latest.current;
@@ -158,6 +160,7 @@ export function PluginViewFrame(props: {
   const token = load.kind === "ready" ? load.token : null;
   const documentFeatures = load.kind === "ready" ? load.features : null;
   // A layout effect, so the host listens before the frame's first script can post.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- attaches the iframe message bridge before its scripts can post and releases it on unmount
   useLayoutEffect(() => {
     if (document === null || token === null || documentFeatures === null) return;
     const features = documentFeatures;
@@ -261,6 +264,7 @@ export function PluginViewFrame(props: {
     attempt,
   ]);
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- sends the current theme to the mounted iframe protocol bridge
   useEffect(() => {
     hostRef.current?.sendContext();
     // oxlint-disable-next-line react/exhaustive-effect-dependencies -- A theme change is resent.
@@ -274,6 +278,7 @@ export function PluginViewFrame(props: {
     topic,
   });
   const seenRevision = useRef(revision);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- forwards change-stream notifications to the mounted iframe protocol bridge
   useEffect(() => {
     if (revision === null || revision === undefined) return;
     const seen = seenRevision.current;

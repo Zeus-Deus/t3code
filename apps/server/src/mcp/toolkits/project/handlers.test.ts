@@ -9,7 +9,6 @@ import {
   type Project as ProjectRecord,
   type ModelSelection,
   type RuntimeMode,
-  type OrchestrationV2ThreadShell,
 } from "@t3tools/contracts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -97,7 +96,7 @@ const clientLaunchHarness = (input: {
     Layer.mock(ThreadManagement.ThreadManagementService)({
       // A thread exists once a launch started it.
       getThreadShell: (threadId) => {
-        if(input.caller?.id === threadId) return Effect.succeed(input.caller);
+        if (input.caller?.id === threadId) return Effect.succeed(input.caller);
         const launch = input.launched.find((candidate) => candidate.threadId === threadId);
         return Effect.succeed(
           launch === undefined

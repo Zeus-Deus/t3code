@@ -1,4 +1,4 @@
-import { act, type ReactNode } from "react";
+import { act, useLayoutEffect, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { AsyncResult } from "effect/reactivity";
 import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
@@ -142,18 +142,20 @@ let root: Root | null = null;
 
 function Consumer(props: { readonly environmentIds: ReadonlyArray<EnvironmentId> }) {
   const list = usePluginTreeList(props.environmentIds);
-  harness.result = {
-    sources: list.sources,
-    notice: list.notice,
-    selected: list.selected,
-    loaded: list.loaded,
-    owned: list.isOwnedByTree({
-      environmentId: laptop,
-      projectId: ProjectId.make("p1"),
-      lineage: { parentThreadId: null },
-      pluginOwner: { installationId: "inst-1", treeId: "projects" },
-    }),
-  };
+  useLayoutEffect(() => {
+    harness.result = {
+      sources: list.sources,
+      notice: list.notice,
+      selected: list.selected,
+      loaded: list.loaded,
+      owned: list.isOwnedByTree({
+        environmentId: laptop,
+        projectId: ProjectId.make("p1"),
+        lineage: { parentThreadId: null },
+        pluginOwner: { installationId: "inst-1", treeId: "projects" },
+      }),
+    };
+  }, [list]);
   return list.fetchers as ReactNode;
 }
 
@@ -392,12 +394,14 @@ it("keeps an owning tree that is not exclusive reachable before and after a fail
 /** Home's composition: with nothing listed, the tree's readers mount only while it holds the list. */
 function EmptyHome(props: { readonly environmentIds: ReadonlyArray<EnvironmentId> }) {
   const list = usePluginTreeList(props.environmentIds);
-  harness.result = {
-    sources: list.sources,
-    notice: list.notice,
-    selected: list.selected,
-    loaded: list.loaded,
-  };
+  useLayoutEffect(() => {
+    harness.result = {
+      sources: list.sources,
+      notice: list.notice,
+      selected: list.selected,
+      loaded: list.loaded,
+    };
+  }, [list]);
   return pluginTreeHoldsList(list, false) ? (list.fetchers as ReactNode) : null;
 }
 

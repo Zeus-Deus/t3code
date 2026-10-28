@@ -28,6 +28,7 @@ export function PluginTreeProjectHeading(
     readonly environmentLabel: string | null;
     readonly routeThreadKey: string | null;
     readonly jumpLabel: string | null;
+    readonly revealRef: (row: HTMLElement, threadKey: string) => void;
     readonly onThreadClick: (event: ReactMouseEvent, threadRef: ScopedThreadRef) => void;
     readonly onThreadContextMenu: (
       threadRef: ScopedThreadRef,
@@ -41,6 +42,7 @@ export function PluginTreeProjectHeading(
     environmentLabel,
     routeThreadKey,
     jumpLabel,
+    revealRef,
     onThreadClick,
     onThreadContextMenu,
     ...header
@@ -57,6 +59,8 @@ export function PluginTreeProjectHeading(
         {...header}
         conversation={{
           label: `Open ${name}${where}`,
+          threadKey: conversation.key,
+          revealRef: routeThreadKey === conversation.key ? revealRef : undefined,
           selected: routeThreadKey === conversation.key,
           inSelection,
           busy: false,

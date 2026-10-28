@@ -264,7 +264,10 @@ function useSettingsIndexSections(): SettingsListSection[] {
         serverPage("SettingsThreads", "text.bubble", "Threads"),
         page("SettingsScheduledTasks", "clock", "Scheduled tasks"),
         page("SettingsPlugins", "cube", "Plugins", {
-          value: pluginAttention === 0 ? undefined : `${pluginAttention} need${pluginAttention === 1 ? "s" : ""} attention`,
+          value:
+            pluginAttention === 0
+              ? undefined
+              : `${pluginAttention} need${pluginAttention === 1 ? "s" : ""} attention`,
         }),
       ],
     },

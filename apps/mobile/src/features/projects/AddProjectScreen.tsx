@@ -423,7 +423,10 @@ function useEnvironmentOptions(
   })();
 }
 
-function useSelectedEnvironment(requestedEnvironmentId: EnvironmentId | null, destination: ProjectDestination | null): {
+function useSelectedEnvironment(
+  requestedEnvironmentId: EnvironmentId | null,
+  destination: ProjectDestination | null,
+): {
   readonly environmentOptions: ReadonlyArray<EnvironmentOption>;
   readonly selectedEnvironment: EnvironmentOption | null;
   readonly setSelectedEnvironmentId: (environmentId: EnvironmentId) => void;
@@ -434,7 +437,9 @@ function useSelectedEnvironment(requestedEnvironmentId: EnvironmentId | null, de
     setPreviousRequest(requestedEnvironmentId);
     setSelectedEnvironmentId(requestedEnvironmentId);
   }
-  const environmentOptions = useEnvironmentOptions(selectedEnvironmentId).filter((environment) => projectDestinationOffers(destination, environment.environmentId));
+  const environmentOptions = useEnvironmentOptions(selectedEnvironmentId).filter((environment) =>
+    projectDestinationOffers(destination, environment.environmentId),
+  );
   const selectedEnvironment =
     environmentOptions.find((environment) => environment.environmentId === selectedEnvironmentId) ??
     environmentOptions.find((environment) =>
@@ -523,7 +528,10 @@ function SourceControlRow(props: {
   );
 }
 
-export function AddProjectSourceScreen(props: { readonly environmentId?: string | string[]; readonly projectDestination?: string | string[] }) {
+export function AddProjectSourceScreen(props: {
+  readonly environmentId?: string | string[];
+  readonly projectDestination?: string | string[];
+}) {
   const navigation = useNavigation();
   // A destination takes only a folder, so new and cloned projects stay on the ordinary flow.
   const destination = readProjectDestination(props.projectDestination);

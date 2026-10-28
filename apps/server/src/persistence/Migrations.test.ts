@@ -4,7 +4,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import PluginReceipts from "./Migrations/070_PluginReceipts.ts";
+import PluginReceipts from "./Migrations/073_PluginReceipts.ts";
 
 import { migrationManifest, runMigrations } from "./Migrations.ts";
 

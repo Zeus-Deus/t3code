@@ -59,7 +59,6 @@ import * as EffectOutbox from "./EffectOutbox.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ThreadLaunch from "./ThreadLaunchService.ts";
-import * as ThreadLifecycle from "./ThreadLifecycleService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as ThreadManagement from "./ThreadManagementService.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
@@ -2345,7 +2344,9 @@ it.effect(
         const projections = yield* ProjectionStore.ProjectionStoreV2;
         for (const entry of stored) yield* projections.apply(entry.event);
         return yield* projections.getThreadShell(created.threadId);
-      }).pipe(Effect.provide(ProjectionStore.layerMemory));
+      }).pipe(
+        Effect.provide(ProjectionStore.layer.pipe(Layer.provide(SqlitePersistence.layerMemory))),
+      );
       assert.deepEqual(replayed?.launchedFrom, { threadId: source.threadId });
       yield* threads.dispatch({
         type: "thread.stop",
@@ -2516,7 +2517,9 @@ it.effect(
         const projections = yield* ProjectionStore.ProjectionStoreV2;
         for (const entry of stored) yield* projections.apply(entry.event);
         return yield* projections.getThreadShell(created.threadId);
-      }).pipe(Effect.provide(ProjectionStore.layerMemory));
+      }).pipe(
+        Effect.provide(ProjectionStore.layer.pipe(Layer.provide(SqlitePersistence.layerMemory))),
+      );
       assert.deepEqual(replayed?.pluginOwner, pluginOwner);
       assert.deepEqual((yield* threads.getThreadShell(created.threadId))?.pluginOwner, pluginOwner);
       const refused = yield* threads
@@ -2537,7 +2540,6 @@ it.effect(
     return Effect.gen(function* () {
       const launch = yield* ThreadLaunch.ThreadLaunchService;
       const threads = yield* ThreadManagement.ThreadManagementService;
-      const lifecycle = yield* ThreadLifecycle.ThreadLifecycleService;
       const created = yield* launch.launch(
         launchInput({ command: "owner:quiet-create", thread: "owner:quiet" }),
       );
@@ -2558,36 +2560,31 @@ it.effect(
         threadId: created.threadId,
       });
       const before = (yield* threads.getThreadProjection(created.threadId)).thread;
-      const authorize = threads.getThreadShell(created.threadId).pipe(
-        Effect.map((thread) => thread?.archivedAt !== null),
-        Effect.mapError(
-          (cause) =>
-            new ThreadLifecycle.ThreadLifecycleError({
-              operation: "unarchive",
-              threadId: created.threadId,
-              cause,
-            }),
-        ),
-      );
-      yield* lifecycle.unarchive({
-        commandId: CommandId.make("owner:unarchive"),
-        threadId: created.threadId,
+      const authorize = threads
+        .getThreadShell(created.threadId)
+        .pipe(Effect.map((thread) => thread?.archivedAt !== null));
+      yield* threads.dispatchAuthorized(
+        {
+          type: "thread.unarchive",
+          commandId: CommandId.make("owner:unarchive"),
+          threadId: created.threadId,
+        },
         authorize,
-      });
+      );
       const after = (yield* threads.getThreadProjection(created.threadId)).thread;
       assert.isNull(after.archivedAt);
       assert.deepEqual(after.settledAt, before.settledAt);
       assert.deepEqual(after.snoozedUntil, before.snoozedUntil);
       assert.deepEqual(after.snoozedAt, before.snoozedAt);
-      yield* lifecycle.unarchive({
-        commandId: CommandId.make("owner:unarchive-again"),
-        threadId: created.threadId,
+      yield* threads.dispatchAuthorized(
+        {
+          type: "thread.unarchive",
+          commandId: CommandId.make("owner:unarchive-again"),
+          threadId: created.threadId,
+        },
         authorize,
-      });
+      );
       assert.deepEqual((yield* threads.getThreadProjection(created.threadId)).thread, after);
-    }).pipe(
-      Effect.provide(ThreadLifecycle.layer.pipe(Layer.provideMerge(harness.layer))),
-      Effect.scoped,
-    );
+    }).pipe(Effect.provide(harness.layer), Effect.scoped);
   },
 );

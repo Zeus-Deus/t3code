@@ -271,17 +271,15 @@ const fixture = Effect.gen(function* () {
       Layer.mock(Projects.ProjectService)({
         listShells: () => Effect.succeed([projectShell]),
         getShell: () =>
-          Effect.succeed(
-            Option.some({
-              id: projectId,
-              title: "Test",
-              workspaceRoot: "/fixture",
-              defaultModelSelection: projectDefaultModelSelection,
-              scripts: [],
-              createdAt: "2026-10-23T12:00:00.000Z",
-              updatedAt: "2026-10-23T12:00:00.000Z",
-            }),
-          ),
+          Effect.succeedSome({
+            id: projectId,
+            title: "Test",
+            workspaceRoot: "/fixture",
+            defaultModelSelection: projectDefaultModelSelection,
+            scripts: [],
+            createdAt: "2026-10-23T12:00:00.000Z",
+            updatedAt: "2026-10-23T12:00:00.000Z",
+          }),
       }),
     ),
     Layer.provideMerge(

@@ -191,6 +191,8 @@ const headingClassName =
 
 /** A plugin tree's project heading that stands for a conversation instead of only folding. */
 interface SidebarProjectHeadingConversation {
+  readonly threadKey?: string;
+  readonly revealRef?: ((row: HTMLElement, threadKey: string) => void) | undefined;
   /** The thread, or the action that starts one; folding moves to the chevron. */
   readonly onOpen: (event: ReactMouseEvent) => void;
   readonly label: string;
@@ -312,6 +314,11 @@ export function SidebarProjectSectionHeader(props: {
         <div className="relative flex min-w-0 flex-1">
           <button
             type="button"
+            ref={(node) => {
+              if (node !== null && conversation.threadKey !== undefined)
+                conversation.revealRef?.(node, conversation.threadKey);
+            }}
+            data-sidebar-row={conversation.threadKey}
             aria-label={conversation.label}
             aria-current={conversation.selected ? "page" : undefined}
             aria-busy={conversation.busy || undefined}

@@ -244,7 +244,7 @@ const make = Effect.gen(function* () {
                   pluginTargetWithinCeiling(actor, shell)
                 );
               },
-              Effect.catch(() => Effect.succeed(false)),
+              Effect.orElseSucceed(() => false),
             );
             yield* revalidate();
             const previous = yield* receipts
@@ -257,22 +257,19 @@ const make = Effect.gen(function* () {
               })
               .pipe(
                 Effect.catchTags({
-                  PluginError: (error) =>
-                    Effect.gen(function* () {
-                      if (error.code !== "idempotency_conflict") return yield* error;
-                      yield* revalidate();
-                      const disclose =
-                        error.priorEffect !== undefined &&
-                        (yield* canDisclose(error.priorEffect.threadId));
-                      return yield* new PluginError({
-                        reason: error.reason,
-                        message: error.message,
-                        code: error.code,
-                        ...(disclose && error.priorEffect
-                          ? { priorEffect: error.priorEffect }
-                          : {}),
-                      });
-                    }),
+                  PluginError: Effect.fn("PluginHost.discloseReceiptConflict")(function* (error) {
+                    if (error.code !== "idempotency_conflict") return yield* error;
+                    yield* revalidate();
+                    const disclose =
+                      error.priorEffect !== undefined &&
+                      (yield* canDisclose(error.priorEffect.threadId));
+                    return yield* new PluginError({
+                      reason: error.reason,
+                      message: error.message,
+                      code: error.code,
+                      ...(disclose && error.priorEffect ? { priorEffect: error.priorEffect } : {}),
+                    });
+                  }),
                 }),
               );
             if ("result" in previous) {
@@ -418,15 +415,13 @@ const make = Effect.gen(function* () {
       }
       const boundResult = <A, I>(schema: Schema.Codec<A, I>, value: A) =>
         Schema.encodeEffect(schema)(value).pipe(
-          Effect.flatMap((encoded) =>
-            Buffer.byteLength(JSON.stringify(encoded)) <= 1_000_000
-              ? Effect.succeed(encoded)
-              : Effect.fail(
-                  new PluginError({
-                    reason: "invalid_result",
-                    message: "The plugin metadata page is too large. Request a smaller page.",
-                  }),
-                ),
+          Effect.filterOrFail(
+            (encoded) => Buffer.byteLength(JSON.stringify(encoded)) <= 1_000_000,
+            () =>
+              new PluginError({
+                reason: "invalid_result",
+                message: "The plugin metadata page is too large. Request a smaller page.",
+              }),
           ),
           Effect.mapError((error) =>
             isPluginError(error)
@@ -685,9 +680,21 @@ const make = Effect.gen(function* () {
               ),
             );
         } else {
-          yield* threads.dispatchAuthorized({ type: "thread.unarchive", commandId, threadId: request.threadId },
-            authorize().pipe(Effect.map((shell) => shell.archivedAt !== null)),
-          ).pipe(Effect.mapError((error) => isPluginError(error) ? error : new PluginError({ reason: "operation_failed", message: "The plugin could not unarchive the thread." })));
+          yield* threads
+            .dispatchAuthorized(
+              { type: "thread.unarchive", commandId, threadId: request.threadId },
+              authorize().pipe(Effect.map((shell) => shell.archivedAt !== null)),
+            )
+            .pipe(
+              Effect.mapError((error) =>
+                isPluginError(error)
+                  ? error
+                  : new PluginError({
+                      reason: "operation_failed",
+                      message: "The plugin could not unarchive the thread.",
+                    }),
+              ),
+            );
         }
         yield* authorize();
         return { threadId: request.threadId };

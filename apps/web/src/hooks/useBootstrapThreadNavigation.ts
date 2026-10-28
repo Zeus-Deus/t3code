@@ -46,6 +46,7 @@ export function useBootstrapThreadNavigation(skipInitialBootstrapNavigation: boo
     handledBootstrapThreadIdRef.current = payload.bootstrapThreadId;
   });
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- replays the deferred server welcome into the router after the startup-page navigation has settled
   useEffect(() => {
     const deferred = deferredBootstrapRef.current;
     if (!startPageDecided || deferred === null) return;

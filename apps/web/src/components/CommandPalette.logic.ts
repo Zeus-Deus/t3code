@@ -220,25 +220,6 @@ export function createProjectPicker() {
 
 export type ProjectPicker = ReturnType<typeof createProjectPicker>;
 
-/**
- * Dispatches palette UI actions, ending the live project choice as soon as one closes the palette,
- * switches its mode, or opens another intent. The popup stays mounted through its exit transition,
- * so waiting for its unmount would let a pending add-folder still deliver.
- */
-export function dispatchEndingProjectChoice(
-  picker: Pick<ProjectPicker, "set">,
-  dispatch: (action: CommandPaletteUiAction) => void,
-): (action: CommandPaletteUiAction) => void {
-  return (action) => {
-    const keepsChoice =
-      (action._tag === "SetOpen" && action.open) ||
-      action._tag === "ClearOpenIntent" ||
-      action._tag === "BackToCommand";
-    if (!keepsChoice) picker.set(null);
-    dispatch(action);
-  };
-}
-
 export interface CommandPaletteThreadContentMatch {
   readonly source: "user" | "assistant";
   readonly snippet: string;

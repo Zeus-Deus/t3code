@@ -53,6 +53,7 @@ export function useStartPageDecided(): boolean {
  */
 export function PluginStartPageLaunchCoordinator(): null {
   const router = useRouter();
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- settles the startup navigation registry when the app shell first mounts on a deep link
   useEffect(() => {
     if (router.state.location.pathname !== "/") appAtomRegistry.set(startPagePhaseAtom, "settled");
   }, [router]);
@@ -115,6 +116,7 @@ export function useHoldLandingForStartPage(): boolean {
   });
   const installationId = resolution.kind === "open" ? resolution.installationId : null;
   const viewId = resolution.kind === "open" ? resolution.viewId : null;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- resolves the initial router destination after asynchronous environment discovery and plugin startup
   useEffect(() => {
     // Once opening, later renders resolve to the core landing; only the navigation ends that.
     if (resolution.kind === "pending" || appAtomRegistry.get(startPagePhaseAtom) !== "waiting") {

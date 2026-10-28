@@ -61,7 +61,6 @@ import { PluginTreeNotice } from "../plugins/PluginTreeNotice";
 import { usePluginTreeConversationOpener, usePluginTreeList } from "../plugins/usePluginTreeList";
 import {
   buildPluginTreeThreadListItems,
-  earliestSnoozeWakeAt,
   pluginTreeHoldsList,
   withPluginTreeItems,
 } from "../threads/pluginTreeThreadList";
@@ -374,7 +373,16 @@ export function HomeScreen(props: HomeScreenProps) {
     onScrollBeginDrag: handleScrollBeginDrag,
   });
 
-  const [snoozeWakeTick, bumpSnoozeWakeTick] = useState(0);
+  const now = useThreadListNow(props.threads);
+  const nowMinute = now.slice(0, 16);
+  const snoozeWakeTick = props.threads.reduce(
+    (latest, thread) =>
+      Math.max(
+        latest,
+        thread.snoozedUntil && thread.snoozedUntil <= now ? Date.parse(thread.snoozedUntil) : 0,
+      ),
+    0,
+  );
   const pluginTree = usePluginTreeList(
     props.environments.map((environment) => environment.environmentId),
     snoozeWakeTick,
@@ -443,7 +451,6 @@ export function HomeScreen(props: HomeScreenProps) {
     toggleSnoozedShelf,
     toggleWorkingShelf,
   } = useThreadListV2ShelfPreferences();
-  const now = useThreadListNow(props.threads);
   const listEnvironments = useAtomValue(threadListEnvironmentsAtom);
   const {
     providersByEnvironmentId,

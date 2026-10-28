@@ -194,7 +194,6 @@ import {
   reduceCommandPaletteSearchState,
   type SearchOverlayMode,
   createProjectPicker,
-  dispatchEndingProjectChoice,
   type ProjectPicker,
   type ProjectPickerAttempt,
 } from "./CommandPalette.logic";
@@ -260,6 +259,11 @@ function openIntentView(intent: CommandPaletteOpenIntent | null): CommandPalette
         addonIcon: <FolderPlusIcon className={ADDON_ICON_CLASS} />,
         groups: [{ value: ADD_PROJECT_ENTRY_GROUP, label: "", items: [] }],
       };
+    case "choose-project":
+      return {
+        addonIcon: <FolderPlusIcon className={ADDON_ICON_CLASS} />,
+        groups: [{ value: "choose-project", label: "Projects", items: [] }],
+      };
     case "new-thread-in":
       return {
         addonIcon: <SquarePenIcon className={ADDON_ICON_CLASS} />,
@@ -277,10 +281,10 @@ function openIntentView(intent: CommandPaletteOpenIntent | null): CommandPalette
 }
 
 export function CommandPalette({ children }: { children: ReactNode }) {
-  useCommandPaletteMount();
   const state = useCommandPaletteStore();
   const setOpen = (open: boolean) => dispatchCommandPalette({ _tag: "SetOpen", open });
   const [projectPicker] = useState(createProjectPicker);
+  useCommandPaletteMount(projectPicker);
   const openChildSearch = (mode: "files" | "content", context: CommandPaletteReturnContext) =>
     dispatchCommandPalette({ _tag: "OpenChildSearch", mode, context });
   const composerHandleRef = useRef<ChatComposerHandle | null>(null);
@@ -502,7 +506,11 @@ function OpenCommandPaletteDialog(props: {
   const [isPickingProjectFolder, setIsPickingProjectFolder] = useState(false);
   // Set only by the choose-project intent and dropped on returning to the root list, so an
   // ordinary add-project flow never hands its project to a caller.
-  const [projectChoice, setProjectChoice] = useState<CommandPaletteProjectChoice | null>(null);
+  const [projectChoice, setProjectChoice] = useState<CommandPaletteProjectChoice | null>(() => {
+    const choice = props.openIntent?.kind === "choose-project" ? props.openIntent.choice : null;
+    projectPicker.set(choice);
+    return choice;
+  });
   const selectProjectChoice = (choice: CommandPaletteProjectChoice | null) => {
     projectPicker.set(choice);
     setProjectChoice(choice);
@@ -1717,15 +1725,17 @@ function OpenCommandPaletteDialog(props: {
           addProjectEnvironmentId,
           buildPaletteRemoteSourceReadiness(sourceControlDiscovery.data),
         )
-      : currentView?.groups[0]?.value === ADD_PROJECT_ENTRY_GROUP
-        ? addProjectEntryGroups()
-        : currentView?.groups[0]?.value === NEW_THREAD_IN_GROUP
-          ? [{ value: NEW_THREAD_IN_GROUP, label: "Projects", items: projectThreadItems }]
-          : currentView?.groups[0]?.value === "themes"
-            ? changeThemeItem.groups
-            : currentView?.groups[0]?.value === "appearance"
-              ? changeAppearanceItem.groups
-              : (currentView?.groups ?? rootGroups);
+      : currentView?.groups[0]?.value === "choose-project" && projectChoice !== null
+        ? buildChooseProjectGroups(projectChoice)
+        : currentView?.groups[0]?.value === ADD_PROJECT_ENTRY_GROUP
+          ? addProjectEntryGroups()
+          : currentView?.groups[0]?.value === NEW_THREAD_IN_GROUP
+            ? [{ value: NEW_THREAD_IN_GROUP, label: "Projects", items: projectThreadItems }]
+            : currentView?.groups[0]?.value === "themes"
+              ? changeThemeItem.groups
+              : currentView?.groups[0]?.value === "appearance"
+                ? changeAppearanceItem.groups
+                : (currentView?.groups ?? rootGroups);
 
   const isLinkedThreadSearch =
     linkedThreadSearch?.linkedThreads !== undefined && deferredQuery === linkedThreadSearch.query;

@@ -20,7 +20,6 @@ export interface CommandPaletteProjectChoice {
   readonly choose: (project: ScopedProjectRef) => void;
 }
 
-
 export interface CommandPaletteOpenDetail {
   readonly open?: "add-project" | "new-thread-in";
   readonly chooseProject?: CommandPaletteProjectChoice;

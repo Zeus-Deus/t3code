@@ -54,7 +54,7 @@ import {
   Trash2Icon,
   TriangleAlertIcon,
 } from "lucide-react";
-import { useEffect, useId, useRef, useState, type ReactNode, type Ref } from "react";
+import { useId, useRef, useState, type ReactNode, type Ref } from "react";
 import { flushSync } from "react-dom";
 
 import { requestConfirmDialog } from "../../confirmDialog";
@@ -233,14 +233,37 @@ function EnvironmentPlugins(props: {
     props.environment.serverConfig?.environment.capabilities,
   );
   // The installation whose settings form has unsaved values, if any.
-  const [dirtyId, setDirtyId] = useState<string | null>(null);
-  const dirtyName =
-    dirtyId === null
-      ? null
-      : (catalogue.installations.find((entry) => entry.installationId === dirtyId)?.manifest.name ??
-        "this plugin");
-  const reportDirty = (installationId: string, dirty: boolean) =>
-    setDirtyId((current) => (dirty ? installationId : current === installationId ? null : current));
+  const [dirtyForm, setDirtyForm] = useState<{
+    installationId: string;
+    digest: string;
+    formId: string;
+  } | null>(null);
+  const edited =
+    selectedId === null
+      ? catalogue.installations[0]
+      : catalogue.installations.find((entry) => entry.installationId === selectedId);
+  const formMounted =
+    catalogue.availability === "available" &&
+    catalogue.loaded &&
+    catalogue.error === null &&
+    edited !== undefined &&
+    !isPluginRecordReadOnly(edited) &&
+    edited.manifest.settings.length > 0;
+  const dirtyId = dirtyForm?.installationId ?? null;
+  const keepsDraft =
+    formMounted && edited.installationId === dirtyId && edited.digest === dirtyForm?.digest;
+  if (dirtyForm !== null && !keepsDraft) setDirtyForm(null);
+  const dirtyName = keepsDraft ? edited.manifest.name : null;
+  const reportDirty = (installationId: string, digest: string, formId: string, dirty: boolean) =>
+    setDirtyForm((current) =>
+      dirty
+        ? { installationId, digest, formId }
+        : current?.installationId === installationId &&
+            current.digest === digest &&
+            current.formId === formId
+          ? null
+          : current,
+    );
   const select = (installationId: string) => {
     setSelectedId(installationId);
     setDetailOpen(true);
@@ -500,7 +523,12 @@ function PluginBrowser(props: {
   readonly canInstall: boolean;
   readonly dirtyId: string | null;
   readonly dirtyName: string | null;
-  readonly onDirtyChange: (installationId: string, dirty: boolean) => void;
+  readonly onDirtyChange: (
+    installationId: string,
+    digest: string,
+    formId: string,
+    dirty: boolean,
+  ) => void;
   readonly onSelect: (installationId: string) => void;
   readonly onBack: () => void;
   readonly onInstall: () => void;
@@ -788,7 +816,12 @@ function PluginEditor(props: {
   readonly canManage: boolean;
   readonly onToggle: (installation: PluginInstallation, enabled: boolean) => void;
   readonly onDialog: (dialog: PluginDialog) => void;
-  readonly onDirtyChange: (installationId: string, dirty: boolean) => void;
+  readonly onDirtyChange: (
+    installationId: string,
+    digest: string,
+    formId: string,
+    dirty: boolean,
+  ) => void;
 }) {
   const { environment, installation, recoverySupported, executionDisabled, canManage } = props;
   const { headingRef, onDialog, onToggle } = props;
@@ -1410,7 +1443,12 @@ function PluginSettingsForm(props: {
   readonly environmentId: EnvironmentId;
   readonly installation: PluginInstallation;
   readonly canManage: boolean;
-  readonly onDirtyChange: (installationId: string, dirty: boolean) => void;
+  readonly onDirtyChange: (
+    installationId: string,
+    digest: string,
+    formId: string,
+    dirty: boolean,
+  ) => void;
 }) {
   const { installation, onDirtyChange } = props;
   const { installationId } = installation;
@@ -1436,10 +1474,17 @@ function PluginSettingsForm(props: {
     setSeen(installation.settings);
     if (!dirty && !saving) adopt(installation);
   }
-  useEffect(() => {
-    onDirtyChange(installationId, dirty);
-  }, [installationId, dirty, onDirtyChange]);
-  useEffect(() => () => onDirtyChange(installationId, false), [installationId, onDirtyChange]);
+  const change = (next: PluginSettingDraft, cleared: ReadonlySet<string>) => {
+    setDraft(next);
+    setClearedSecrets(cleared);
+    const patch = buildPluginSettingsPatch(manifest.settings, base, next, cleared);
+    onDirtyChange(
+      installationId,
+      installation.digest,
+      idPrefix,
+      !patch.ok || Object.keys(patch.values).length > 0,
+    );
+  };
 
   const save = async () => {
     if (!patch.ok) {
@@ -1458,6 +1503,7 @@ function PluginSettingsForm(props: {
       return;
     }
     adopt(result.value);
+    onDirtyChange(installationId, installation.digest, idPrefix, false);
   };
   const disabled = saving || !props.canManage;
   return (
@@ -1478,7 +1524,7 @@ function PluginSettingsForm(props: {
           const value = draft[setting.key];
           const error = errors[setting.key];
           const set = (next: string | boolean) => {
-            setDraft((current) => ({ ...current, [setting.key]: next }));
+            change({ ...draft, [setting.key]: next }, clearedSecrets);
             setErrors((current) => {
               const remaining = { ...current };
               delete remaining[setting.key];
@@ -1530,12 +1576,9 @@ function PluginSettingsForm(props: {
                       placeholder="Enter a new value to replace it"
                       value={typeof value === "string" ? value : ""}
                       onChange={(event) => {
-                        set(event.target.value);
-                        setClearedSecrets((current) => {
-                          const next = new Set(current);
-                          next.delete(setting.key);
-                          return next;
-                        });
+                        const cleared = new Set(clearedSecrets);
+                        cleared.delete(setting.key);
+                        change({ ...draft, [setting.key]: event.target.value }, cleared);
                       }}
                     />
                     <Button
@@ -1544,8 +1587,10 @@ function PluginSettingsForm(props: {
                       type="button"
                       disabled={disabled || cleared}
                       onClick={() => {
-                        set("");
-                        setClearedSecrets((current) => new Set(current).add(setting.key));
+                        change(
+                          { ...draft, [setting.key]: "" },
+                          new Set(clearedSecrets).add(setting.key),
+                        );
                       }}
                     >
                       Clear
@@ -1593,7 +1638,10 @@ function PluginSettingsForm(props: {
             variant="ghost"
             type="button"
             disabled={!dirty || saving}
-            onClick={() => adopt(installation)}
+            onClick={() => {
+              adopt(installation);
+              onDirtyChange(installationId, installation.digest, idPrefix, false);
+            }}
           >
             Revert
           </Button>

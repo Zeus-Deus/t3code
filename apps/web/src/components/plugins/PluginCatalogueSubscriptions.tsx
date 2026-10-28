@@ -3,7 +3,7 @@ import {
   pluginSidebarTreeOptions,
   pluginSidebarViewOptions,
   pluginTreeOwnerGrants,
-  type PluginSidebarViewSource,
+  pluginTreeCreateTarget,
 } from "@t3tools/client-runtime/plugins";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { useEffect } from "react";
@@ -33,22 +33,28 @@ function PluginSidebarViewSource(props: { readonly environmentId: EnvironmentId 
   const { environmentId } = props;
   const catalogue = usePluginCatalogue(environmentId);
   const report = useSidebarViewSourceStore((state) => state.report);
-  const source: PluginSidebarViewSource =
+  const runnable = pluginRunnableInstallations(catalogue);
+  const source =
     catalogue.availability === "unknown" ||
     catalogue.availability === "disconnected" ||
     (catalogue.availability === "available" && !catalogue.loaded && catalogue.error === null)
-      ? { status: "pending" }
+      ? { status: "pending" as const }
       : {
-          status: "ready",
+          status: "ready" as const,
           options: [
             ...pluginSidebarViewOptions(environmentId, pluginRunnableInstallations(catalogue)),
             ...pluginSidebarTreeOptions(environmentId, pluginRunnableInstallations(catalogue)),
           ],
-          owners: pluginTreeOwnerGrants(pluginRunnableInstallations(catalogue)),
+          owners: pluginTreeOwnerGrants(runnable),
+          createKeys: pluginSidebarTreeOptions(environmentId, runnable)
+            .filter((choice) => pluginTreeCreateTarget(runnable, choice) !== null)
+            .map((choice) => choice.key),
         };
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- registers the environment’s current offers in the mounted sidebar registry
   useEffect(() => {
     report(environmentId, source);
   }, [environmentId, report, source]);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- releases the environment’s sidebar registry entry when its catalogue subscription unmounts
   useEffect(() => () => report(environmentId, null), [environmentId, report]);
   return null;
 }

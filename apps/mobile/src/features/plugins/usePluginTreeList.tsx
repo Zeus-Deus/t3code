@@ -82,6 +82,7 @@ function PluginTreeSnapshotFetcher(props: {
     ? findPluginTreeInstallation(pluginRunnableInstallations(catalogue), choice)
     : null;
   const latest = useRef({ readTree, onReport, installation });
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- keeps the mounted plugin invocation callbacks on the current command and environment identity
   useEffect(() => {
     latest.current = { readTree, onReport, installation };
   });
@@ -97,6 +98,7 @@ function PluginTreeSnapshotFetcher(props: {
       ? null
       : { installationId, generation, topic: pluginTreeTopic(treeId) },
   );
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- owns a selected tree’s plugin-worker request and retires its result when that selection changes or unmounts
   useEffect(() => {
     // Unknown while disconnected or loading: the last snapshot stays until the catalogue answers.
     if (!known) return;

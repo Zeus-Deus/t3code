@@ -363,7 +363,7 @@ const pauseDevPluginDatabase = Effect.fn("pauseDevPluginDatabase")(function* (
     );
   }).pipe(
     Effect.provide(NodeSqliteClient.layer({ filename, readonly: true })),
-    Effect.catch(() => Effect.succeed(false)),
+    Effect.orElseSucceed(() => false),
   );
   // Unreadable and newer files cannot run on this host and must remain opaque.
   if (!supported) return;

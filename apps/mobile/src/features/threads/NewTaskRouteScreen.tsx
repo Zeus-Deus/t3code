@@ -203,6 +203,7 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
   const destinationParam = route.params?.projectDestination;
   const destination = readProjectDestination(destinationParam);
   // Leaving without a choice drops the destination, so nothing runs for it later.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- releases the one-shot project destination registry entry when its chooser route unmounts
   useEffect(() => () => releaseProjectDestination(destinationParam), [destinationParam]);
   const addProject = () =>
     navigation.dispatch(
@@ -247,7 +248,6 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
           project.id === incomingShare.destination?.projectId,
       ) ?? null)
     : null;
-  const { connectedEnvironments } = useRemoteConnectionStatus();
   const connectedEnvironmentIds = new Set(
     connectedEnvironments
       .filter((environment) => environment.connectionState === "connected")

@@ -56,8 +56,8 @@ import { useProjects } from "../../state/entities";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { lastPluginInstallAtom, pluginEnvironment, usePluginCatalogue } from "../../state/plugins";
 import { useAtomCommand } from "../../state/use-atom-command";
-import { SettingsActionRow } from "../settings/components/SettingsActionRow";
-import { SettingsChoiceRow } from "../settings/components/SettingsChoiceRow";
+import { ListActionRow as SettingsActionRow } from "../../components/ui/ListActionRow";
+import { ListChoiceRow as SettingsChoiceRow } from "../../components/ui/ListChoiceRow";
 import {
   AndroidSettingsEnvironmentFilter,
   SettingsEnvironmentFilterHeader,

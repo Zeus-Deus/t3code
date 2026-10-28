@@ -7,7 +7,7 @@ import type { EnvironmentId, PluginInstallation } from "@t3tools/contracts";
 
 import { useComposerDraftStore } from "../../composerDraftStore";
 import { useNewThreadHandler } from "../../hooks/useHandleNewThread";
-import { findProjectByPath } from "../../lib/projectPaths";
+import { findProjectByPath } from "@t3tools/client-runtime/state/projects";
 import { newProjectId } from "../../lib/utils";
 import { readProjects, waitForProject } from "../../state/entities";
 import { pluginEnvironment } from "../../state/plugins";

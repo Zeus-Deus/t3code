@@ -581,20 +581,25 @@ export function resolveSidebarRowThreadId(
  */
 export function filterSidebarV2VisibleThreads<
   T extends SidebarLineageThread &
-    Pick<SidebarThreadSummary, "archivedAt"> & {
-      environmentId: string;
+    Pick<SidebarThreadSummary, "archivedAt" | "id" | "environmentId"> & {
       projectId: string;
     },
 >(
   threads: readonly T[],
   scopedProjectKeys: ReadonlySet<string> | null,
-  delegatedUnderParent: ReadonlySet<string>,
+  delegatedUnderParent: ReadonlySet<string> | boolean = new Set(),
   showDelegatedThreads = false,
 ): T[] {
   return threads.filter(
     (thread) =>
       thread.archivedAt === null &&
-      !(showDelegatedThreads ? isSidebarSubagentThread(thread, true) : isShownUnderParent({ environmentId: thread.environmentId, threadId: thread.id }, thread.lineage, delegatedUnderParent)) &&
+      !((typeof delegatedUnderParent === "boolean" ? delegatedUnderParent : showDelegatedThreads)
+        ? isSidebarSubagentThread(thread, true)
+        : isShownUnderParent(
+            { environmentId: thread.environmentId, threadId: thread.id },
+            thread.lineage,
+            typeof delegatedUnderParent === "boolean" ? new Set() : delegatedUnderParent,
+          )) &&
       (scopedProjectKeys === null ||
         scopedProjectKeys.has(`${thread.environmentId}:${thread.projectId}`)),
   );

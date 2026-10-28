@@ -299,10 +299,18 @@ vi.mock("./sidebar/SidebarThreadRow", () => ({
     isActive: boolean;
     variant: string;
     variantAction: string;
+    revealRef?: (row: HTMLElement, key: string) => void;
     jumpLabel: string | null;
     onThreadClick: (event: React.MouseEvent, ref: ScopedThreadRef) => void;
   }) => (
     <li
+      ref={(row) => {
+        if (row !== null)
+          props.revealRef?.(
+            row,
+            scopedThreadKey(scopeThreadRef(props.thread.environmentId, props.thread.id)),
+          );
+      }}
       data-testid="thread-row"
       data-thread-item={scopedThreadKey(
         scopeThreadRef(props.thread.environmentId, props.thread.id),
@@ -419,7 +427,7 @@ function setup(input: {
   useThreadSelectionStore.getState().clearSelection();
   useSidebarViewSourceStore.setState({ sources: new Map() });
   resetPluginTreeSnapshotsForTests();
-  useUiStateStore.getState().setSidebarProjectScopeKey(input.scope ?? null);
+  useUiStateStore.getState().setSidebarProjectScopeKeys(input.scope ? [input.scope] : []);
   const app = [project(laptop, "p1", "App"), project(server, "p9", "App")];
   const docs = [project(server, "p1", "Docs")];
   data.update({
@@ -584,7 +592,7 @@ describe("Sidebar project view", () => {
     expect(rowTitles()).toEqual(["a2", "a1", "d1"]);
     await expect
       .element(page.getByTestId("sidebar-settled-shelf-toggle"))
-      .toHaveTextContent("Settled (1)");
+      .toHaveTextContent("Settled1");
     await expect.element(page.getByText("a1")).toHaveAttribute("aria-current", "page");
   });
 
@@ -621,7 +629,7 @@ describe("Sidebar project view", () => {
 
     await expect
       .element(page.getByTestId("sidebar-snoozed-shelf-toggle"))
-      .toHaveTextContent("Snoozed (1)");
+      .toHaveTextContent("Snoozed1");
     await expect.element(page.getByText("napping")).toHaveAttribute("aria-current", "page");
     // Its project keeps a heading even though nothing there is live.
     expect(sectionNames()).toEqual(["repo:app", "server:p1"]);
@@ -923,7 +931,7 @@ describe("Sidebar plugin tree", () => {
     // The tree placed one settled thread; the other stays on the host's closed shelf.
     await expect
       .element(page.getByTestId("sidebar-settled-shelf-toggle"))
-      .toHaveTextContent("Settled (1)");
+      .toHaveTextContent("Settled1");
     expect(
       document
         .querySelector(`[data-thread-item="${scopedThreadKey(routeTo(launched))}"]`)
@@ -1248,6 +1256,7 @@ describe("Sidebar plugin tree", () => {
   });
 
   it("asks the tree again once a listed thread's snooze ends, without polling", async () => {
+    using _timers = fakeTimers({ now: Date.parse(NOW) });
     const a = thread("a", laptop, "p1");
     setupTree({
       threads: [a],
@@ -1260,7 +1269,6 @@ describe("Sidebar plugin tree", () => {
     await using _screen = await renderSidebar();
     await expect.poll(sectionNames).toEqual([`tree:${laptop}:g`]);
 
-    using _timers = fakeTimers({ now: Date.parse(NOW) });
     const napping = thread("napping", laptop, "p1", {
       snoozedAt: NOW,
       snoozedUntil: "2026-10-23T12:01:00.000Z",

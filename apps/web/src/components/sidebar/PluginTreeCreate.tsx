@@ -1,6 +1,5 @@
 import {
   addProjectToPluginTree,
-  pluginRunnableInstallations,
   pluginTreeCreateTarget,
   type PluginSidebarTreeOption,
 } from "@t3tools/client-runtime/plugins";
@@ -8,43 +7,21 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
-import type { EnvironmentId, ScopedProjectRef } from "@t3tools/contracts";
+import type { ScopedProjectRef } from "@t3tools/contracts";
 import { useRouter } from "@tanstack/react-router";
 import { PlusIcon } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
 import { openCommandPalette } from "../../commandPaletteBus";
-import { useStableCallback } from "../../hooks/useStableCallback";
 import { ensureLocalApi } from "../../localApi";
 import { readProject } from "../../state/entities";
 import { useConnectedEnvironmentIds } from "../../state/environments";
-import {
-  pluginEnvironment,
-  readRunnablePluginInstallations,
-  usePluginCatalogue,
-} from "../../state/plugins";
+import { pluginEnvironment, readRunnablePluginInstallations } from "../../state/plugins";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { pluginFailureMessage, usePluginActionRunner } from "../plugins/usePluginActions";
 import { SidebarMenuButton } from "../ui/sidebar";
 import { toastManager } from "../ui/toast";
-
-function PluginTreeCreateSource(props: {
-  readonly environmentId: EnvironmentId;
-  readonly choice: PluginSidebarTreeOption;
-  readonly report: (environmentId: EnvironmentId, offered: boolean) => void;
-}) {
-  const { environmentId, choice, report } = props;
-  const catalogue = usePluginCatalogue(environmentId);
-  const offered =
-    catalogue.availability === "available" &&
-    catalogue.loaded &&
-    pluginTreeCreateTarget(pluginRunnableInstallations(catalogue), choice) !== null;
-  useEffect(() => {
-    report(environmentId, offered);
-    return () => report(environmentId, false);
-  }, [environmentId, offered, report]);
-  return null;
-}
+import { useSidebarViewSourceStore } from "./sidebarView";
 
 /**
  * A plugin tree's "new" row: the person picks an existing project or adds a folder, grants the
@@ -56,28 +33,15 @@ export function PluginTreeCreate(props: { readonly choice: PluginSidebarTreeOpti
   const create = choice.tree.create;
   const router = useRouter();
   const environmentIds = useConnectedEnvironmentIds();
-  const [offeredBy, setOfferedBy] = useState<ReadonlySet<EnvironmentId>>(new Set());
-  const report = useStableCallback((environmentId: EnvironmentId, offered: boolean) => {
-    setOfferedBy((current) => {
-      if (current.has(environmentId) === offered) return current;
-      const next = new Set(current);
-      if (offered) next.add(environmentId);
-      else next.delete(environmentId);
-      return next;
-    });
+  const offered = useSidebarViewSourceStore((state) => state.sources);
+  const offeredBy = environmentIds.filter((environmentId) => {
+    const source = offered.get(environmentId);
+    return source?.status === "ready" && source.createKeys?.includes(choice.key);
   });
   const grantProject = useAtomCommand(pluginEnvironment.grantProject, { reportFailure: false });
   const runAction = usePluginActionRunner();
   const [running, setRunning] = useState(false);
-  const sources = environmentIds.map((environmentId) => (
-    <PluginTreeCreateSource
-      key={environmentId}
-      environmentId={environmentId}
-      choice={choice}
-      report={report}
-    />
-  ));
-  if (create === undefined || offeredBy.size === 0) return sources;
+  if (create === undefined || offeredBy.length === 0) return null;
 
   const addProject = async (projectRef: ScopedProjectRef) => {
     const { environmentId, projectId } = projectRef;
@@ -129,7 +93,6 @@ export function PluginTreeCreate(props: { readonly choice: PluginSidebarTreeOpti
 
   return (
     <>
-      {sources}
       <SidebarMenuButton
         size="sm"
         disabled={running}

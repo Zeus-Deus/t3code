@@ -94,7 +94,7 @@ vi.mock(import("../../state/use-atom-command"), async (original) => ({
       );
       return AsyncResult.success(
         result
-          ? result[1]
+          ? await result[1]
           : (state.installResult ?? state.catalogues[request.environmentId]?.[0] ?? null),
       );
     }) as never,
@@ -1018,4 +1018,32 @@ it("asks the browser to confirm leaving with unsaved settings", async () => {
   expect(unloadPrevented()).toBe(false);
   await editBoardLabel();
   expect(unloadPrevented()).toBe(true);
+});
+
+it("keeps a new form guarded when an earlier discarded form finishes saving", async () => {
+  const lens = installationFixture({
+    installationId: "inst-2",
+    manifest: { ...installationFixture({}).manifest, id: "examples.lens", name: "Lens" },
+  });
+  setup([configurable(), lens]);
+  let finishSave!: (installation: PluginInstallation) => void;
+  state.results[":update-settings"] = new Promise<PluginInstallation>((resolve) => {
+    finishSave = resolve;
+  });
+  await using _screen = await renderWide();
+  using confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+  await userEvent.fill(page.getByRole("textbox", { name: "Board label" }), "Earlier edit");
+  await press(page.getByRole("button", { name: "Save" }));
+  await expect.element(page.getByRole("button", { name: "Saving…" })).toBeDisabled();
+  await press(page.getByRole("button", { name: "Select Lens" }));
+  await press(page.getByRole("button", { name: "Select Workflow Board" }));
+  await userEvent.fill(page.getByRole("textbox", { name: "Board label" }), "Current edit");
+  await act(async () => finishSave(configurable({ settings: { label: "Earlier edit" } })));
+  confirm.mockClear();
+  confirm.mockReturnValue(false);
+  await press(page.getByRole("button", { name: "Select Lens" }));
+  expect(confirm).toHaveBeenCalledWith("Discard unsaved changes to Workflow Board settings?");
+  await expect
+    .element(page.getByRole("textbox", { name: "Board label" }))
+    .toHaveValue("Current edit");
 });

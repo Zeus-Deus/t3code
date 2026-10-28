@@ -165,6 +165,7 @@ function PluginTreeSnapshotSource(props: {
   const report = usePluginTreeSnapshotStore((state) => state.report);
   const readTree = useAtomCommand(pluginEnvironment.readTree, { reportFailure: false });
   const latestRead = useRef(readTree);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- keeps the mounted plugin-worker request on the current scoped command
   useEffect(() => {
     latestRead.current = readTree;
   });
@@ -192,6 +193,7 @@ function PluginTreeSnapshotSource(props: {
       : { installationId, generation, topic: pluginTreeTopic(treeId) },
   );
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- owns a selected tree’s plugin-worker request and retires its result when that selection changes or unmounts
   useEffect(() => {
     if (!known) return;
     if (installationId === null || generation === null) {

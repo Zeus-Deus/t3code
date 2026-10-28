@@ -1,10 +1,17 @@
+import { EnvironmentId, ProjectId } from "@t3tools/contracts";
 import { compileResolvedKeybindingsConfig } from "@t3tools/shared/keybindings";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { userEvent } from "vite-plus/test/browser";
 
 import { render } from "../../test/render";
 import { openCommandPalette } from "../commandPaletteBus";
-import { useCommandPaletteMount, useCommandPaletteStore } from "../commandPaletteStore";
+import {
+  dispatchCommandPalette,
+  isCommandPaletteMounted,
+  useCommandPaletteMount,
+  useCommandPaletteStore,
+} from "../commandPaletteStore";
+import { createProjectPicker } from "../components/CommandPalette.logic";
 import { installCommandPaletteCommands } from "./commandPaletteCommands";
 
 const keybindings = compileResolvedKeybindingsConfig([
@@ -66,5 +73,64 @@ describe("openCommandPalette", () => {
       open: true,
       openIntent: { kind: "new-thread-in" },
     });
+  });
+});
+
+function MountedProjectChooser(props: { picker: ReturnType<typeof createProjectPicker> }) {
+  useCommandPaletteMount(props.picker);
+  return null;
+}
+
+describe("project chooser lifetime in the shared palette store", () => {
+  it("invalidates pending work synchronously on close, replacement or mode change", async () => {
+    setup();
+    const picker = createProjectPicker();
+    const choose = vi.fn();
+    const environmentId = EnvironmentId.make("env-picker");
+    const choice = { environmentIds: [environmentId], choose };
+    await using screen = await render(<MountedProjectChooser picker={picker} />);
+    for (const action of [
+      { _tag: "SetOpen", open: false },
+      { _tag: "ToggleMode", mode: "files" },
+      { _tag: "OpenAddProject" },
+      { _tag: "OpenSearch", query: "replacement" },
+    ] as const) {
+      dispatchCommandPalette({ _tag: "OpenChooseProject", choice });
+      picker.set(choice);
+      const attempt = picker.attempt(choice);
+      expect(attempt).not.toBeNull();
+      dispatchCommandPalette(action);
+      // The owner remains mounted throughout the popup's exit animation.
+      expect(isCommandPaletteMounted()).toBe(true);
+      expect(
+        attempt &&
+          picker.deliver(attempt, {
+            environmentId,
+            projectId: ProjectId.make("project-picker"),
+          }),
+      ).toBe(false);
+    }
+    expect(choose).not.toHaveBeenCalled();
+    await screen.rerender(<div />);
+    expect(isCommandPaletteMounted()).toBe(false);
+  });
+
+  it("keeps a live attempt in the same open session, but never revives a cancelled one", async () => {
+    setup();
+    const picker = createProjectPicker();
+    const choice = { environmentIds: [EnvironmentId.make("env-picker")], choose: vi.fn() };
+    await using screen = await render(<MountedProjectChooser picker={picker} />);
+    dispatchCommandPalette({ _tag: "OpenChooseProject", choice });
+    picker.set(choice);
+    const attempt = picker.attempt(choice);
+    dispatchCommandPalette({ _tag: "SetOpen", open: true });
+    dispatchCommandPalette({ _tag: "BackToCommand" });
+    expect(attempt && picker.isLive(attempt)).toBe(true);
+    picker.leaveView();
+    expect(attempt && picker.isLive(attempt)).toBe(false);
+    expect(picker.attempt(choice)).not.toBeNull();
+    expect(attempt && picker.isLive(attempt)).toBe(false);
+    await screen.rerender(<div />);
+    expect(picker.attempt(choice)).toBeNull();
   });
 });

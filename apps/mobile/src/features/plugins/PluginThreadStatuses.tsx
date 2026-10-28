@@ -45,6 +45,7 @@ function usePluginThreadStatuses(props: {
   const invoke = useAtomCommand(pluginEnvironment.invoke, { reportFailure: false });
   const focused = useIsFocused();
   const [appActive, setAppActive] = useState(() => AppState.currentState === "active");
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- subscribes to the native app lifecycle so the external poller stops while backgrounded
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (state) =>
       setAppActive(state === "active"),
@@ -62,10 +63,12 @@ function usePluginThreadStatuses(props: {
   };
 
   const latestInvoke = useRef(invoke);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- keeps the long-lived status poller on the current scoped invocation command
   useEffect(() => {
     latestInvoke.current = invoke;
   });
   const [poller, setPoller] = useState<PluginThreadStatusPoller | null>(null);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- owns the status poller and its timer until this thread screen unmounts
   useEffect(() => {
     const next = createPluginThreadStatusPoller({
       operationId: newPluginOperationId,
@@ -79,6 +82,7 @@ function usePluginThreadStatuses(props: {
     return () => next.dispose();
   }, []);
   // Returning to the app or this screen (such as closing the plugin's view) asks again.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- keeps the external status poller’s target and visibility in step with the focused native screen
   useEffect(() => {
     poller?.update({ target, entries, visible: focused && appActive });
   });
@@ -100,6 +104,7 @@ function usePluginThreadStatuses(props: {
           )
           .join(",");
   const seenStatusRevision = useRef(statusRevision);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- forwards mounted status-change notifications to the external poller
   useEffect(() => {
     const seen = seenStatusRevision.current;
     seenStatusRevision.current = statusRevision;

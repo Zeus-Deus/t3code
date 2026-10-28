@@ -13273,7 +13273,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       return effectOutbox.awaitSettled(`effect:restart-continuation:${run.id}`).pipe(Effect.ignore);
     }),
     dispatch: dispatchWithReceipt,
-    dispatchAuthorized: (command, authorize) =>
+    dispatchAuthorized: Effect.fn("OrchestratorV2.dispatchAuthorized")((command, authorize) =>
       threadDispatch.withLock(
         command.threadId,
         authorize.pipe(
@@ -13282,6 +13282,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ),
         ),
       ),
+    ),
     autoArmLimitRecovery: Effect.fn("OrchestratorV2.autoArmLimitRecovery")(function (input) {
       return threadDispatch.withLock(
         input.threadId,

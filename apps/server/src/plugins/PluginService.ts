@@ -631,11 +631,11 @@ const make = Effect.gen(function* () {
     record: PluginStore.StoredInstallation,
   ) {
     const directory = path.join(dataRoot, dataKeyFor(record));
-    yield* fs.makeDirectory(directory, { recursive: true }).pipe(Effect.mapError(failure));
-    yield* fs.chmod(dataRoot, 0o700).pipe(Effect.mapError(failure));
-    yield* fs.chmod(directory, 0o700).pipe(Effect.mapError(failure));
+    yield* fs.makeDirectory(directory, { recursive: true });
+    yield* fs.chmod(dataRoot, 0o700);
+    yield* fs.chmod(directory, 0o700);
     return directory;
-  });
+  }, Effect.mapError(failure));
   const removeDataDirectory = (dataKey: string) =>
     fs
       .remove(path.join(dataRoot, dataKey), { recursive: true, force: true })
@@ -788,16 +788,14 @@ const make = Effect.gen(function* () {
         installations: state.installations.filter((record) => !record.removed).map(present),
         executionDisabled: policy.safeMode,
       })),
-      Effect.catch(() =>
-        Effect.succeed({
-          installations: [],
-          executionDisabled: policy.safeMode,
-          unavailable: {
-            message:
-              "The plugin catalogue is unavailable. Core T3 remains usable; plugin files and data were retained.",
-          },
-        }),
-      ),
+      Effect.orElseSucceed(() => ({
+        installations: [],
+        executionDisabled: policy.safeMode,
+        unavailable: {
+          message:
+            "The plugin catalogue is unavailable. Core T3 remains usable; plugin files and data were retained.",
+        },
+      })),
     );
   });
   const stage = Effect.fn("PluginService.stage")(function* (
@@ -1097,9 +1095,7 @@ const make = Effect.gen(function* () {
   const backlogFor = Effect.fn("PluginService.backlogFor")(function* (
     record: PluginStore.StoredInstallation,
   ) {
-    const throughSequence = yield* applicationEvents.latestApplicationSequence.pipe(
-      Effect.mapError(failure),
-    );
+    const throughSequence = yield* applicationEvents.latestApplicationSequence;
     const runs = new Set<string>();
     const threadShells = new Map<
       string,
@@ -1125,10 +1121,7 @@ const make = Effect.gen(function* () {
               )
                 return;
               if (!threadShells.has(event.threadId))
-                threadShells.set(
-                  event.threadId,
-                  yield* threads.getThreadShell(event.threadId).pipe(Effect.mapError(failure)),
-                );
+                threadShells.set(event.threadId, yield* threads.getThreadShell(event.threadId));
               const thread = threadShells.get(event.threadId);
               if (
                 !thread ||
@@ -1149,7 +1142,6 @@ const make = Effect.gen(function* () {
               runs.add(event.payload.id);
             }),
           ),
-          Effect.mapError(failure),
         );
     return {
       count: runs.size,
@@ -1161,7 +1153,7 @@ const make = Effect.gen(function* () {
         !compatible(record.installation) ||
         !!record.deliveryError,
     };
-  });
+  }, Effect.mapError(failure));
   const backlog = Effect.fn("PluginService.backlog")(function* (input: {
     readonly installationId: string;
   }) {
