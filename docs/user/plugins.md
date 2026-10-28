@@ -38,7 +38,7 @@ above the composer on mobile); select it to open that plugin's panel for the thr
 A plugin can offer another sidebar layout, such as threads grouped by project,
 or a programmable tree of groups and threads. Choose it beside the web sidebar
 search or from the command palette; mobile offers supported trees in its View
-menu. The older declarative project layouts remain web and desktop only.
+menu. Declarative project layouts are available on web and desktop.
 Installing or enabling a plugin never changes your layout automatically. Your
 choice and folds stay on this device. If the plugin becomes unavailable, T3
 returns to Activity and keeps your choice for when it comes back.

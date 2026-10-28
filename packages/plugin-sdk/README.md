@@ -4,16 +4,7 @@ Create a separate plugin directory containing a manifest and JavaScript entry.
 `plugin.mjs` exports `activate(context)`; activation registers handlers, while
 host calls run inside handler invocations.
 
-The optional `@t3tools/plugin-sdk` package supplies TypeScript author types.
-Bundle dependencies and compile TypeScript before distributing a plugin. The
-host loads ordinary JavaScript and does not install dependencies for you.
-
-## Package
-
-Create `t3-plugin.json` with a stable `publisher.name` identifier, a semantic
-version, `apiVersion: 1`, a relative JavaScript entry, required capabilities, and
-the actions, views, and settings you contribute. The host inspects this
-declaration before evaluating code.
+## Hello world
 
 A minimal `t3-plugin.json`:
 
@@ -34,13 +25,17 @@ A minimal `t3-plugin.json`:
 Its `plugin.mjs`:
 
 ```js
-export function activate(context) {
-  context.handle("action:hello", () => ({ message: "Hello from your plugin." }));
+export function activate(ctx) {
+  ctx.handle("action:hello", () => ({ message: "Hello from your plugin." }));
 }
 ```
 
 Install that directory through **Settings → Plugins**, review its permissions,
 and enable it. Its action then appears in the command palette.
+
+The optional `@t3tools/plugin-sdk` supplies TypeScript author types. Compile
+TypeScript and bundle dependencies before installing; the host loads JavaScript
+and does not install dependencies.
 
 Use `optionalCapabilities` for features that can be omitted on older hosts,
 and check `ctx.capabilities` before using them. A constraint the host must
@@ -70,20 +65,10 @@ services. Declare the matching capabilities and obtain project grants. The host
 also checks the invoking client's or agent's authority. Plugin messages visibly
 identify their source.
 
-`invocation.caller` describes the verified caller. An agent's thread identity
-comes from its credential, independently of the target in `invocation.context`.
-The host derives optional `subagentOf` from the caller's own thread or the
-context's target by following only subagent edges to the first non-subagent
-ancestor, stopping at forks; if ancestry cannot be resolved, it omits `subagentOf`
-and sets `lineage: "unresolved"` on that caller or context. A deleted ancestor
-may make this permanent; ask the person before allocating an ownership-sensitive
-resource. Older v1 hosts omit this signal. An outside MCP agent may have
-`caller.kind === "agent"` without a `caller.threadId`; do not substitute an
-agent-supplied context for verified identity.
 Use `ctx.dataDirectory` for private files that must survive worker restarts and
 package updates. Keep runtime-generated files out of the installed snapshot.
 
-The initial `threads.read` API returns the latest 30 messages, with each message
+`threads.read` returns the latest 30 messages, with each message
 limited to 4,096 characters. It is a bounded snapshot, not a full-history export.
 
 For metadata-only discovery, require `workflow.query` alongside `threads.read`
@@ -103,40 +88,8 @@ shows the brief before sending and discloses its exact snapshot on that message;
 the message itself keeps the person's text. An explicitly supplied title stays
 in place. Never send both `text` and `brief`.
 
-Every `send` or `create` call requires an `idempotencyKey`, a stable name for
-that effect within the invocation. For example:
-
-```js
-await ctx.threads.send({
-  threadId: invocation.context.threadId,
-  text: "Review the previous result without editing files.",
-  idempotencyKey: "request-review",
-});
-```
-
-Within the same invocation and authorized caller identity, reusing the operation
-identity and effect key prevents duplicate T3 commands. The host also includes
-the caller's private principal identity: an equal operation ID from another
-client session does not establish a replay. Distinct intended effects need
-distinct keys. This protection does not make your own HTTP requests or
-filesystem writes idempotent.
-Each new client action has a new operation identity. If a workflow spans
-separate clicks, keep its progress in storage and make uncertain outcomes
-visible rather than blindly repeating a command.
-
-The logical effect identity survives plugin revision changes. Reusing it with
-different input rejects with `code: "idempotency_conflict"`; the error may
-include a prior effect handle when the caller is still authorized to see it.
-Handle that conflict explicitly rather than automatically issuing another
-effect. Installation generations revoke stale calls; they do not reset the
-history of completed effects.
-
-Use `ctx.events.onRunFinalized(handler)` for committed turn outcomes. Delivery
-is at least once. Use `deliveryId` to deduplicate plugin data and external
-effects. Keep observers bounded, respect cancellation, and avoid generating
-feedback loops. Event observers never run inside orchestration replay.
-New project grants start observing from the grant's event position. A person
-resuming a stopped observer chooses whether to skip or deliver missed runs.
+Each intended `send` or `create` needs a stable `idempotencyKey`; see Advanced
+for retry and operation identity rules.
 
 Host calls are unavailable during activation. Keep activation fast and use
 `ctx.signal` or an exported `deactivate()` to dispose any resources you own.
@@ -276,6 +229,58 @@ installation cannot adopt or restore its predecessor's threads.
 
 `collapsedByDefault` folds group and project headings. Native thread rows stay
 expanded; wrap a branch in a group when it needs a foldable heading.
+
+## Advanced
+
+### Caller identity and lineage
+
+`invocation.caller` describes the verified caller. An agent's thread identity
+comes from its credential, independently of the target in `invocation.context`.
+The host derives optional `subagentOf` from the caller's own thread or the
+context's target by following only subagent edges to the first non-subagent
+ancestor, stopping at forks; if ancestry cannot be resolved, it omits `subagentOf`
+and sets `lineage: "unresolved"` on that caller or context. A deleted ancestor
+may make this permanent; ask the person before allocating an ownership-sensitive
+resource. Older v1 hosts omit this signal. An outside MCP agent may have
+`caller.kind === "agent"` without a `caller.threadId`; do not substitute an
+agent-supplied context for verified identity.
+
+### Retry safety and event delivery
+
+Every `send` or `create` call requires an `idempotencyKey`, a stable name for
+that effect within the invocation. For example:
+
+```js
+await ctx.threads.send({
+  threadId: invocation.context.threadId,
+  text: "Review the previous result without editing files.",
+  idempotencyKey: "request-review",
+});
+```
+
+Within the same invocation and authorized caller identity, reusing the operation
+identity and effect key prevents duplicate T3 commands. The host also includes
+the caller's private principal identity: an equal operation ID from another
+client session does not establish a replay. Distinct intended effects need
+distinct keys. This protection does not make your own HTTP requests or
+filesystem writes idempotent.
+Each new client action has a new operation identity. If a workflow spans
+separate clicks, keep its progress in storage and make uncertain outcomes
+visible rather than blindly repeating a command.
+
+The logical effect identity survives plugin revision changes. Reusing it with
+different input rejects with `code: "idempotency_conflict"`; the error may
+include a prior effect handle when the caller is still authorized to see it.
+Handle that conflict explicitly rather than automatically issuing another
+effect. Installation generations revoke stale calls; they do not reset the
+history of completed effects.
+
+Use `ctx.events.onRunFinalized(handler)` for committed turn outcomes. Delivery
+is at least once. Use `deliveryId` to deduplicate plugin data and external
+effects. Keep observers bounded, respect cancellation, and avoid generating
+feedback loops. Event observers never run inside orchestration replay.
+New project grants start observing from the grant's event position. A person
+resuming a stopped observer chooses whether to skip or deliver missed runs.
 
 ## Develop and verify
 
