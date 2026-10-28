@@ -13,7 +13,6 @@ import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
-import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
@@ -23,6 +22,7 @@ import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import * as ServerConfig from "../config.ts";
 import * as PluginDatabase from "./PluginDatabase.ts";
+import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 
 const activeSource = Schema.Literals(["upstream", "local-repair"]);
 const settings = Schema.Record(Schema.String, PluginSettingValue);
@@ -84,14 +84,14 @@ export interface PluginState {
 }
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const decodeJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
-const decodeEnvelope = Schema.decodeUnknownEffect(
-  Schema.fromJsonString(
-    Schema.Struct({
-      version: Schema.Literal(1),
-      installations: Schema.Array(Schema.Unknown),
-    }),
-  ),
-);
+const SecretBundle = Schema.Struct({
+  secrets,
+  previousSecrets: Schema.optionalKey(secrets),
+  pendingSecrets: Schema.optionalKey(secrets),
+});
+const decodeSecretBundle = Schema.decodeUnknownEffect(Schema.fromJsonString(SecretBundle));
+const secretReference = Schema.String.check(Schema.isPattern(/^plugin-settings-[a-f0-9-]{36}$/));
+const readSecretReference = Schema.decodeUnknownOption(secretReference);
 const decodeRecord = Schema.decodeUnknownEffect(StoredInstallation);
 const decodeDisplayId = Schema.decodeUnknownOption(PluginManifest.fields.id);
 const decodeDisplayName = Schema.decodeUnknownOption(PluginManifest.fields.name);
@@ -112,7 +112,7 @@ export function assertMutablePluginRecord(record: StoredInstallation) {
 
 const newerRecord = (raw: unknown) =>
   Predicate.isObject(raw) &&
-  ((typeof raw.formatVersion === "number" && raw.formatVersion > 1) ||
+  ((typeof raw.formatVersion === "number" && raw.formatVersion > 2) ||
     (Predicate.isObject(raw.installation) &&
       Predicate.isObject(raw.installation.manifest) &&
       typeof raw.installation.manifest.apiVersion === "number" &&
@@ -271,15 +271,14 @@ export class PluginStore extends Context.Service<
 
 const make = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
-  const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const config = yield* ServerConfig.ServerConfig;
   const database = yield* PluginDatabase.PluginDatabase;
-  const core = yield* SqlClient.SqlClient;
+  const secretStore = yield* ServerSecretStore.ServerSecretStore;
   const lock = yield* Semaphore.make(1);
   const changes = yield* PubSub.sliding<void>(1);
   const directory = path.join(config.stateDir, "plugins");
-  const statePath = path.join(directory, "state.json");
+  let references = new Map<string, string>();
   let cached: PluginState | undefined;
   const empty: PluginState = { version: 1, installations: [], receipts: {}, origins: {} };
   const recordMetadata = ({
@@ -289,11 +288,54 @@ const make = Effect.gen(function* () {
     recordIssue: _issue,
     ...record
   }: StoredInstallation) => ({ ...record, formatVersion: 1 });
+  const bundleFor = (record: StoredInstallation) => ({
+    secrets: record.secrets,
+    ...(record.previous === undefined ? {} : { previousSecrets: record.previous.secrets }),
+    ...(record.pendingSecrets === undefined ? {} : { pendingSecrets: record.pendingSecrets }),
+  });
+  const protectRecord = Effect.fn("PluginStore.protectRecord")(function* (
+    record: StoredInstallation,
+    written: Set<string>,
+    old?: StoredInstallation,
+  ) {
+    const bundle = bundleFor(record);
+    const hasSecrets = Object.values(bundle).some((values) => Object.keys(values).length > 0);
+    let secretRef: string | undefined;
+    if (hasSecrets) {
+      const json = yield* encodeJson(bundle);
+      const oldReference = references.get(record.installation.installationId);
+      if (
+        old !== undefined &&
+        oldReference !== undefined &&
+        json === (yield* encodeJson(bundleFor(old)))
+      ) {
+        secretRef = oldReference;
+      } else {
+        secretRef = `plugin-settings-${yield* crypto.randomUUIDv4()}`;
+        // Immutable references keep a failed catalogue transaction on its previous secret revision.
+        yield* secretStore.create(secretRef, new TextEncoder().encode(json));
+        written.add(secretRef);
+      }
+    }
+    return {
+      ...recordMetadata(record),
+      secrets: {},
+      ...(record.previous === undefined ? {} : { previous: { ...record.previous, secrets: {} } }),
+      ...(record.pendingSecrets === undefined ? {} : { pendingSecrets: {} }),
+      ...(secretRef === undefined ? {} : { secretRef, formatVersion: 2 }),
+    };
+  });
+  const discardReferences = (names: Iterable<string>) =>
+    Effect.forEach(names, (name) => secretStore.remove(name).pipe(Effect.ignore), {
+      discard: true,
+    });
   const persist = Effect.fn("PluginStore.persist")(function* (
     sql: SqlClient.SqlClient,
     current: PluginState,
     state: PluginState,
+    written: Set<string>,
   ) {
+    const nextReferences = new Map(references);
     const previous = new Map(
       current.installations.map((record) => [record.installation.installationId, record]),
     );
@@ -309,8 +351,10 @@ const make = Effect.gen(function* () {
           operation: "write",
           cause: "read-only-plugin-record",
         });
-      if (!next.has(record.installation.installationId))
+      if (!next.has(record.installation.installationId)) {
         yield* sql`DELETE FROM plugin_records WHERE installation_id=${record.installation.installationId}`;
+        nextReferences.delete(record.installation.installationId);
+      }
     }
     for (const [position, record] of state.installations.entries()) {
       const installationId = record.installation.installationId;
@@ -324,7 +368,13 @@ const make = Effect.gen(function* () {
           Object.keys(fields).length !== Object.keys(previousFields).length ||
           Object.entries(fields).some(([key, value]) => value !== previousFields[key]);
         if (metadataChanged) {
-          const json = record.rawRecordJson ?? (yield* encodeJson(record.rawRecord ?? fields));
+          const protectedFields = assertMutablePluginRecord(record)
+            ? undefined
+            : yield* protectRecord(record, written, old);
+          const json =
+            record.rawRecordJson ?? (yield* encodeJson(record.rawRecord ?? protectedFields));
+          if (protectedFields?.secretRef === undefined) nextReferences.delete(installationId);
+          else nextReferences.set(installationId, protectedFields.secretRef);
           yield* sql`INSERT INTO plugin_records(installation_id,position,record_json,event_cursor) VALUES(${installationId},${position},${json},${record.eventCursor})
             ON CONFLICT(installation_id) DO UPDATE SET position=excluded.position,record_json=excluded.record_json,event_cursor=excluded.event_cursor`;
         } else if (old && old.eventCursor !== record.eventCursor)
@@ -352,114 +402,128 @@ const make = Effect.gen(function* () {
     }
     if (current === empty)
       yield* sql`INSERT INTO plugin_state_metadata VALUES(1,'{}') ON CONFLICT DO NOTHING`;
-  });
-  const importLegacy = Effect.fn("PluginStore.importLegacy")(function* (sql: SqlClient.SqlClient) {
-    const tables = yield* core<{
-      name: string;
-    }>`SELECT name FROM sqlite_schema WHERE type='table' AND name IN ('plugin_records','plugin_state_metadata','plugin_storage')`;
-    if (tables.length === 3) {
-      const snapshot = yield* core.withTransaction(
-        Effect.gen(function* () {
-          const records = yield* core<{
-            installation_id: string;
-            position: number;
-            record_json: string;
-            event_cursor: number;
-          }>`SELECT * FROM plugin_records`;
-          const storage = yield* core<{
-            installation_id: string;
-            key: string;
-            value_json: string;
-          }>`SELECT * FROM plugin_storage`;
-          const marker = yield* core`SELECT id FROM plugin_state_metadata WHERE id=1`;
-          return { records, storage, imported: marker.length > 0 };
-        }),
-      );
-      if (snapshot.imported || snapshot.records.length > 0) {
-        for (const row of snapshot.records)
-          yield* sql`INSERT INTO plugin_records VALUES(${row.installation_id},${row.position},${row.record_json},${row.event_cursor})`;
-        for (const row of snapshot.storage)
-          yield* sql`INSERT INTO plugin_storage VALUES(${row.installation_id},${row.key},${row.value_json})`;
-        yield* sql`INSERT INTO plugin_state_metadata VALUES(1,'{}')`;
-        return;
-      }
-    }
-    if (yield* fs.exists(statePath)) {
-      const envelope = yield* decodeEnvelope(yield* fs.readFileString(statePath));
-      const installations = yield* Effect.forEach(envelope.installations, (raw) =>
-        isolateRecord(raw),
-      );
-      yield* persist(sql, empty, { ...empty, installations });
-    } else yield* sql`INSERT INTO plugin_state_metadata VALUES(1,'{}')`;
-    // Keep the legacy file as recovery evidence; the committed marker prevents reimport.
+    return nextReferences;
   });
   const readUnsafe = Effect.gen(function* () {
     if (cached !== undefined) return cached;
     const sql = yield* database.client;
-    const state = yield* sql.withTransaction(
-      Effect.gen(function* () {
-        const marker = yield* sql`SELECT id FROM plugin_state_metadata WHERE id=1`;
-        if (marker.length === 0) yield* importLegacy(sql);
-        const rows = yield* sql<{
-          installation_id: string;
-          record_json: string;
-          event_cursor: number;
-        }>`SELECT installation_id,record_json,event_cursor FROM plugin_records ORDER BY position,installation_id`;
-        const values = yield* sql<{
-          installation_id: string;
-          key: string;
-          value_json: string;
-        }>`SELECT * FROM plugin_storage`;
-        const storage = new Map<string, Record<string, unknown>>();
-        const corruptStorage = new Set<string>();
-        for (const value of values) {
-          const decoded = yield* decodeJson(value.value_json).pipe(Effect.option);
-          if (decoded._tag === "None") {
-            corruptStorage.add(value.installation_id);
-            continue;
+    const loadedReferences = new Map<string, string>();
+    const written = new Set<string>();
+    const state = yield* sql
+      .withTransaction(
+        Effect.gen(function* () {
+          const marker = yield* sql`SELECT id FROM plugin_state_metadata WHERE id=1`;
+          if (marker.length === 0) yield* sql`INSERT INTO plugin_state_metadata VALUES(1,'{}')`;
+          const rows = yield* sql<{
+            installation_id: string;
+            record_json: string;
+            event_cursor: number;
+          }>`SELECT installation_id,record_json,event_cursor FROM plugin_records ORDER BY position,installation_id`;
+          const values = yield* sql<{
+            installation_id: string;
+            key: string;
+            value_json: string;
+          }>`SELECT * FROM plugin_storage`;
+          const storage = new Map<string, Record<string, unknown>>();
+          const corruptStorage = new Set<string>();
+          for (const value of values) {
+            const decoded = yield* decodeJson(value.value_json).pipe(Effect.option);
+            if (decoded._tag === "None") {
+              corruptStorage.add(value.installation_id);
+              continue;
+            }
+            let entries = storage.get(value.installation_id);
+            if (!entries) {
+              entries = {};
+              storage.set(value.installation_id, entries);
+            }
+            Object.defineProperty(entries, value.key, {
+              value: decoded.value,
+              enumerable: true,
+              configurable: true,
+              writable: true,
+            });
           }
-          let entries = storage.get(value.installation_id);
-          if (!entries) {
-            entries = {};
-            storage.set(value.installation_id, entries);
-          }
-          Object.defineProperty(entries, value.key, {
-            value: decoded.value,
-            enumerable: true,
-            configurable: true,
-            writable: true,
-          });
-        }
-        const installations = yield* Effect.forEach(rows, (row) =>
-          Effect.gen(function* () {
-            const parsed = yield* decodeJson(row.record_json).pipe(Effect.option);
-            const raw = parsed._tag === "Some" ? parsed.value : row.record_json;
-            const input =
-              Predicate.isObject(raw) && !corruptStorage.has(row.installation_id)
-                ? {
-                    ...raw,
-                    storage: storage.get(row.installation_id) ?? {},
-                    eventCursor: row.event_cursor,
-                  }
-                : raw;
-            const record = yield* isolateRecord(input, row.installation_id, row.record_json);
-            if (corruptStorage.has(row.installation_id) && !record.recordIssue)
-              return yield* isolateRecord(
-                { unreadableStorage: true },
-                row.installation_id,
-                row.record_json,
+          const installations = yield* Effect.forEach(rows, (row) =>
+            Effect.gen(function* () {
+              const parsed = yield* decodeJson(row.record_json).pipe(Effect.option);
+              let raw = parsed._tag === "Some" ? parsed.value : row.record_json;
+              const reference = readSecretReference(
+                Predicate.isObject(raw) ? raw.secretRef : undefined,
               );
-            return record.installation.installationId === row.installation_id
-              ? record
-              : {
-                  ...record,
-                  installation: { ...record.installation, installationId: row.installation_id },
-                };
-          }),
-        );
-        return { ...empty, installations };
-      }),
-    );
+              if (reference._tag === "Some") {
+                loadedReferences.set(row.installation_id, reference.value);
+                if (Predicate.isObject(raw) && !newerRecord(raw)) {
+                  const bundle = yield* secretStore.get(reference.value).pipe(
+                    Effect.flatMap(Effect.fromOption),
+                    Effect.flatMap((bytes) => decodeSecretBundle(new TextDecoder().decode(bytes))),
+                    Effect.option,
+                  );
+                  if (bundle._tag === "None")
+                    return yield* isolateRecord(
+                      { unreadableSecrets: true },
+                      row.installation_id,
+                      row.record_json,
+                    );
+                  raw = {
+                    ...raw,
+                    secrets: bundle.value.secrets,
+                    ...(Predicate.isObject(raw.previous)
+                      ? {
+                          previous: {
+                            ...raw.previous,
+                            secrets: bundle.value.previousSecrets ?? {},
+                          },
+                        }
+                      : {}),
+                    ...(bundle.value.pendingSecrets === undefined
+                      ? {}
+                      : { pendingSecrets: bundle.value.pendingSecrets }),
+                  };
+                }
+              }
+              const invalidReference =
+                Predicate.isObject(raw) && raw.secretRef !== undefined && reference._tag === "None";
+              const input =
+                Predicate.isObject(raw) &&
+                !invalidReference &&
+                !corruptStorage.has(row.installation_id)
+                  ? {
+                      ...raw,
+                      storage: storage.get(row.installation_id) ?? {},
+                      eventCursor: row.event_cursor,
+                    }
+                  : raw;
+              const record = yield* isolateRecord(input, row.installation_id, row.record_json);
+              if (
+                (invalidReference || corruptStorage.has(row.installation_id)) &&
+                !record.recordIssue
+              )
+                return yield* isolateRecord(
+                  { unreadableStorage: true },
+                  row.installation_id,
+                  row.record_json,
+                );
+              if (!assertMutablePluginRecord(record) && reference._tag === "None") {
+                const fields = yield* protectRecord(record, written);
+                if (fields.secretRef !== undefined) {
+                  yield* sql`UPDATE plugin_records SET record_json=${yield* encodeJson(fields)} WHERE installation_id=${row.installation_id}`;
+                  loadedReferences.set(row.installation_id, fields.secretRef);
+                }
+              }
+              return record.installation.installationId === row.installation_id
+                ? record
+                : {
+                    ...record,
+                    installation: { ...record.installation, installationId: row.installation_id },
+                  };
+            }),
+          );
+          return { ...empty, installations };
+        }),
+      )
+      .pipe(Effect.onError(() => discardReferences(written)));
+    references = loadedReferences;
     cached = state;
     return state;
   }).pipe(
@@ -475,14 +539,18 @@ const make = Effect.gen(function* () {
     const sql = yield* database.client.pipe(
       Effect.mapError((cause) => new PluginStoreError({ operation: "write", cause })),
     );
-    yield* sql
-      .withTransaction(persist(sql, current, state))
-      .pipe(
-        Effect.mapError((cause) =>
-          isPluginStoreError(cause) ? cause : new PluginStoreError({ operation: "write", cause }),
-        ),
-      );
+    const written = new Set<string>();
+    const nextReferences = yield* sql.withTransaction(persist(sql, current, state, written)).pipe(
+      Effect.onError(() => discardReferences(written)),
+      Effect.mapError((cause) =>
+        isPluginStoreError(cause) ? cause : new PluginStoreError({ operation: "write", cause }),
+      ),
+    );
+    const retained = new Set(nextReferences.values());
+    const obsolete = new Set([...references.values()].filter((name) => !retained.has(name)));
+    references = nextReferences;
     cached = state;
+    yield* discardReferences(obsolete);
     if (
       current.installations.length !== state.installations.length ||
       state.installations.some((record, index) => {
@@ -522,4 +590,4 @@ const make = Effect.gen(function* () {
     subscribeChanges: Effect.map(PubSub.subscribe(changes), Stream.fromSubscription),
   });
 });
-export const layer = Layer.effect(PluginStore, make);
+export const layer = Layer.effect(PluginStore, make).pipe(Layer.provide(ServerSecretStore.layer));

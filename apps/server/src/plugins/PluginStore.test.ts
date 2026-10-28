@@ -1,4 +1,5 @@
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import { CommandId, EventId, ProjectId } from "@t3tools/contracts";
@@ -33,12 +34,6 @@ const testLayer = () =>
       ),
     ),
   );
-const legacyCatalogue = Effect.gen(function* () {
-  const sql = yield* SqlClient.SqlClient;
-  yield* sql`CREATE TABLE plugin_records (installation_id TEXT PRIMARY KEY, position INTEGER NOT NULL, record_json TEXT NOT NULL, event_cursor INTEGER NOT NULL)`;
-  yield* sql`CREATE TABLE plugin_storage (installation_id TEXT NOT NULL REFERENCES plugin_records(installation_id) ON DELETE CASCADE, key TEXT NOT NULL, value_json TEXT NOT NULL, PRIMARY KEY(installation_id,key))`;
-  yield* sql`CREATE TABLE plugin_state_metadata (id INTEGER PRIMARY KEY CHECK(id=1), value_json TEXT NOT NULL)`;
-});
 const valid: Store.StoredInstallation = {
   installation: {
     installationId: "valid",
@@ -93,6 +88,7 @@ it.effect("an interrupted atomic publish retains committed records and the read 
               installations: state.installations.map((record) => ({
                 ...record,
                 installation: { ...record.installation, error: "partial" },
+                secrets: { token: "uncommitted secret" },
               })),
             },
           ] as const),
@@ -101,10 +97,80 @@ it.effect("an interrupted atomic publish retains committed records and the read 
     ).toBe("write");
     expect((yield* store.read).installations[0]?.installation.error).toBe(null);
     expect(store.isCurrent(committed)).toBe(true);
-    expect((yield* (yield* buildStore).read).installations[0]?.installation.error).toBe(null);
+    const reopened = (yield* (yield* buildStore).read).installations[0];
+    expect(reopened?.installation.error).toBe(null);
+    expect(reopened?.secrets).toEqual(valid.secrets);
   }).pipe(Effect.provide(testLayer()), Effect.scoped),
 );
 
+it.effect("keeps committed secrets when the protected write fails", () =>
+  Effect.gen(function* () {
+    const store = yield* buildStore;
+    yield* store.update((state) =>
+      Effect.succeed([undefined, { ...state, installations: [valid] }] as const),
+    );
+    const fs = yield* FileSystem.FileSystem;
+    const config = yield* Config.ServerConfig;
+    yield* fs.rename(config.secretsDir, `${config.secretsDir}-held`);
+    yield* fs.writeFileString(config.secretsDir, "temporary secret-store blocker");
+    expect(
+      (yield* store
+        .update((state) =>
+          Effect.succeed([
+            undefined,
+            {
+              ...state,
+              installations: [{ ...valid, secrets: { token: "uncommitted secret" } }],
+            },
+          ] as const),
+        )
+        .pipe(Effect.flip)).operation,
+    ).toBe("write");
+    expect((yield* store.read).installations[0]?.secrets).toEqual(valid.secrets);
+    yield* fs.remove(config.secretsDir);
+    yield* fs.rename(`${config.secretsDir}-held`, config.secretsDir);
+    expect((yield* (yield* buildStore).read).installations[0]?.secrets).toEqual(valid.secrets);
+  }).pipe(Effect.provide(testLayer()), Effect.scoped),
+);
+it.effect("isolates a missing protected secret without overwriting it or blocking peers", () =>
+  Effect.gen(function* () {
+    const store = yield* buildStore;
+    yield* store.update((state) =>
+      Effect.succeed([
+        undefined,
+        {
+          ...state,
+          installations: [
+            valid,
+            {
+              ...valid,
+              secrets: {},
+              installation: { ...valid.installation, installationId: "peer" },
+            },
+          ],
+        },
+      ] as const),
+    );
+    const fs = yield* FileSystem.FileSystem;
+    const config = yield* Config.ServerConfig;
+    const files = (yield* fs.readDirectory(config.secretsDir)).filter((name) =>
+      name.startsWith("plugin-settings-"),
+    );
+    yield* fs.remove(`${config.secretsDir}/${files[0]}`);
+    const reopened = yield* (yield* buildStore).read;
+    expect(reopened.installations[0]).toMatchObject({
+      recordIssue: "corrupt",
+      installation: { status: "incompatible" },
+    });
+    expect(reopened.installations[1]).toMatchObject({
+      installation: { installationId: "peer", status: "needs-consent" },
+    });
+    const sql = yield* (yield* Database.PluginDatabase).client;
+    expect(yield* sql`SELECT installation_id FROM plugin_records ORDER BY installation_id`).toEqual(
+      [{ installation_id: "peer" }, { installation_id: "valid" }],
+    );
+  }).pipe(Effect.provide(testLayer()), Effect.scoped),
+);
 it.effect("validates snapshot identity without waiting for an uncommitted update", () =>
   Effect.gen(function* () {
     const store = yield* buildStore;
@@ -131,71 +197,79 @@ it.effect("validates snapshot identity without waiting for an uncommitted update
     expect(store.isCurrent(current)).toBe(true);
   }).pipe(Effect.provide(testLayer()), Effect.scoped),
 );
-it.effect("imports legacy state atomically and keeps incompatible private bytes recoverable", () =>
+it.effect("keeps secret revisions out of the catalogue and restores them after reopening", () =>
+  Effect.gen(function* () {
+    const store = yield* buildStore;
+    const record = {
+      ...valid,
+      previous: {
+        directory: valid.directory,
+        manifest: valid.installation.manifest,
+        source: valid.installation.source,
+        digest: valid.installation.digest,
+        settings: {},
+        secrets: { token: "previous private fixture" },
+      },
+      pendingSecrets: { token: "pending private fixture" },
+    };
+    yield* store.update((state) =>
+      Effect.succeed([undefined, { ...state, installations: [record] }] as const),
+    );
+    const sql = yield* (yield* Database.PluginDatabase).client;
+    const rows = yield* sql<{ record_json: string }>`SELECT record_json FROM plugin_records`;
+    expect(rows[0]?.record_json).not.toContain("private fixture");
+    expect(rows[0]?.record_json).toContain('"formatVersion":2');
+    const reopened = (yield* (yield* buildStore).read).installations[0];
+    expect(reopened?.secrets).toEqual(record.secrets);
+    expect(reopened?.previous?.secrets).toEqual(record.previous.secrets);
+    expect(reopened?.pendingSecrets).toEqual(record.pendingSecrets);
+    const fs = yield* FileSystem.FileSystem;
+    const config = yield* Config.ServerConfig;
+    if ((yield* HostProcess.Platform) !== "win32")
+      expect((yield* fs.stat(config.secretsDir)).mode & 0o777).toBe(0o700);
+    const files = (yield* fs.readDirectory(config.secretsDir)).filter((name) =>
+      name.startsWith("plugin-settings-"),
+    );
+    expect(files).toHaveLength(1);
+    if ((yield* HostProcess.Platform) !== "win32")
+      expect((yield* fs.stat(`${config.secretsDir}/${files[0]}`)).mode & 0o777).toBe(0o600);
+    yield* store.update((state) =>
+      Effect.succeed([undefined, { ...state, installations: [] }] as const),
+    );
+    expect(
+      (yield* fs.readDirectory(config.secretsDir)).filter((name) =>
+        name.startsWith("plugin-settings-"),
+      ),
+    ).toEqual([]);
+  }).pipe(Effect.provide(testLayer()), Effect.scoped),
+);
+it.effect("moves existing catalogue secrets before publishing the hydrated state", () =>
+  Effect.gen(function* () {
+    const sql = yield* (yield* Database.PluginDatabase).client;
+    yield* sql`INSERT INTO plugin_records VALUES('valid',0,${yield* encodeJson(valid)},12)`;
+    const store = yield* buildStore;
+    expect((yield* store.read).installations[0]?.secrets).toEqual(valid.secrets);
+    const rows = yield* sql<{ record_json: string }>`SELECT record_json FROM plugin_records`;
+    expect(rows[0]?.record_json).not.toContain("private fixture");
+    expect(rows[0]?.record_json).toContain('"formatVersion":2');
+    expect((yield* (yield* buildStore).read).installations[0]?.secrets).toEqual(valid.secrets);
+  }).pipe(Effect.provide(testLayer()), Effect.scoped),
+);
+it.effect("ignores the unshipped JSON catalogue without modifying its bytes", () =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const config = yield* Config.ServerConfig;
     const directory = `${config.stateDir}/plugins`;
-    const future = {
-      ...valid,
-      formatVersion: 2,
-      installation: {
-        ...valid.installation,
-        installationId: "future",
-        manifest: { ...valid.installation.manifest, apiVersion: 2 },
-      },
-    };
     yield* fs.makeDirectory(directory, { recursive: true });
-    const legacy = yield* encodeJson({
-      version: 1,
-      installations: [valid, future],
-      receipts: {},
-      origins: {},
-    });
+    const legacy = yield* encodeJson({ version: 1, installations: [valid] });
     yield* fs.writeFileString(`${directory}/state.json`, legacy);
-    const sql = yield* (yield* Database.PluginDatabase).client;
-    yield* sql`CREATE TRIGGER reject_import BEFORE INSERT ON plugin_storage BEGIN SELECT RAISE(ABORT,'fixture'); END`;
-    const store = yield* buildStore;
-    expect((yield* store.read.pipe(Effect.flip)).operation).toBe("read");
-    expect(yield* sql`SELECT * FROM plugin_records`).toHaveLength(0);
-    expect(yield* sql`SELECT * FROM plugin_state_metadata`).toHaveLength(0);
-    yield* sql`DROP TRIGGER reject_import`;
-    const state = yield* store.read;
-    expect(state.installations[0]).toMatchObject({
-      storage: valid.storage,
-      secrets: valid.secrets,
-      sourceRequest: valid.sourceRequest,
-      eventCursor: 12,
-    });
-    expect(state.installations[1]?.rawRecord).toEqual(future);
-    expect(state.installations[1]?.installation).toMatchObject({
-      recordIssue: "newer",
-      status: "incompatible",
-    });
-    const original =
-      yield* sql`SELECT record_json FROM plugin_records WHERE installation_id='future'`;
-    yield* store.update((current) =>
-      Effect.succeed([
-        undefined,
-        {
-          ...current,
-          installations: current.installations.filter(
-            (record) => record.installation.installationId !== "valid",
-          ),
-        },
-      ] as const),
-    );
-    expect(
-      yield* sql`SELECT record_json FROM plugin_records WHERE installation_id='future'`,
-    ).toEqual(original);
-    expect((yield* (yield* buildStore).read).installations[0]?.rawRecord).toEqual(future);
+    expect((yield* (yield* buildStore).read).installations).toEqual([]);
     expect(yield* fs.readFileString(`${directory}/state.json`)).toBe(legacy);
   }).pipe(Effect.provide(testLayer()), Effect.scoped),
 );
 it.effect("preserves newer record bytes through peer writes and refuses ordinary deletion", () =>
   Effect.gen(function* () {
-    const core = yield* SqlClient.SqlClient;
-    yield* legacyCatalogue;
+    const core = yield* (yield* Database.PluginDatabase).client;
     const raw =
       '{ "formatVersion": 99, "installation": { "installationId": "future", "manifest": { "id": "publisher.future", "name": "Future Plugin", "version": "2.3.4" } }, "private": "retained" }';
     yield* core`INSERT INTO plugin_state_metadata VALUES(1,'not-json')`;
@@ -224,13 +298,11 @@ it.effect("preserves newer record bytes through peer writes and refuses ordinary
     expect(yield* sql`SELECT * FROM plugin_storage WHERE installation_id='future'`).toEqual([
       { installation_id: "future", key: "private", value_json: '{"value":"retained"}' },
     ]);
-    expect(yield* core`SELECT record_json FROM plugin_records`).toEqual([{ record_json: raw }]);
   }).pipe(Effect.provide(testLayer()), Effect.scoped),
 );
 it.effect("isolates invalid JSON and corrupt KV per installation", () =>
   Effect.gen(function* () {
-    const core = yield* SqlClient.SqlClient;
-    yield* legacyCatalogue;
+    const core = yield* (yield* Database.PluginDatabase).client;
     yield* core`INSERT INTO plugin_state_metadata VALUES(1,'{}')`;
     yield* core`INSERT INTO plugin_records VALUES('broken',0,'{broken',7)`;
     yield* core`INSERT INTO plugin_records VALUES('valid',1,${yield* encodeJson(valid)},12)`;
@@ -251,7 +323,7 @@ it.effect.each([true, false, "true", 1, null, undefined])(
       const sql = yield* (yield* Database.PluginDatabase).client;
       const raw = ` ${yield* encodeJson({
         ...valid,
-        formatVersion: 2,
+        formatVersion: 3,
         removed,
         installation: {
           ...valid.installation,
@@ -381,22 +453,22 @@ it.effect.each(["corrupt", "blocked", "newer"] as const)(
       expect(yield* fs.readFile(artifact)).toEqual(before);
     }).pipe(Effect.provide(testLayer()), Effect.scoped),
 );
-it.effect("catalogue and KV writes do not take the core writer lock after import", () =>
+it.effect("catalogue and KV writes do not take the core writer lock", () =>
   Effect.gen(function* () {
     const core = yield* SqlClient.SqlClient;
-    yield* legacyCatalogue;
+    yield* core`CREATE TABLE fixture_lock(value TEXT)`;
     const store = yield* buildStore;
     yield* store.read;
     yield* core.withTransaction(
       Effect.gen(function* () {
-        yield* core`INSERT INTO plugin_state_metadata VALUES(1,'core-only')`;
+        yield* core`INSERT INTO fixture_lock VALUES('core-only')`;
         yield* store.update((state) =>
           Effect.succeed([undefined, { ...state, installations: [valid] }] as const),
         );
       }),
     );
     expect((yield* store.read).installations[0]?.storage).toEqual(valid.storage);
-    expect(yield* core`SELECT * FROM plugin_records`).toHaveLength(0);
+    expect(yield* core`SELECT * FROM fixture_lock`).toEqual([{ value: "core-only" }]);
     const reopenedDatabase = Context.get(
       yield* Layer.build(Database.layer),
       Database.PluginDatabase,

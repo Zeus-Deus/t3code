@@ -4566,7 +4566,7 @@ it.effect(
       yield* f.plugins.remove({ installationId: item.installationId });
       const sql = yield* (yield* Database.PluginDatabase).client;
       const saved = (yield* f.store.read).installations[0]!;
-      const raw = `  ${yield* encodeJson({ ...saved, formatVersion: 2 })}\n`;
+      const raw = `  ${yield* encodeJson({ ...saved, formatVersion: 3 })}\n`;
       yield* sql`UPDATE plugin_records SET record_json=${raw} WHERE installation_id=${item.installationId}`;
       const g = yield* fixture;
       expect((yield* g.plugins.list()).installations).toEqual([]);
@@ -5304,7 +5304,7 @@ it.effect("refuses a duplicate opaque newer installation without changing its sa
     const item = yield* f.enable();
     const sql = yield* (yield* Database.PluginDatabase).client;
     const saved = (yield* f.store.read).installations[0]!;
-    const raw = `  ${yield* encodeJson({ ...saved, formatVersion: 2, future: { preserve: "opaque" } })}\n`;
+    const raw = `  ${yield* encodeJson({ ...saved, formatVersion: 3, future: { preserve: "opaque" } })}\n`;
     yield* sql`UPDATE plugin_records SET record_json=${raw} WHERE installation_id=${item.installationId}`;
     const g = yield* fixture;
     const listed = yield* g.plugins.list();
