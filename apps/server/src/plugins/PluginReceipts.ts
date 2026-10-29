@@ -53,30 +53,63 @@ export class PluginReceipts extends Context.Service<
     ) => Effect.Effect<void, PluginError>;
   }
 >()("t3/plugins/PluginReceipts") {}
+// The plugin host owns this ledger in the core database, outside the core migration chain.
+export const ensureSchema = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql.withTransaction(
+    Effect.gen(function* () {
+      yield* sql`CREATE TABLE IF NOT EXISTS plugin_operation_receipts (
+        sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+        operation_key TEXT UNIQUE NOT NULL,
+        installation_id TEXT NOT NULL,
+        generation TEXT NOT NULL,
+        request_digest TEXT NOT NULL,
+        result_json TEXT,
+        effect_json TEXT
+      )`;
+      yield* sql`CREATE TABLE IF NOT EXISTS plugin_run_deliveries (
+        installation_id TEXT NOT NULL,
+        generation TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        PRIMARY KEY(installation_id,run_id)
+      )`;
+      yield* sql`CREATE TABLE IF NOT EXISTS plugin_event_reservations (
+        installation_id TEXT NOT NULL,
+        generation TEXT NOT NULL,
+        delivery_id TEXT NOT NULL,
+        operation_key TEXT UNIQUE NOT NULL
+      )`;
+      // Old development ledgers predate effect bindings and generation-free run identities.
+      const columns = yield* sql<{ name: string }>`PRAGMA table_info(plugin_operation_receipts)`;
+      if (!columns.some((column) => column.name === "effect_json"))
+        yield* sql`ALTER TABLE plugin_operation_receipts ADD COLUMN effect_json TEXT`;
+      const identity =
+        yield* sql`SELECT name FROM sqlite_schema WHERE type='index' AND name='plugin_run_deliveries_identity'`;
+      if (identity.length === 0)
+        yield* sql`DELETE FROM plugin_run_deliveries WHERE rowid NOT IN (SELECT MIN(rowid) FROM plugin_run_deliveries GROUP BY installation_id,run_id)`;
+      yield* sql`CREATE INDEX IF NOT EXISTS plugin_receipts_results ON plugin_operation_receipts(installation_id,sequence DESC) WHERE result_json IS NOT NULL`;
+      yield* sql`CREATE UNIQUE INDEX IF NOT EXISTS plugin_run_deliveries_identity ON plugin_run_deliveries(installation_id,run_id)`;
+      yield* sql`CREATE INDEX IF NOT EXISTS plugin_event_reservations_logical ON plugin_event_reservations(installation_id,delivery_id)`;
+    }),
+  );
+});
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const coreReceipts = yield* CoreReceipts.OrchestrationCommandReceiptRepository;
-  const prepare = yield* Effect.cached(
-    sql.withTransaction(
-      Effect.gen(function* () {
-        // Only old, unshipped development schemas need upgrading; fresh homes have the final ledger.
-        const columns = yield* sql<{ name: string }>`PRAGMA table_info(plugin_operation_receipts)`;
-        if (!columns.some((column) => column.name === "effect_json"))
-          yield* sql`ALTER TABLE plugin_operation_receipts ADD COLUMN effect_json TEXT`;
-        const indices = yield* sql<{
-          name: string;
-        }>`SELECT name FROM sqlite_schema WHERE type='index' AND tbl_name IN ('plugin_operation_receipts','plugin_run_deliveries','plugin_event_reservations')`;
-        const names = new Set(indices.map((index) => index.name));
-        if (!names.has("plugin_receipts_results"))
-          yield* sql`CREATE INDEX plugin_receipts_results ON plugin_operation_receipts(installation_id,sequence DESC) WHERE result_json IS NOT NULL`;
-        if (!names.has("plugin_run_deliveries_identity")) {
-          yield* sql`DELETE FROM plugin_run_deliveries WHERE rowid NOT IN (SELECT MIN(rowid) FROM plugin_run_deliveries GROUP BY installation_id,run_id)`;
-          yield* sql`CREATE UNIQUE INDEX plugin_run_deliveries_identity ON plugin_run_deliveries(installation_id,run_id)`;
-        }
-        if (!names.has("plugin_event_reservations_logical"))
-          yield* sql`CREATE INDEX plugin_event_reservations_logical ON plugin_event_reservations(installation_id,delivery_id)`;
-      }),
-    ),
+  // Remember only success: a transient failure (a busy database) must not disable receipts
+  // until restart, so the next operation retries the idempotent setup.
+  let schemaReady = false;
+  const prepare = Effect.suspend(() =>
+    schemaReady
+      ? Effect.void
+      : ensureSchema.pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+          Effect.tap(() =>
+            Effect.sync(() => {
+              schemaReady = true;
+            }),
+          ),
+        ),
   );
   const reserve = Effect.fn("PluginReceipts.reserve")(
     function* (
@@ -137,6 +170,7 @@ const make = Effect.gen(function* () {
     key: string,
     requestDigest: string,
   ) {
+    yield* prepare;
     // A failed lookup is an unknown outcome, never proof that the command did not commit.
     const receipt = yield* coreReceipts
       .getByCommandId({ commandId: CommandId.make(key) })
@@ -191,6 +225,7 @@ const make = Effect.gen(function* () {
     keepGeneration?: string,
   ) {
     if (keepGeneration !== undefined) return;
+    yield* prepare;
     // Core history still owns these effects after plugin data is removed.
     yield* sql`UPDATE plugin_operation_receipts SET result_json=NULL WHERE installation_id=${installationId} AND result_json IS NOT NULL`;
   }, Effect.mapError(failed));
@@ -198,6 +233,7 @@ const make = Effect.gen(function* () {
     readonly installationId: string;
     readonly threadId: ThreadId;
   }) {
+    yield* prepare;
     const rows = yield* sql`SELECT 1 FROM orchestration_command_receipts AS core
       INNER JOIN plugin_operation_receipts AS plugin ON plugin.operation_key=core.command_id
       WHERE core.aggregate_kind='thread' AND core.aggregate_id=${input.threadId}

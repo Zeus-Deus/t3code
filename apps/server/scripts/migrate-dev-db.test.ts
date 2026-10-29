@@ -6,6 +6,7 @@ import * as Path from "effect/Path";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { runMigrations } from "../src/persistence/Migrations.ts";
+import { ensureSchema as ensurePluginReceiptSchema } from "../src/plugins/PluginReceipts.ts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import { runMigrateDevDb } from "./migrate-dev-db.ts";
 
@@ -34,6 +35,7 @@ const createFixtureSource = Effect.fn("createMigrateDevDbFixtureSource")(functio
       const sql = yield* SqlClient.SqlClient;
       yield* runMigrations();
       yield* legacyCatalogue;
+      yield* ensurePluginReceiptSchema;
 
       yield* sql`INSERT INTO projection_projects
         (project_id, title, workspace_root, scripts_json, created_at, updated_at, deleted_at)

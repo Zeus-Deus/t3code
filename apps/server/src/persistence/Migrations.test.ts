@@ -4,8 +4,6 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import PluginReceipts from "./Migrations/073_PluginReceipts.ts";
-
 import { migrationManifest, runMigrations } from "./Migrations.ts";
 
 const v2Migrations = migrationManifest.filter(([id]) => id >= 55);
@@ -122,59 +120,6 @@ describe("runMigrations", () => {
       `;
 
       assert.deepStrictEqual(yield* runMigrations(), []);
-    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
-  );
-});
-
-it.effect("creates the final core plugin ledger without legacy catalogue or KV tables", () =>
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    yield* runMigrations();
-    assert.deepStrictEqual(
-      yield* sql`SELECT name FROM sqlite_schema WHERE type='table' AND name IN ('plugin_records','plugin_storage','plugin_state_metadata')`,
-      [],
-    );
-    yield* sql`INSERT INTO plugin_operation_receipts(operation_key,installation_id,generation,request_digest,result_json,effect_json)
-      VALUES('existing','board','one','digest','{"threadId":"retained"}','{"threadId":"retained"}')`;
-    yield* sql`INSERT INTO plugin_run_deliveries VALUES('board','one','run')`;
-    yield* sql`INSERT INTO plugin_run_deliveries VALUES('board','two','run') ON CONFLICT DO NOTHING`;
-    assert.deepStrictEqual(yield* sql`SELECT installation_id,run_id FROM plugin_run_deliveries`, [
-      { installation_id: "board", run_id: "run" },
-    ]);
-    assert.deepStrictEqual(yield* runMigrations(), []);
-  }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
-);
-
-describe("plugin migration history", () => {
-  it.effect.each([false, true])(
-    "refuses preview slot collisions without rewriting their ledger (legacy state %s)",
-    (legacyState) =>
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* runMigrations({ toMigrationInclusive: 67 });
-        yield* PluginReceipts;
-        yield* sql`INSERT INTO effect_sql_migrations (migration_id, name) VALUES (68, 'PluginReceipts')`;
-        if (legacyState)
-          yield* sql`INSERT INTO effect_sql_migrations (migration_id, name) VALUES (69, 'PluginState')`;
-        const before = yield* history;
-        assert.isTrue(Exit.isFailure(yield* Effect.exit(runMigrations())));
-        assert.deepStrictEqual(yield* history, before);
-      }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
-  );
-
-  it.effect("leaves an unknown later preview history unchanged", () =>
-    Effect.gen(function* () {
-      const sql = yield* SqlClient.SqlClient;
-      yield* runMigrations({ toMigrationInclusive: 67 });
-      yield* PluginReceipts;
-      yield* sql`INSERT INTO effect_sql_migrations (migration_id, name) VALUES (68, 'PluginReceipts'), (69, 'UnknownPreview')`;
-      const before = yield* history;
-      assert.isTrue(Exit.isFailure(yield* Effect.exit(runMigrations())));
-      assert.deepStrictEqual(yield* history, before);
-      assert.deepStrictEqual(
-        yield* sql`SELECT name FROM sqlite_schema WHERE name = 'orchestration_v2_projection_turn_items_stop_request_idx'`,
-        [],
-      );
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 });

@@ -55,6 +55,7 @@ it.effect(
 it.effect("bounds the result cache without making every operation scan the catalogue", () =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+    yield* Receipts.ensureSchema;
     yield* sql`WITH RECURSIVE numbers(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM numbers WHERE n<2048)
       INSERT INTO plugin_operation_receipts(operation_key,installation_id,generation,request_digest,result_json,effect_json)
       SELECT 'old-'||n,'plugin','one','digest','{"threadId":"prior"}','{"threadId":"prior"}' FROM numbers`;
@@ -200,9 +201,6 @@ it.effect(
   () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
-      yield* sql`DROP TABLE plugin_operation_receipts`;
-      yield* sql`DROP TABLE plugin_run_deliveries`;
-      yield* sql`DROP TABLE plugin_event_reservations`;
       yield* sql`CREATE TABLE plugin_operation_receipts(sequence INTEGER PRIMARY KEY AUTOINCREMENT, operation_key TEXT UNIQUE NOT NULL, installation_id TEXT NOT NULL, generation TEXT NOT NULL, request_digest TEXT NOT NULL, result_json TEXT)`;
       yield* sql`CREATE TABLE plugin_run_deliveries(installation_id TEXT NOT NULL,generation TEXT NOT NULL,run_id TEXT NOT NULL,PRIMARY KEY(installation_id,generation,run_id))`;
       yield* sql`CREATE TABLE plugin_event_reservations(installation_id TEXT NOT NULL,generation TEXT NOT NULL,delivery_id TEXT NOT NULL,operation_key TEXT UNIQUE NOT NULL)`;
@@ -232,10 +230,45 @@ it.effect(
       ).toBe("permission_denied");
     }).pipe(Effect.provide(layer)),
 );
-it.effect("does not migrate or rewrite an already-current ledger on first use", () =>
+it.effect("creates its ledger on first use outside the core migration chain", () =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+    const schema = sql`SELECT name FROM sqlite_schema WHERE name GLOB 'plugin_*' ORDER BY name`;
+    const history = sql`SELECT migration_id,name FROM effect_sql_migrations ORDER BY migration_id`;
+    expect(migrationManifest.filter(([, name]) => /plugin/i.test(name))).toEqual([]);
+    expect(yield* schema).toEqual([]);
+    const migrated = yield* history;
+    const receipts = yield* Receipts.PluginReceipts;
+    const identity = { installationId: "plugin", generation: "one" };
+    expect(yield* receipts.delivered({ ...identity, runId: "run" })).toBe(false);
+    expect((yield* schema).map((row) => row.name)).toEqual([
+      "plugin_event_reservations",
+      "plugin_event_reservations_logical",
+      "plugin_operation_receipts",
+      "plugin_receipts_results",
+      "plugin_run_deliveries",
+      "plugin_run_deliveries_identity",
+    ]);
+    yield* receipts.acknowledge({ ...identity, runId: "run", deliveryId: "run" });
+    yield* receipts.acknowledge({
+      ...identity,
+      generation: "two",
+      runId: "run",
+      deliveryId: "run",
+    });
+    expect(yield* sql`SELECT installation_id,run_id FROM plugin_run_deliveries`).toEqual([
+      { installation_id: "plugin", run_id: "run" },
+    ]);
+    expect(yield* runMigrations()).toEqual([]);
+    expect(yield* history).toEqual(migrated);
+  }).pipe(Effect.provide(layer)),
+);
+it.effect("does not rewrite an already-current ledger when it is prepared again", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* Receipts.ensureSchema;
     const before = yield* sql`PRAGMA schema_version`;
+    yield* Receipts.ensureSchema;
     yield* (yield* Receipts.PluginReceipts).reserve({
       installationId: "plugin",
       generation: "one",
@@ -243,6 +276,25 @@ it.effect("does not migrate or rewrite an already-current ledger on first use", 
       requestDigest: "digest",
     });
     expect(yield* sql`PRAGMA schema_version`).toEqual(before);
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("retries the ledger setup after a failed first attempt", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    // A view under a ledger table's name makes the setup fail (no index on a view).
+    yield* sql`CREATE VIEW plugin_event_reservations AS SELECT 1 AS operation_key`;
+    const receipts = yield* Receipts.PluginReceipts;
+    const input = {
+      installationId: "plugin",
+      generation: "one",
+      key: "first",
+      requestDigest: "digest",
+      deliveryId: "run",
+    };
+    expect((yield* receipts.reserve(input).pipe(Effect.flip)).reason).toBe("storage_failed");
+    yield* sql`DROP VIEW plugin_event_reservations`;
+    expect(yield* receipts.reserve(input)).toEqual({});
   }).pipe(Effect.provide(layer)),
 );
 
