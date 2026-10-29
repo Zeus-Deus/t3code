@@ -16,6 +16,10 @@ import {
   resolveProviderInstanceDisplayName,
   shouldShowInstanceBadge,
 } from "@t3tools/client-runtime/state/provider-instance-display";
+import {
+  getDefaultProviderInstanceModel,
+  resolveDefaultProviderModelSelection,
+} from "@t3tools/shared/model";
 
 export { normalizeProviderAccentColor, shouldShowInstanceBadge };
 
@@ -208,7 +212,20 @@ export function resolveSelectableProviderInstance(
   return resolveSelectableProviderInstanceEntry(entries, instanceId)?.instanceId;
 }
 
-export {
-  getDefaultProviderInstanceModel,
-  resolveDefaultProviderModelSelection,
-} from "@t3tools/shared/model";
+export { getDefaultProviderInstanceModel, resolveDefaultProviderModelSelection };
+
+export function resolveProjectDefaultProviderModelSelection(
+  providers: ReadonlyArray<ServerProvider>,
+  settings: ServerSettings,
+  projectId: ProjectId | null,
+): ModelSelection | null {
+  const entries = providerInstanceEntriesFor(providers, settings, projectId);
+  // Matches resolveComposerProviderSelection: the first driver group wins before any other.
+  const entry =
+    resolveSelectableProviderInstanceEntry(
+      entries.filter((candidate) => candidate.driverKind === entries[0]?.driverKind),
+      undefined,
+    ) ?? resolveSelectableProviderInstanceEntry(entries, undefined);
+  const model = entry ? getDefaultProviderInstanceModel(providers, entry.instanceId) : undefined;
+  return entry && model ? { instanceId: entry.instanceId, model } : null;
+}

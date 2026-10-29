@@ -250,6 +250,8 @@ import {
 import {
   ProjectCreateNewInput,
   ProjectCreateNewResult,
+  ProjectCreateFromThreadInput,
+  ProjectCreateFromThreadResult,
   ProjectEnsureScratchResult,
   ProjectListEntriesError,
   ProjectListEntriesInput,
@@ -313,6 +315,9 @@ import {
   DeviceEasAccount,
   DeviceEasAccountError,
   DeviceEasAccountInput,
+  DeviceSimlockIdentity,
+  DeviceSimlockIdentityError,
+  DeviceSimlockIdentityInput,
   DeviceHostSummary,
   DeviceOpenInput,
   DeviceServiceState,
@@ -422,6 +427,7 @@ export const WS_METHODS = {
   projectsMutate: "projects.mutate",
   projectsEnsureScratch: "projects.ensureScratch",
   projectsCreateNew: "projects.createNew",
+  projectsCreateFromThread: "projects.createFromThread",
 
   shellOpenInEditor: "shell.openInEditor",
 
@@ -493,6 +499,7 @@ export const WS_METHODS = {
   deviceList: "device.list",
   deviceTestHost: "device.testHost",
   deviceEasAccount: "device.easAccount",
+  deviceSimlockIdentity: "device.simlockIdentity",
   deviceOpen: "device.open",
   deviceClose: "device.close",
   deviceShutdown: "device.shutdown",
@@ -1350,6 +1357,12 @@ const WsProjectsCreateNewRpc = Rpc.make(WS_METHODS.projectsCreateNew, {
   error: Schema.Union([OrchestrationDispatchCommandError, EnvironmentAuthorizationError]),
 });
 
+const WsProjectsCreateFromThreadRpc = Rpc.make(WS_METHODS.projectsCreateFromThread, {
+  payload: ProjectCreateFromThreadInput,
+  success: ProjectCreateFromThreadResult,
+  error: Schema.Union([OrchestrationDispatchCommandError, EnvironmentAuthorizationError]),
+});
+
 const WsShellOpenInEditorRpc = Rpc.make(WS_METHODS.shellOpenInEditor, {
   payload: LaunchEditorInput,
   error: Schema.Union([ExternalLauncherError, EnvironmentAuthorizationError]),
@@ -1652,6 +1665,12 @@ const WsDeviceEasAccountRpc = Rpc.make(WS_METHODS.deviceEasAccount, {
   payload: DeviceEasAccountInput,
   success: DeviceEasAccount,
   error: Schema.Union([DeviceEasAccountError, EnvironmentAuthorizationError]),
+});
+
+const WsDeviceSimlockIdentityRpc = Rpc.make(WS_METHODS.deviceSimlockIdentity, {
+  payload: DeviceSimlockIdentityInput,
+  success: DeviceSimlockIdentity,
+  error: Schema.Union([DeviceSimlockIdentityError, EnvironmentAuthorizationError]),
 });
 
 const WsDeviceListRpc = Rpc.make(WS_METHODS.deviceList, {
@@ -2227,6 +2246,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsProjectsSearchEntriesRpc,
   WsProjectsEnsureScratchRpc,
   WsProjectsCreateNewRpc,
+  WsProjectsCreateFromThreadRpc,
   WsProjectsWriteFileRpc,
   WsProjectsMutateRpc,
   WsShellOpenInEditorRpc,
@@ -2282,6 +2302,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsDeviceListRpc,
   WsDeviceTestHostRpc,
   WsDeviceEasAccountRpc,
+  WsDeviceSimlockIdentityRpc,
   WsDeviceOpenRpc,
   WsDeviceCloseRpc,
   WsDeviceShutdownRpc,
