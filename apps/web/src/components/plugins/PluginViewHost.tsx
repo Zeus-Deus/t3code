@@ -239,8 +239,10 @@ export function PluginViewFrame(props: {
         if (result._tag === "Success") return result.value;
         throw squashAtomCommandFailure(result);
       },
-      onIntents: (intents, origin, unsupported) =>
-        latest.current.applyIntents(origin, intents, unsupported),
+      onIntents: (intents, origin, unsupported) => {
+        if (latest.current.props.placement === "wallpaper") return;
+        latest.current.applyIntents(origin, intents, unsupported);
+      },
       features,
       onResize: setCardHeight,
     });
@@ -291,6 +293,8 @@ export function PluginViewFrame(props: {
     setLoad({ kind: "loading" });
     setAttempt((value) => value + 1);
   };
+  // A wallpaper that fails or misbehaves just leaves the usual background.
+  if (props.placement === "wallpaper" && (load.kind === "failed" || stopped)) return null;
   if (load.kind === "failed" && props.renderFailure !== undefined) {
     return props.renderFailure(load.message, retry);
   }
@@ -341,7 +345,7 @@ export function PluginViewFrame(props: {
     );
   }
   if (document === null) {
-    return props.placement === "conversation" ? null : (
+    return props.placement === "conversation" || props.placement === "wallpaper" ? null : (
       <div className="flex size-full items-center justify-center">
         <Spinner className="size-4" />
       </div>
@@ -356,6 +360,7 @@ export function PluginViewFrame(props: {
       // Scripts only: no same-origin (no app storage or session), popups, forms or top navigation.
       sandbox="allow-scripts"
       referrerPolicy="no-referrer"
+      {...(props.placement === "wallpaper" ? { tabIndex: -1, "aria-hidden": true } : {})}
       onLoad={() => {
         loads.current += 1;
         if (loads.current > 1) {
@@ -473,6 +478,14 @@ function PluginViewResolver(props: {
       <PluginViewNotice
         title="View unavailable"
         description="This view only opens from a card in chat."
+      />
+    );
+  }
+  if (entry !== null && entry.view.placement === "wallpaper") {
+    return (
+      <PluginViewNotice
+        title="This is a wallpaper"
+        description="Choose it from the command palette or the plugin's settings to show it behind the app."
       />
     );
   }

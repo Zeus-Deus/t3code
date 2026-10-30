@@ -105,7 +105,7 @@ export function pluginViewEntries(
     )
     .flatMap((installation) =>
       installation.manifest.views
-        .filter((view) => view.placement !== "conversation")
+        .filter((view) => view.placement === "page" || view.placement === "side-panel")
         .map((view) => ({ installation, view })),
     )
     .sort(byTitle((entry) => entry.view.title));
@@ -239,6 +239,12 @@ const CAPABILITY_TEXT: Record<
   "ui.conversation-cards": {
     title: "Show cards in chat",
     detail: "Show its own interactive cards in a conversation when an agent uses it.",
+    projectScoped: false,
+  },
+  "ui.wallpapers": {
+    title: "Show a wallpaper",
+    detail:
+      "Offer animated wallpapers behind the app. They never see your threads or receive clicks.",
     projectScoped: false,
   },
   "ui.changes": {

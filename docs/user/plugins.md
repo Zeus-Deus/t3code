@@ -56,6 +56,12 @@ plugin update.
 Your open thread and threads omitted by other trees remain reachable.
 Only environments where you installed and enabled the plugin contribute to it.
 
+A plugin can also offer wallpapers: animated backgrounds drawn behind the web and desktop app.
+Pick one from the command palette ("Wallpaper: …") or from the plugin's views in
+**Settings → Plugins**, and choose **Turn off wallpaper** to go back. The choice stays on this
+device. A wallpaper never sees your threads or receives clicks, and the usual background returns
+whenever its plugin is disabled or unavailable.
+
 An agent can leave a plugin card in a conversation for you to review and use.
 On mobile, open it full screen. When its plugin is unavailable, the recorded
 summary remains readable. Older clients retain the normal tool-call history.

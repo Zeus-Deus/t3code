@@ -247,7 +247,11 @@ import type { ChatComposerHandle } from "./chat/ChatComposer";
 import { buildSidebarProjectPickerEntries } from "../sidebarProjectGrouping";
 import { PullRequestGlyph } from "~/components/pullRequest/pullRequestIcons";
 import { readPullRequestListPreferences } from "~/components/pullRequest/pullRequestListPreferences";
-import { usePluginPaletteItems, useSidebarViewPaletteItems } from "./plugins/usePluginPaletteItems";
+import {
+  usePluginPaletteItems,
+  useSidebarViewPaletteItems,
+  useWallpaperPaletteItems,
+} from "./plugins/usePluginPaletteItems";
 import { useThreadRouteTarget } from "../hooks/useThreadRouteTarget";
 import { threadRecentUse } from "@t3tools/shared/paletteSearch";
 
@@ -465,6 +469,9 @@ function OpenCommandPaletteDialog(props: {
           : paletteRouteTarget.draftId,
   });
   const sidebarViewPaletteItems = useSidebarViewPaletteItems();
+  const wallpaperPaletteItems = useWallpaperPaletteItems(
+    activeThread?.environmentId ?? activeDraftThread?.environmentId ?? primaryEnvironmentId,
+  );
   const projects = useProjects();
   const referenceThreadRef =
     pathname === "/pull-requests"
@@ -1694,7 +1701,7 @@ function OpenCommandPaletteDialog(props: {
     });
   }
 
-  actionItems.push(...pluginPaletteItems, ...sidebarViewPaletteItems);
+  actionItems.push(...pluginPaletteItems, ...sidebarViewPaletteItems, ...wallpaperPaletteItems);
 
   const rootGroups = buildRootGroups({ actionItems, recentThreadItems });
   // Every setting goes to the palette's own matcher, so settings get the same

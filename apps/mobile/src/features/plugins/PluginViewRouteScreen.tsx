@@ -104,7 +104,9 @@ export function PluginViewRouteScreen({ route }: StaticScreenProps<PluginViewRou
                         ? "The plugin was not granted permission to show views."
                         : entry.view.placement === "conversation" && card === null
                           ? "This view only opens from a card in chat."
-                          : null));
+                          : entry.view.placement === "wallpaper"
+                            ? "Wallpapers show behind the web and desktop app."
+                            : null));
   return (
     <View collapsable={false} className="flex-1 bg-background">
       <NativeStackScreenOptions

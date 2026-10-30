@@ -40,6 +40,7 @@ export const PLUGIN_CAPABILITIES = [
   "ui.native-tree-projects",
   "ui.conversation-cards",
   "ui.changes",
+  "ui.wallpapers",
   "worktrees.create",
   "workflow.query",
 ] as const;
@@ -61,9 +62,14 @@ export const PluginView = Schema.Struct({
   id: identifier,
   title: text(200),
   entry: relativeEntry.check(Schema.isPattern(/\.html$/)),
-  placement: Schema.Literals(["page", "side-panel", "conversation"]),
+  /**
+   * `wallpaper` documents fill the window behind the interface and never receive input. They need
+   * the `ui.wallpapers` capability, and older clients drop them.
+   */
+  placement: Schema.Literals(["page", "side-panel", "conversation", "wallpaper"]),
 });
 export type PluginView = typeof PluginView.Type;
+export const PLUGIN_WALLPAPER_CAPABILITY: PluginCapability = "ui.wallpapers";
 
 /** Host glyphs a thread status may name; plugins cannot ship their own. */
 const PLUGIN_THREAD_STATUS_ICONS = [

@@ -21,6 +21,7 @@ export type PluginCapability =
   | "ui.native-tree-projects"
   | "ui.conversation-cards"
   | "ui.changes"
+  | "ui.wallpapers"
   | "worktrees.create"
   | "workflow.query";
 export type PluginSettingValue = string | number | boolean;
@@ -45,7 +46,8 @@ export interface PluginManifest {
     readonly id: string;
     readonly title: string;
     readonly entry: string;
-    readonly placement: "page" | "side-panel" | "conversation";
+    /** `wallpaper` fills the window behind the app, never receives input, and needs `ui.wallpapers`. */
+    readonly placement: "page" | "side-panel" | "conversation" | "wallpaper";
   }[];
   /** Compact statuses shown with the open thread. Register `status:<id>` for each. */
   readonly threadStatus?: readonly {

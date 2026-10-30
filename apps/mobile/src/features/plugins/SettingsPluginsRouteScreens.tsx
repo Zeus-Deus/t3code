@@ -663,13 +663,18 @@ function PluginDetail(props: {
       {manifest.views.length > 0 ? (
         <SettingsSection title="Views">
           {manifest.views.map((view) =>
-            // A card's view only opens from its card in a conversation.
-            view.placement === "conversation" ? (
+            // A card's view only opens from its card in a conversation; wallpapers sit behind the
+            // web and desktop app.
+            view.placement === "conversation" || view.placement === "wallpaper" ? (
               <SettingsRow
                 key={view.id}
                 icon="square.on.square"
                 label={view.title}
-                value="Card in chat"
+                value={
+                  view.placement === "conversation"
+                    ? "Card in chat"
+                    : "Wallpaper on web and desktop"
+                }
                 disabled
               />
             ) : (

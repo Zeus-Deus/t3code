@@ -2297,6 +2297,11 @@ const make = Effect.gen(function* () {
         reason: "invalid_handler",
         message: "The plugin view is not declared.",
       });
+    if (
+      view.placement === "wallpaper" &&
+      !record.installation.grants.capabilities.includes("ui.wallpapers")
+    )
+      return yield* pluginPermissionDenied();
     const directory = yield* verifySnapshot(record);
     const html = yield* fs
       .readFileString(safePluginPath(directory, view.entry))

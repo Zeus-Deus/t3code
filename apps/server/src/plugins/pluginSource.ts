@@ -201,6 +201,7 @@ const collectSnapshot = async (directory: string) => {
   for (const [declared, required] of [
     [(manifest.nativeTrees ?? []).length > 0, "ui.native-trees"],
     [manifest.views.some((view) => view.placement === "conversation"), "ui.conversation-cards"],
+    [manifest.views.some((view) => view.placement === "wallpaper"), "ui.wallpapers"],
   ] as const) {
     if (declared && !pluginRequestedCapabilities(manifest).includes(required))
       throw new PluginError({

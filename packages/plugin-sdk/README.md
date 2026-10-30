@@ -232,6 +232,24 @@ installation cannot adopt or restore its predecessor's threads.
 `collapsedByDefault` folds group and project headings. Native thread rows stay
 expanded; wrap a branch in a group when it needs a foldable heading.
 
+## Wallpapers
+
+A view with `"placement": "wallpaper"` is drawn full-window behind the app on web and desktop.
+Declare `ui.wallpapers` alongside `ui`; older hosts refuse the plugin, and older clients drop the
+view. A wallpaper is chosen per device from the command palette or the plugin's settings, never
+automatically, and the app falls back to its usual background whenever the plugin is unavailable.
+
+```json
+"capabilities": ["ui", "ui.wallpapers"],
+"views": [
+  { "id": "koi-pond", "title": "Koi Pond", "entry": "koi-pond.html", "placement": "wallpaper" }
+]
+```
+
+The document never receives input and has no local intents; the bridge only supplies the theme
+context. While it is shown, the app's surfaces turn translucent, so keep it calm: draw at a low
+frame rate, stop when the document is hidden, and honor `prefers-reduced-motion`.
+
 ## Advanced
 
 ### Caller identity and lineage

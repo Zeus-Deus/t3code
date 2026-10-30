@@ -1,9 +1,11 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
+  isPluginWallpaperChoice,
   pluginActionEntries,
   pluginRunnableInstallations,
   pluginSidebarChoiceTitle,
   pluginViewEntries,
+  pluginWallpaperEntries,
 } from "@t3tools/client-runtime/plugins";
 import type {
   EnvironmentId,
@@ -12,7 +14,14 @@ import type {
   ScopedThreadRef,
 } from "@t3tools/contracts";
 import { useRouter } from "@tanstack/react-router";
-import { FolderTreeIcon, ListIcon, PanelsTopLeftIcon, PuzzleIcon } from "lucide-react";
+import {
+  FolderTreeIcon,
+  ImageIcon,
+  ImageOffIcon,
+  ListIcon,
+  PanelsTopLeftIcon,
+  PuzzleIcon,
+} from "lucide-react";
 
 import type { ComposerThreadTarget } from "../../composerDraftStore";
 import { pluginEnvironment, usePluginCatalogue } from "../../state/plugins";
@@ -20,6 +29,7 @@ import { ITEM_ICON_CLASS, type CommandPaletteActionItem } from "../CommandPalett
 import { useClientSettings } from "../../hooks/useSettings";
 import { useSidebarView } from "../sidebar/sidebarView";
 import { usePluginActionRunner, usePluginIntentApplier } from "./usePluginActions";
+import { usePluginWallpaper } from "./PluginWallpaper";
 
 /**
  * Palette entries for the plugins of the environment the user is working in: actions placed in
@@ -77,6 +87,53 @@ export function usePluginPaletteItems(input: {
       run: async () => applyIntents(target(installation), [{ type: "view.open", viewId: view.id }]),
     }));
   return [...actions, ...views];
+}
+
+/**
+ * Wallpapers offered by the plugins of the environment the user is working in, and a way back to
+ * the plain background from wherever the current one came from.
+ */
+export function useWallpaperPaletteItems(
+  environmentId: EnvironmentId | null,
+): ReadonlyArray<CommandPaletteActionItem> {
+  const catalogue = usePluginCatalogue(environmentId);
+  const { wallpaper, setWallpaper } = usePluginWallpaper();
+  const items: CommandPaletteActionItem[] =
+    environmentId === null
+      ? []
+      : pluginWallpaperEntries(pluginRunnableInstallations(catalogue))
+          .filter((entry) => !isPluginWallpaperChoice(wallpaper, environmentId, entry))
+          .map(({ installation, view }) => ({
+            kind: "action",
+            value: `plugin-wallpaper:${installation.installationId}:${view.id}`,
+            searchTerms: [
+              "wallpaper",
+              "background",
+              "theme",
+              installation.manifest.name,
+              view.title,
+            ],
+            title: `Wallpaper: ${view.title}`,
+            description: installation.manifest.name,
+            icon: <ImageIcon className={ITEM_ICON_CLASS} />,
+            run: async () =>
+              setWallpaper({
+                environmentId,
+                pluginId: installation.manifest.id,
+                viewId: view.id,
+              }),
+          }));
+  if (wallpaper !== null) {
+    items.push({
+      kind: "action",
+      value: "plugin-wallpaper:none",
+      searchTerms: ["wallpaper", "background", "theme", "off", "none", "plain"],
+      title: "Turn off wallpaper",
+      icon: <ImageOffIcon className={ITEM_ICON_CLASS} />,
+      run: async () => setWallpaper(null),
+    });
+  }
+  return items;
 }
 
 /** Switches the sidebar between activity and the plugin views offered by any environment. */

@@ -322,13 +322,23 @@ it.effect(
         expect((yield* inspectPluginSource(input.directory).pipe(Effect.flip)).reason).toBe(
           "invalid_manifest",
         );
+        const wallpapers = [
+          { id: "koi", title: "Koi", placement: "wallpaper", entry: "view.html" },
+        ];
+        yield* input.fs.writeFileString(
+          NodePath.join(input.directory, "t3-plugin.json"),
+          JSON.stringify({ ...manifest, views: wallpapers }),
+        );
+        expect((yield* inspectPluginSource(input.directory).pipe(Effect.flip)).reason).toBe(
+          "invalid_manifest",
+        );
         yield* input.fs.writeFileString(
           NodePath.join(input.directory, "t3-plugin.json"),
           JSON.stringify({
             ...manifest,
-            capabilities: ["ui.native-trees", "ui.conversation-cards"],
+            capabilities: ["ui.native-trees", "ui.conversation-cards", "ui.wallpapers"],
             nativeTrees,
-            views,
+            views: [...views, ...wallpapers],
           }),
         );
         expect((yield* inspectPluginSource(input.directory)).manifest.nativeTrees).toEqual(

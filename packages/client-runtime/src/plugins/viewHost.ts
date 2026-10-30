@@ -32,7 +32,7 @@ export interface PluginViewContext {
   /** The same `--color-*` / `--font-*` variables MCP Apps receive, applied to the root element. */
   readonly styles: Readonly<Record<string, string>>;
   readonly platform: "web" | "desktop" | "mobile";
-  readonly placement: "page" | "side-panel" | "conversation";
+  readonly placement: "page" | "side-panel" | "conversation" | "wallpaper";
   readonly view: { readonly installationId: string; readonly viewId: string };
   readonly thread: { readonly threadId: string; readonly projectId: string | null } | null;
   /** Present only in documents that also list them in `t3.features`. */
@@ -52,6 +52,8 @@ export function pluginViewBridgeFeatures(input: {
   readonly placement: PluginViewContext["placement"];
   readonly changes: boolean;
 }): ReadonlyArray<PluginViewBridgeFeature> {
+  // A wallpaper sits behind everything and never acts on the app; it only reads the theme.
+  if (input.placement === "wallpaper") return [];
   return [
     ...(input.changes ? (["changes"] as const) : []),
     "local-intents",

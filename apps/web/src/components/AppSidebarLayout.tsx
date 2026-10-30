@@ -40,6 +40,7 @@ import {
 import { BackgroundThreadAnnouncer } from "./BackgroundThreadAnnouncer";
 import { HistorySwipeNavigation } from "./HistorySwipeNavigation";
 import { PluginSidebarViewSources } from "./plugins/PluginCatalogueSubscriptions";
+import { PluginWallpaperLayer } from "./plugins/PluginWallpaper";
 import ThreadSidebar from "./Sidebar";
 import { SidebarBrandWidthProbe } from "./sidebar/SidebarChrome";
 import { isAppModalPage } from "./sidebar/mainAppLocation";
@@ -453,6 +454,7 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
       >
         <SidebarBrandWidthProbe isElectron={isElectron} onWidthChange={setBrandWidth} />
         <PluginSidebarViewSources />
+        <PluginWallpaperLayer />
         <Sidebar
           side="left"
           collapsible="offcanvas"

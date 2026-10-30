@@ -31,6 +31,7 @@ import {
   type AtomCommandResult,
 } from "@t3tools/client-runtime/state/runtime";
 import {
+  PLUGIN_WALLPAPER_CAPABILITY,
   type EnvironmentId,
   type PluginAction,
   type PluginCapability,
@@ -44,6 +45,8 @@ import {
   FileSearchIcon,
   HistoryIcon,
   HouseIcon,
+  ImageIcon,
+  ImageOffIcon,
   InfoIcon,
   PlusIcon,
   PuzzleIcon,
@@ -68,6 +71,7 @@ import { PluginDetailsDialog, UsePreviousPluginDialog } from "../plugins/PluginR
 import { pluginFailureMessage, usePluginIntentApplier } from "../plugins/usePluginActions";
 import { usePluginEventBacklog } from "../plugins/usePluginEventBacklog";
 import { usePluginStartPage } from "../plugins/pluginStartPage";
+import { usePluginWallpaper } from "../plugins/PluginWallpaper";
 import { usePluginRepair } from "../plugins/usePluginRepair";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "../ui/alert";
 import { Badge } from "../ui/badge";
@@ -1283,6 +1287,7 @@ function PluginViews(props: {
   const applyIntents = usePluginIntentApplier();
   const pathname = useLocation({ select: (location) => location.pathname });
   const { startPage, setStartPage } = usePluginStartPage();
+  const { wallpaper, setWallpaper } = usePluginWallpaper();
   const active = isPluginActive(installation) && !props.executionDisabled;
   const uiGranted = installation.grants.capabilities.includes("ui");
   const blocked = props.executionDisabled
@@ -1311,10 +1316,30 @@ function PluginViews(props: {
               ? "Page"
               : view.placement === "conversation"
                 ? "Card in chat. It appears in a conversation when an agent uses it."
-                : "Side panel beside a thread"
+                : view.placement === "wallpaper"
+                  ? "Wallpaper behind the app on this device"
+                  : "Side panel beside a thread"
           }
           control={
-            view.placement === "conversation" ? null : (
+            view.placement === "conversation" ? null : view.placement === "wallpaper" ? (
+              <PluginWallpaperToggle
+                viewTitle={view.title}
+                disabled={
+                  blocked !== null ||
+                  !installation.grants.capabilities.includes(PLUGIN_WALLPAPER_CAPABILITY)
+                }
+                chosen={
+                  wallpaper?.environmentId === environmentId &&
+                  wallpaper.pluginId === manifest.id &&
+                  wallpaper.viewId === view.id
+                }
+                onChange={(chosen) =>
+                  setWallpaper(
+                    chosen ? { environmentId, pluginId: manifest.id, viewId: view.id } : null,
+                  )
+                }
+              />
+            ) : (
               <div className="flex items-center gap-2">
                 {view.placement === "page" ? (
                   <PluginStartPageToggle
@@ -1354,6 +1379,30 @@ function PluginViews(props: {
         />
       ))}
     </SettingsSection>
+  );
+}
+
+/** Shows the wallpaper behind the app on this device; choosing another replaces it. */
+function PluginWallpaperToggle(props: {
+  readonly viewTitle: string;
+  readonly chosen: boolean;
+  readonly disabled: boolean;
+  readonly onChange: (chosen: boolean) => void;
+}) {
+  return (
+    <Button
+      size="sm"
+      variant={props.chosen ? "secondary" : "outline"}
+      disabled={props.disabled && !props.chosen}
+      aria-pressed={props.chosen}
+      aria-label={
+        props.chosen ? `Turn off ${props.viewTitle}` : `Use ${props.viewTitle} as wallpaper`
+      }
+      onClick={() => props.onChange(!props.chosen)}
+    >
+      {props.chosen ? <ImageOffIcon aria-hidden /> : <ImageIcon aria-hidden />}
+      {props.chosen ? "Turn off" : "Use"}
+    </Button>
   );
 }
 
@@ -2204,7 +2253,11 @@ function ReviewPluginForm(props: {
                   </li>
                 ))}
                 {manifest.views.map((view) => (
-                  <li key={`v:${view.id}`}>{view.title} view</li>
+                  <li key={`v:${view.id}`}>
+                    {view.placement === "wallpaper"
+                      ? `${view.title} wallpaper (off until you choose it)`
+                      : `${view.title} view`}
+                  </li>
                 ))}
                 {(manifest.sidebarViews ?? []).map((view) => (
                   <li key={`s:${view.id}`}>
