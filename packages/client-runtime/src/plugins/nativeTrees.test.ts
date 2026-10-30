@@ -791,6 +791,23 @@ describe("buildPluginTreeLayout with owned project conversations", () => {
     for (const shelved of result.shelvedKeys) expect(result.placedKeys.has(shelved)).toBe(false);
   });
 
+  it("keeps a live thread under a settled launch whose launcher is live and unplaced", () => {
+    const main = owned("chain-main", "chain");
+    const delegated = thread("delegated", local, "chain-main");
+    const liveLauncher = launched("live-launcher", "delegated");
+    const settledLaunch = launched("settled-launch", "live-launcher");
+    const running = thread("running", local, "settled-launch");
+    const result = layout({
+      sources: [exclusiveSource(local, [placed("n-delegated", "delegated")])],
+      threads: [main, delegated, liveLauncher, settledLaunch, running],
+      parked: [settledLaunch],
+      settled: [settledLaunch],
+    });
+    expect([...result.shelvedKeys]).toEqual([key(settledLaunch)]);
+    expect(result.placedKeys.has(key(running))).toBe(true);
+    expect(result.placedKeys.has(key(liveLauncher))).toBe(false);
+  });
+
   it("keeps settled threads as followers outside exclusive trees and for hosts without a shelf", () => {
     const main = owned("shelf-main", "shelf");
     const worker = thread("worker", local, "shelf-main");

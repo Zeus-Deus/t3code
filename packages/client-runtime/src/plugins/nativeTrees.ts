@@ -542,23 +542,28 @@ export function buildPluginTreeLayout<TProject, TThread extends PluginTreeThread
     thread.launchedFrom === undefined
       ? null
       : scopedThreadKey(scopeThreadRef(thread.environmentId, thread.launchedFrom.threadId));
-  // A settled launched thread has no parent, so what it left running hangs from its launcher.
-  const treeParentKey = (thread: TThread) =>
-    parentKey(thread) ??
-    (exclusive && input.settledThreadKeys?.has(threadKey(thread)) === true
-      ? launcherKey(thread)
-      : null);
+  const isShelfCandidate = (thread: TThread) =>
+    exclusive && input.settledThreadKeys?.has(threadKey(thread)) === true;
+  // Above a settled thread, launches count as parents too: what a settled launched thread left
+  // running must keep a place, or it would vanish from the tree with Activity hiding it as well.
+  const ancestorKeys = function* (thread: TThread) {
+    const seen = new Set<string>();
+    let current = thread;
+    let aboveSettled = false;
+    while (true) {
+      const key = parentKey(current) ?? (aboveSettled ? launcherKey(current) : null);
+      if (key === null || seen.has(key)) return;
+      seen.add(key);
+      yield key;
+      const next = threadsByKey.get(key);
+      if (next === undefined) return;
+      aboveSettled ||= isShelfCandidate(next);
+      current = next;
+    }
+  };
   const treePlaced = new Set(placedKeys);
   const anchorOf = (thread: TThread): string | null => {
-    const seen = new Set<string>();
-    let cursor = treeParentKey(thread);
-    while (cursor !== null && !seen.has(cursor)) {
-      if (treePlaced.has(cursor)) return cursor;
-      const next = threadsByKey.get(cursor);
-      if (next === undefined) return null;
-      seen.add(cursor);
-      cursor = treeParentKey(next);
-    }
+    for (const key of ancestorKeys(thread)) if (treePlaced.has(key)) return key;
     return null;
   };
   // Lineage or launch: the relationship the server accepts for nesting across projects.
@@ -595,13 +600,12 @@ export function buildPluginTreeLayout<TProject, TThread extends PluginTreeThread
   const otherKeys = new Set(others.map(threadKey));
   // A live thread under a shelved one hangs from the nearest ancestor that kept a row.
   const rowParentKey = (thread: TThread) => {
-    const seen = new Set<string>();
-    let cursor = parentKey(thread);
-    while (cursor !== null && shelvedKeys.has(cursor) && !seen.has(cursor)) {
-      seen.add(cursor);
-      cursor = treeParentKey(threadsByKey.get(cursor)!);
+    const parent = parentKey(thread);
+    if (parent === null || !shelvedKeys.has(parent)) return parent;
+    for (const key of ancestorKeys(thread)) {
+      if (placedKeys.has(key) || treePlaced.has(key)) return key;
     }
-    return cursor;
+    return null;
   };
   for (const thread of input.threads) {
     const key = threadKey(thread);
