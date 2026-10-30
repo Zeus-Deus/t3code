@@ -8,7 +8,7 @@ import {
 } from "@t3tools/client-runtime/work-log/user-input";
 import {
   ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE,
-  type EnvironmentId,
+  EnvironmentId,
   ThreadId,
 } from "@t3tools/contracts";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
@@ -39,6 +39,7 @@ import { useThreadShell } from "../../state/entities";
 import {
   threadReadLabelPrefix,
   threadReadTargetId,
+  threadReadTargetEnvironmentId,
   threadReadTargetTitle,
   workEntryDisplayLabel,
   workEntryReadOutput,
@@ -70,9 +71,12 @@ import {
 export function useThreadReadTarget(entry: TimelineWorkEntry, environmentId: EnvironmentId) {
   const rawThreadId = threadReadTargetId(entry);
   const threadId = rawThreadId === null ? null : ThreadId.make(rawThreadId);
-  const shell = useThreadShell(threadId ? scopeThreadRef(environmentId, threadId) : null);
+  const targetEnvironment = threadReadTargetEnvironmentId(entry);
+  const targetEnvironmentId =
+    targetEnvironment === null ? environmentId : EnvironmentId.make(targetEnvironment);
+  const shell = useThreadShell(threadId ? scopeThreadRef(targetEnvironmentId, threadId) : null);
   const title = threadReadTargetTitle(shell);
-  return threadId && title ? { threadId, title } : null;
+  return threadId && title ? { threadId, title, environmentId: targetEnvironmentId } : null;
 }
 
 export function threadReadLabel(label: string, target: ReturnType<typeof useThreadReadTarget>) {
@@ -82,11 +86,9 @@ export function threadReadLabel(label: string, target: ReturnType<typeof useThre
 
 export function ThreadReadLabel({
   label,
-  environmentId,
   linked,
 }: {
   label: NonNullable<ReturnType<typeof threadReadLabel>>;
-  environmentId: EnvironmentId;
   linked: boolean;
 }) {
   return (
@@ -95,7 +97,7 @@ export function ThreadReadLabel({
       {linked ? (
         <Link
           to="/$environmentId/$threadId"
-          params={{ environmentId, threadId: label.threadId }}
+          params={{ environmentId: label.environmentId, threadId: label.threadId }}
           className="min-w-0 truncate rounded-sm text-foreground underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-ring"
           onClick={stopRowToggle}
           onKeyDown={stopRowToggle}
@@ -428,11 +430,7 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
                   ]}
                 />
               ) : threadLabel ? (
-                <ThreadReadLabel
-                  label={threadLabel}
-                  environmentId={ctx.activeThreadEnvironmentId}
-                  linked
-                />
+                <ThreadReadLabel label={threadLabel} linked />
               ) : (
                 previewText
               )}

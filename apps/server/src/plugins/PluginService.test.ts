@@ -5543,6 +5543,74 @@ it.effect(
     }).pipe(Effect.provide(base()), Effect.scoped),
 );
 
+it.effect("nests only direct workers under a granted cross-project conversation", () =>
+  Effect.gen(function* () {
+    const f = yield* fixture;
+    const otherProject = ProjectId.make("project:worker");
+    const workerId = ThreadId.make("thread:worker");
+    const capabilities = [
+      "threads.read",
+      "ui.native-trees",
+      "ui.native-tree-conversations",
+    ] as const;
+    yield* f.fs.writeFileString(
+      f.path.join(f.directory, "t3-plugin.json"),
+      yield* encodeJson({
+        ...manifest,
+        capabilities,
+        nativeTrees: [{ id: "projects", title: "Projects" }],
+      }),
+    );
+    const installed = yield* f.install();
+    const enabled = yield* f.plugins.consent({
+      installationId: installed.installationId,
+      digest: installed.digest,
+      grants: { capabilities, projectIds: [projectId, otherProject] },
+    });
+    const nodes = [
+      { id: "p", kind: "project", projectId, threadId },
+      { id: "group", kind: "group", title: "Workers", parentId: "p" },
+      { id: "w", kind: "thread", threadId: workerId, parentId: "group" },
+    ];
+    f.setHandler(() => Effect.succeed({ data: { nodes } }));
+    const request = {
+      installationId: enabled.installationId,
+      generation: enabled.generation,
+      treeId: "projects",
+      operationId: "cross-project-workers",
+    };
+    const worker = { ...shell, id: workerId, projectId: otherProject, launchedFrom: { threadId } };
+    f.threadShells.set(workerId, worker);
+    expect((yield* f.plugins.readTree(request, actor)).nodes).toEqual(nodes);
+    expect(
+      (yield* f.plugins.readTree(request, { ...actor, projectIds: [projectId] }).pipe(Effect.flip))
+        .reason,
+    ).toBe("permission_denied");
+    for (const launchedFrom of [undefined, { threadId: workerId }]) {
+      f.threadShells.set(workerId, { ...worker, launchedFrom });
+      expect((yield* f.plugins.readTree(request, actor).pipe(Effect.flip)).reason).toBe(
+        "invalid_result",
+      );
+    }
+    f.threadShells.set(workerId, worker);
+    nodes[0] = { id: "p", kind: "project", projectId, threadId: workerId };
+    expect((yield* f.plugins.readTree(request, actor).pipe(Effect.flip)).reason).toBe(
+      "permission_denied",
+    );
+    nodes[0] = { id: "p", kind: "project", projectId, threadId };
+    const restricted = yield* f.plugins.consent({
+      installationId: enabled.installationId,
+      digest: enabled.digest,
+      grants: { capabilities, projectIds: [projectId] },
+    });
+    expect(
+      (yield* f.plugins
+        .readTree({ ...request, generation: restricted.generation }, actor)
+        .pipe(Effect.flip)).reason,
+    ).toBe("permission_denied");
+  }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
 it.effect(
   "keeps declared project tree actions scoped without invoking them during tree reads",
   () =>

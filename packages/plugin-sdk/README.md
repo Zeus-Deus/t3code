@@ -204,7 +204,9 @@ appears in `ctx.capabilities`. Clicking the project name opens its conversation
 or invokes the action with only that node's `projectId`; folding has its own
 control. The conversation must belong to that exact project and appears as the
 heading rather than a duplicate thread row. Workers can nest directly under
-the heading. Reading a tree never creates a conversation or runs an action.
+the heading, including direct launched or delegated workers in another granted
+project. Unrelated cross-project nesting is rejected. Reading a tree never
+creates a conversation or runs an action.
 
 With optional `ui.native-tree-projects`, a tree may declare `unplaced: "omit"`,
 `create: { actionId, title }` and `emptyText`. Its header action opens T3's project

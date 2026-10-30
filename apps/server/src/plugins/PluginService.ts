@@ -34,6 +34,7 @@ import {
   type PluginViewResult,
   type PluginRunFinalizedEvent,
   type ThreadId,
+  type OrchestrationV2ThreadShell,
 } from "@t3tools/contracts";
 import { pluginThreadGroupingState } from "./pluginThreadMetadata.ts";
 import * as PubSub from "effect/PubSub";
@@ -2350,6 +2351,7 @@ const make = Effect.gen(function* () {
       "ui.native-trees",
     );
     const nodeProjects = new Map<string, ProjectId>();
+    const nodeThreads = new Map<string, OrchestrationV2ThreadShell>();
     const byId = new Map(tree.nodes.map((node) => [node.id, node]));
     for (const node of tree.nodes) {
       if (node.kind === "group") continue;
@@ -2388,6 +2390,7 @@ const make = Effect.gen(function* () {
           .pipe(Effect.mapError(() => pluginPermissionDenied()));
         if (thread === null || thread.deletedAt !== null) return yield* pluginPermissionDenied();
         projectId = thread.projectId;
+        nodeThreads.set(node.id, thread);
       }
       if (!pluginCapabilityAllowed(current.record.installation, actor, "threads.read", projectId))
         return yield* pluginPermissionDenied();
@@ -2405,7 +2408,20 @@ const make = Effect.gen(function* () {
       const projectId = nodeProjects.get(node.id);
       while (parentId !== undefined) {
         const parentProject = nodeProjects.get(parentId);
-        if (projectId !== undefined && parentProject !== undefined && parentProject !== projectId)
+        const parent = byId.get(parentId);
+        const worker = nodeThreads.get(node.id);
+        const followsConversation =
+          parent?.kind === "project" &&
+          parent.threadId !== undefined &&
+          worker !== undefined &&
+          (worker.launchedFrom?.threadId === parent.threadId ||
+            worker.lineage.parentThreadId === parent.threadId);
+        if (
+          projectId !== undefined &&
+          parentProject !== undefined &&
+          parentProject !== projectId &&
+          !followsConversation
+        )
           return yield* new PluginError({
             reason: "invalid_result",
             message: "The tree places a reference under another project.",
