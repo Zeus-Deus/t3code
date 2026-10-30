@@ -205,6 +205,7 @@ import {
   planSidebarThreadDrop,
   reduceSidebarProjectScopeMenuState,
   resolveAdjacentThreadId,
+  resolveExclusiveTreeDropTarget,
   resolveSidebarSweepKeys,
   resolveSidebarDropTarget,
   resolveSidebarDropVerb,
@@ -637,6 +638,7 @@ function useSidebarThreads(input: {
           // Live threads first, in activity order, so rows the tree leaves out hold still.
           threads: [...liveThreads, ...partition.snoozedThreads, ...partition.settledThreads],
           liveThreadKeys: new Set(liveThreads.map(threadShellKey)),
+          settledThreadKeys: new Set(partition.settledThreads.map(threadShellKey)),
           project: projectGroupResolver(projectView.groups),
           showsEmptyProject: (group) =>
             projectScopeKey === null || group.projectKey === projectScopeKey,
@@ -644,9 +646,9 @@ function useSidebarThreads(input: {
           routeThreadKey: routeRowThreadKey,
           activityAt: threadActivityTimestampMs,
         });
-  const exclusiveTree =
-    projectView?.rules.kind === "tree" && isPluginTreeExclusive(projectView.rules.sources);
-  // An exclusive tree has no shelves: what it leaves out stays in Activity.
+  const treeSources = projectView?.rules.kind === "tree" ? projectView.rules.sources : null;
+  const exclusiveTree = treeSources !== null && isPluginTreeExclusive(treeSources);
+  // An exclusive tree has no Snoozed shelf and only its own Settled: the rest stays in Activity.
   const shelved = (list: EnvironmentThreadShell[]) =>
     exclusiveTree
       ? EMPTY_THREADS
@@ -654,18 +656,31 @@ function useSidebarThreads(input: {
         ? inActivity(list)
         : list.filter((thread) => !treeLayout.placedKeys.has(threadShellKey(thread)));
   const snoozedThreads = shelved(partition.snoozedThreads);
-  const settledThreads = shelved(partition.settledThreads);
+  const settledThreads = exclusiveTree
+    ? partition.settledThreads.filter((thread) =>
+        treeLayout?.shelvedKeys.has(threadShellKey(thread)),
+      )
+    : shelved(partition.settledThreads);
   // Older settled threads load in pages; the shelf lists them only as far as they are loaded.
+  // Counts can't tell which ones an exclusive tree would keep, so it shows what it holds and reads
+  // a page only when asked, from environments it serves.
   const olderSettledShelf = useOlderSettledShelf({
-    scopes: olderSettledScopes([...serverConfigs.keys()], scopedProjectKeys),
+    scopes: olderSettledScopes(
+      [...serverConfigs.keys()].filter(
+        (environmentId) =>
+          !exclusiveTree || treeSources.some((source) => source.environmentId === environmentId),
+      ),
+      scopedProjectKeys,
+    ),
     expanded: settledShelfExpanded,
-    visibleCount: settledVisibleCount,
+    visibleCount: exclusiveTree ? 0 : settledVisibleCount,
   });
-  const listedSettledThreads = settledThreads.filter(olderSettledShelf.isListed);
+  const listedSettledThreads = exclusiveTree
+    ? settledThreads
+    : settledThreads.filter(olderSettledShelf.isListed);
   useOlderSettledShelfGrowth(olderSettledShelf, listedSettledThreads);
-  const settledCount = exclusiveTree
-    ? 0
-    : settledThreads.length + olderSettledShelf.unloadedCount(partition.visibleThreads);
+  const unloadedSettledCount = olderSettledShelf.unloadedCount(partition.visibleThreads);
+  const settledCount = settledThreads.length + (exclusiveTree ? 0 : unloadedSettledCount);
   const visibleSettledThreads = (() => {
     const visible = listedSettledThreads.slice(0, settledVisibleCount);
     if (
@@ -682,6 +697,7 @@ function useSidebarThreads(input: {
   const renderedSettledThreads = settledShelfExpanded
     ? visibleSettledThreads
     : routeThreadOnly(visibleSettledThreads, routeRowThreadKey);
+  const hiddenSettledCount = Math.max(0, settledCount - visibleSettledThreads.length);
   const visibleSnoozedThreads = snoozedShelfExpanded
     ? snoozedThreads
     : routeThreadOnly(snoozedThreads, routeRowThreadKey);
@@ -768,7 +784,12 @@ function useSidebarThreads(input: {
     settledVisibleCount,
     settledCount,
     olderSettledShelf,
-    hiddenSettledCount: Math.max(0, settledCount - visibleSettledThreads.length),
+    hiddenSettledCount,
+    // Offered once the held rows are out; what a page holds for the tree is unknown until read.
+    readsOlderSettled:
+      exclusiveTree &&
+      hiddenSettledCount === 0 &&
+      (olderSettledShelf.failed || (unloadedSettledCount > 0 && olderSettledShelf.canReadOlder)),
     showMoreSettled: () =>
       setSettledTail((current) => ({
         scopeKey: current.scopeKey,
@@ -1519,6 +1540,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     settledCount,
     olderSettledShelf,
     hiddenSettledCount,
+    readsOlderSettled,
     showMoreSettled,
     settledShelfExpanded,
     toggleSettledShelf,
@@ -1927,11 +1949,13 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   };
 
   // Working rows can supply chat context, but never preview sidebar movement. Neither can rows in
-  // a project view: its order is derived, so there is nothing to drop them into.
+  // a project view: its order is derived, so there is nothing to drop them into. An exclusive tree
+  // keeps one drop: across its Settled header.
+  const rowsDropInPlace = projectLayout !== null && !exclusiveTree;
   const isContextDrag =
     dragState?.contextDrag === true ||
     dragState?.activeSection === "working" ||
-    (dragState != null && projectLayout !== null);
+    (dragState != null && rowsDropInPlace);
   const dragTargetSection = isContextDrag ? null : (dragState?.targetSection ?? null);
   const finishThreadDrag = (started: boolean) => {
     dragSensorRef.current = null;
@@ -2157,16 +2181,15 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
         }),
       );
       const shelves: SidebarListItem[] = [];
+      // Headings aren't drop targets, so a tree of only headings still needs a way back.
+      if (exclusiveTree) shelves.push({ kind: "marker", marker: "active-placeholder" });
       if (snoozedThreads.length > 0) {
         shelves.push({ kind: "marker", marker: "snoozed-header" });
         shelves.push(...rowsOf(visibleSnoozedThreads, "snoozed"));
       }
-      // An exclusive tree has no shelves; Activity keeps what it leaves out.
-      if (!exclusiveTree) {
-        shelves.push({ kind: "marker", marker: "settled-header" });
-        shelves.push({ kind: "marker", marker: "settled-placeholder" });
-        shelves.push(...rowsOf(renderedSettledThreads, "settled"));
-      }
+      shelves.push({ kind: "marker", marker: "settled-header" });
+      shelves.push({ kind: "marker", marker: "settled-placeholder" });
+      shelves.push(...rowsOf(renderedSettledThreads, "settled"));
       return [...projectRows, ...shelves];
     }
     const items: SidebarListItem[] = [{ kind: "marker", marker: "pinned-header" }];
@@ -2237,10 +2260,13 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   useLayoutEffect(() => {
     listMotionRef.current?.update(listMotionPass.animate);
   }, [listMotionPass]);
+  const resolveDropTarget = exclusiveTree
+    ? resolveExclusiveTreeDropTarget
+    : resolveSidebarDropTarget;
   const handleThreadDragOver = (event: DragOverEvent) => {
     const target =
-      event.over && projectLayout === null
-        ? resolveSidebarDropTarget(sidebarListItems, String(event.active.id), String(event.over.id))
+      event.over && !rowsDropInPlace
+        ? resolveDropTarget(sidebarListItems, String(event.active.id), String(event.over.id))
         : null;
     setDragState((current) =>
       current === null || current.activeKey !== String(event.active.id)
@@ -2262,7 +2288,8 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
         });
   const sidebarSortingStrategy = createSidebarSortingStrategy({
     items: sidebarListItems,
-    enabled: !isContextDrag,
+    // Its rows hold still: the preview rebuilds Activity's sections, which a tree doesn't have.
+    enabled: !isContextDrag && !exclusiveTree,
     boundaryLabelHeight: SIDEBAR_DRAG_LABEL_HEIGHT,
     settledOrder: draggedSettledOrder,
     ...(draggedActiveOrder === undefined ? {} : { activeOrder: draggedActiveOrder }),
@@ -2275,14 +2302,14 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   const draggedFromSection = dragState?.activeSection;
   const dragActivationY = dragState?.activationY;
   const dndCollisionDetection = (() => {
-    if (projectLayout !== null) return createSidebarCollisionDetection(() => false);
+    if (rowsDropInPlace) return createSidebarCollisionDetection(() => false);
     if (draggedThreadKey === undefined || draggedFromSection === undefined)
       return createSidebarCollisionDetection(() => true);
     const source = threadByKey.get(draggedThreadKey);
     if (source === undefined) return createSidebarCollisionDetection(() => false);
     return createSidebarCollisionDetection(
       (id) => {
-        const target = resolveSidebarDropTarget(sidebarListItems, draggedThreadKey, id);
+        const target = resolveDropTarget(sidebarListItems, draggedThreadKey, id);
         if (target === null) return false;
         return (
           planSidebarThreadDrop({
@@ -2298,7 +2325,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
             activeOrder: activeKeys,
             activeKeysById,
             activeReorderableKeys: activeReorderableThreadKeys,
-            activeTimeOrdered: workingShelfEnabled,
+            activeTimeOrdered: workingShelfEnabled || exclusiveTree,
           }).kind !== "none"
         );
       },
@@ -2309,13 +2336,13 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     );
   })();
   const handleThreadDragEnd = (event: DragEndEvent) => {
-    if (projectLayout !== null) return;
+    if (rowsDropInPlace) return;
     const activeKey = String(event.active.id);
     const activeSection = sectionByThreadKey.get(activeKey);
     const target =
       event.over === null
         ? null
-        : resolveSidebarDropTarget(sidebarListItems, activeKey, String(event.over.id));
+        : resolveDropTarget(sidebarListItems, activeKey, String(event.over.id));
     const activeThread = threadByKey.get(activeKey);
     if (activeSection === undefined || target === null || activeThread === undefined) return;
     const threadRef = scopeThreadRef(activeThread.environmentId, activeThread.id);
@@ -2332,7 +2359,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       activeOrder: activeKeys,
       activeKeysById,
       activeReorderableKeys: activeReorderableThreadKeys,
-      activeTimeOrdered: workingShelfEnabled,
+      activeTimeOrdered: workingShelfEnabled || exclusiveTree,
     });
     if (plan.kind === "none") return;
     if (plan.kind === "settle" && settlingThreadKeysRef.current.has(activeKey)) return;
@@ -3583,8 +3610,11 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                         );
                         const isCard =
                           section === "active" || section === "pinned" || section === "working";
+                        // Only tree rows pass a third argument; an exclusive tree's shelf reads as
+                        // Activity's does.
                         const rowVariant =
-                          projectLayout !== null
+                          projectLayout !== null &&
+                          !(exclusiveTree && folderRowOrDone === undefined)
                             ? "project"
                             : folderRow
                               ? folderRowsMultiline
@@ -4013,7 +4043,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                       }
                       return items;
                     })()}
-                    {settledShelfExpanded && hiddenSettledCount > 0 ? (
+                    {settledShelfExpanded && (hiddenSettledCount > 0 || readsOlderSettled) ? (
                       <li className="list-none">
                         <button
                           type="button"
@@ -4024,6 +4054,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                           disabled={olderSettledShelf.loading}
                           onClick={() => {
                             olderSettledShelf.retry();
+                            if (readsOlderSettled) olderSettledShelf.readOlder();
                             showMoreSettled();
                           }}
                           className="flex h-9 w-full cursor-pointer items-center gap-2.5 rounded-md px-2.5 text-left text-sm text-sidebar-muted-foreground hover:bg-sidebar-row-hover hover:text-sidebar-foreground disabled:cursor-default"
@@ -4034,7 +4065,9 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                             ? "Loading"
                             : olderSettledShelf.failed
                               ? "Could not load older threads. Retry"
-                              : `Show ${Math.min(hiddenSettledCount, SETTLED_TAIL_PAGE_COUNT)} more`}
+                              : readsOlderSettled
+                                ? "Show older"
+                                : `Show ${Math.min(hiddenSettledCount, SETTLED_TAIL_PAGE_COUNT)} more`}
                         </button>
                       </li>
                     ) : null}

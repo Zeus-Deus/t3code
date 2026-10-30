@@ -147,6 +147,7 @@ export interface EnvironmentThreadShell {
   readonly worktreePath: string | null;
   readonly pluginOwner?: OrchestrationV2ThreadShell["pluginOwner"];
   readonly lineage: OrchestrationV2ThreadShell["lineage"];
+  readonly launchedFrom?: OrchestrationV2ThreadShell["launchedFrom"];
   readonly forkedFrom: OrchestrationV2ThreadShell["forkedFrom"];
   readonly linkOrigin: OrchestrationV2ThreadShell["linkOrigin"] | null;
   /** The thread in a linked environment that delegated this one, if one did. */
@@ -302,6 +303,7 @@ export function presentThreadShell(
     branchPullRequest: thread.branchPullRequest ?? null,
     ...(thread.pluginOwner === undefined ? {} : { pluginOwner: thread.pluginOwner }),
     lineage: thread.lineage,
+    ...(thread.launchedFrom === undefined ? {} : { launchedFrom: thread.launchedFrom }),
     forkedFrom: thread.forkedFrom,
     linkOrigin: thread.linkOrigin ?? null,
     delegatedFrom: thread.delegatedFrom ?? null,

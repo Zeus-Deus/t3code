@@ -54,6 +54,11 @@ existing T3 project or add one from any source Add project offers. T3 asks befor
 granting access to another project; that approval does not approve a pending
 plugin update.
 Your open thread and threads omitted by other trees remain reachable.
+On web and desktop, a view that shows only its projects collects finished work in
+a Settled section at the bottom. It holds threads the view left out that started
+from one it lists, and everything else stays in Activity. Older threads load with
+Show older, and the count covers only what has loaded. Unsettle a thread to send
+it back, and it returns to its project once the plugin lists it again.
 Only environments where you installed and enabled the plugin contribute to it.
 
 An agent can leave a plugin card in a conversation for you to review and use.
