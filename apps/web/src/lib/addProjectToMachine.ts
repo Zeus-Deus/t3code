@@ -4,17 +4,12 @@ import {
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import { scopedProjectKey } from "@t3tools/client-runtime/environment";
-import type {
-  EnvironmentId,
-  ProjectCloneSnapshot,
-  ProjectId,
-  ScopedProjectRef,
-} from "@t3tools/contracts";
+import type { EnvironmentId, ProjectId, ScopedProjectRef } from "@t3tools/contracts";
 import { create } from "zustand";
 
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { suggestAppAccessForRemote } from "../components/sourceControlAppAccessToast";
-import { environmentProjectClonesAtom, silenceProjectCloneToasts } from "../state/projectClones";
+import { silenceProjectCloneToasts, waitForProjectClone } from "../state/projectClones";
 import { projectEnvironment } from "../state/projects";
 import { sourceControlEnvironment } from "../state/sourceControl";
 
@@ -44,31 +39,6 @@ export interface AddProjectToMachineInput {
 function failureMessage(result: Parameters<typeof squashAtomCommandFailure>[0]): string {
   const error = squashAtomCommandFailure(result);
   return error instanceof Error ? error.message : "An error occurred.";
-}
-
-/**
- * Resolves when the clone finishes, or null once it is removed. A failed or
- * cancelled clone keeps waiting, since the composer offers a retry.
- */
-function waitForClone(environmentId: EnvironmentId, projectId: ProjectId) {
-  return new Promise<ProjectCloneSnapshot | null>((resolve) => {
-    const atom = environmentProjectClonesAtom(environmentId);
-    let seen = false;
-    let settled = false;
-    let unsubscribe: (() => void) | null = null;
-    const check = (clones: ReadonlyArray<ProjectCloneSnapshot>) => {
-      if (settled) return;
-      const clone = clones.find((candidate) => candidate.projectId === projectId);
-      if (clone) seen = true;
-      const result = clone?.phase === "done" ? clone : !clone && seen ? null : undefined;
-      if (result === undefined) return;
-      settled = true;
-      unsubscribe?.();
-      resolve(result);
-    };
-    unsubscribe = appAtomRegistry.subscribe(atom, check);
-    check(appAtomRegistry.get(atom));
-  });
 }
 
 export type ProjectFileCopy =
@@ -148,7 +118,8 @@ export async function addProjectToMachine(input: AddProjectToMachineInput): Prom
   if (reads.length === 0) return;
 
   void (async () => {
-    const clone = await waitForClone(input.target.environmentId, input.projectId);
+    // A failed or cancelled clone keeps waiting, since the composer offers a retry.
+    const clone = await waitForProjectClone(targetRef, ({ phase }) => phase === "done");
     if (!clone) {
       setFileCopy(copyKey, null);
       return;

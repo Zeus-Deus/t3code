@@ -3,6 +3,7 @@ import { parseScopedProjectKey, scopedProjectKey } from "@t3tools/client-runtime
 import type { EnvironmentId, ProjectCloneSnapshot, ScopedProjectRef } from "@t3tools/contracts";
 import { AsyncResult, Atom } from "effect/reactivity";
 
+import { appAtomRegistry } from "../rpc/atomRegistry";
 import { environmentServerConfigsAtom } from "./server";
 import { sourceControlEnvironment } from "./sourceControl";
 
@@ -36,6 +37,31 @@ export function useEnvironmentProjectClones(
   environmentId: EnvironmentId,
 ): ReadonlyArray<ProjectCloneSnapshot> {
   return useAtomValue(environmentProjectClonesAtom(environmentId));
+}
+
+/** Resolves with the clone once `isSettled` accepts it, or null once it is removed. */
+export function waitForProjectClone(
+  ref: ScopedProjectRef,
+  isSettled: (clone: ProjectCloneSnapshot) => boolean,
+) {
+  return new Promise<ProjectCloneSnapshot | null>((resolve) => {
+    const atom = environmentProjectClonesAtom(ref.environmentId);
+    let seen = false;
+    let settled = false;
+    let unsubscribe: (() => void) | null = null;
+    const check = (clones: ReadonlyArray<ProjectCloneSnapshot>) => {
+      if (settled) return;
+      const clone = clones.find((candidate) => candidate.projectId === ref.projectId);
+      if (clone) seen = true;
+      const result = clone && isSettled(clone) ? clone : !clone && seen ? null : undefined;
+      if (result === undefined) return;
+      settled = true;
+      unsubscribe?.();
+      resolve(result);
+    };
+    unsubscribe = appAtomRegistry.subscribe(atom, check);
+    check(appAtomRegistry.get(atom));
+  });
 }
 
 const silencedCloneToasts = new Set<string>();

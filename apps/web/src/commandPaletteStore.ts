@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { create } from "zustand";
 
+import type { CommandPaletteProjectChoice } from "./commandPaletteBus";
 import {
   type ProjectPicker,
   type CommandPaletteUiAction,
@@ -55,6 +56,21 @@ let mountedPalettes = 0;
 
 export function isCommandPaletteMounted(): boolean {
   return mountedPalettes > 0;
+}
+
+/**
+ * Keeps `choice` the picker's live choice while the calling view is mounted. Arming it during
+ * render would lose it: a replaced session's cleanup and StrictMode's replayed one both run after.
+ */
+export function useLiveProjectChoice(
+  picker: ProjectPicker,
+  choice: CommandPaletteProjectChoice | null,
+): void {
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- The picker outlives this view and pending adds read it outside React, so the view's lifetime has to be published to it.
+  useEffect(() => {
+    picker.set(choice);
+    return () => picker.set(null);
+  }, [choice, picker]);
 }
 
 /**
