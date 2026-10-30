@@ -770,12 +770,13 @@ describe("buildPluginTreeLayout with owned project conversations", () => {
     ];
     const live = thread("live-worker", local, "shelf-main");
     const liveUnderSettled = thread("live-under-settled", local, "worker");
+    const liveUnderLaunched = thread("live-under-launched", local, "launched");
     const result = layout({
       sources: [
         exclusiveSource(local, [placed("n-row", "row-parent"), placed("n-kept", "placed-settled")]),
         exclusiveSource(remote),
       ],
-      threads: [main, rowParent, live, liveUnderSettled, ...settled],
+      threads: [main, rowParent, live, liveUnderSettled, liveUnderLaunched, ...settled],
       parked: settled,
       settled,
     });
@@ -785,7 +786,7 @@ describe("buildPluginTreeLayout with owned project conversations", () => {
     // A placed row stays put, and a live thread outlives its shelved parent's row.
     expect(outline(result)).toEqual([
       '- 2: ["row-parent","placed-settled"]',
-      'shelf 2: ["live-worker","live-under-settled"]',
+      'shelf 3: ["live-worker","live-under-settled","live-under-launched"]',
     ]);
     for (const shelved of result.shelvedKeys) expect(result.placedKeys.has(shelved)).toBe(false);
   });

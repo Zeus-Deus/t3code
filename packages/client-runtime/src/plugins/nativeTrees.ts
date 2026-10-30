@@ -538,16 +538,26 @@ export function buildPluginTreeLayout<TProject, TThread extends PluginTreeThread
     thread.lineage.parentThreadId === null
       ? null
       : scopedThreadKey(scopeThreadRef(thread.environmentId, thread.lineage.parentThreadId));
+  const launcherKey = (thread: TThread) =>
+    thread.launchedFrom === undefined
+      ? null
+      : scopedThreadKey(scopeThreadRef(thread.environmentId, thread.launchedFrom.threadId));
+  // A settled launched thread has no parent, so what it left running hangs from its launcher.
+  const treeParentKey = (thread: TThread) =>
+    parentKey(thread) ??
+    (exclusive && input.settledThreadKeys?.has(threadKey(thread)) === true
+      ? launcherKey(thread)
+      : null);
   const treePlaced = new Set(placedKeys);
   const anchorOf = (thread: TThread): string | null => {
     const seen = new Set<string>();
-    let cursor = parentKey(thread);
+    let cursor = treeParentKey(thread);
     while (cursor !== null && !seen.has(cursor)) {
       if (treePlaced.has(cursor)) return cursor;
       const next = threadsByKey.get(cursor);
       if (next === undefined) return null;
       seen.add(cursor);
-      cursor = parentKey(next);
+      cursor = treeParentKey(next);
     }
     return null;
   };
@@ -556,13 +566,7 @@ export function buildPluginTreeLayout<TProject, TThread extends PluginTreeThread
     const seen = new Set([threadKey(thread)]);
     const pending = [thread];
     for (const current of pending) {
-      const launchedFrom = current.launchedFrom?.threadId;
-      for (const key of [
-        parentKey(current),
-        launchedFrom === undefined
-          ? null
-          : scopedThreadKey(scopeThreadRef(current.environmentId, launchedFrom)),
-      ]) {
+      for (const key of [parentKey(current), launcherKey(current)]) {
         if (key === null || seen.has(key)) continue;
         if (treePlaced.has(key)) return true;
         seen.add(key);
@@ -595,7 +599,7 @@ export function buildPluginTreeLayout<TProject, TThread extends PluginTreeThread
     let cursor = parentKey(thread);
     while (cursor !== null && shelvedKeys.has(cursor) && !seen.has(cursor)) {
       seen.add(cursor);
-      cursor = parentKey(threadsByKey.get(cursor)!);
+      cursor = treeParentKey(threadsByKey.get(cursor)!);
     }
     return cursor;
   };

@@ -2181,6 +2181,8 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
         }),
       );
       const shelves: SidebarListItem[] = [];
+      // Headings aren't drop targets, so a tree of only headings still needs a way back.
+      if (exclusiveTree) shelves.push({ kind: "marker", marker: "active-placeholder" });
       if (snoozedThreads.length > 0) {
         shelves.push({ kind: "marker", marker: "snoozed-header" });
         shelves.push(...rowsOf(visibleSnoozedThreads, "snoozed"));

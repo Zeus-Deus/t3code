@@ -1263,6 +1263,21 @@ describe("Working shelf (beta)", () => {
       expect(target("s1", sidebarMarkerId("settled-placeholder"))).toBeNull();
     });
 
+    it("lets a settled row return to an exclusive tree of only headings", () => {
+      const tree: readonly SidebarListItem[] = [
+        marker("active-placeholder"),
+        marker("settled-header"),
+        marker("settled-placeholder"),
+        row("s1", "settled"),
+      ];
+      const target = resolveExclusiveTreeDropTarget(
+        tree,
+        "s1",
+        sidebarMarkerId("active-placeholder"),
+      );
+      expect(target?.section).toBe("active");
+    });
+
     it.each([
       ["pinned", "p1"],
       ["active", "a2"],
