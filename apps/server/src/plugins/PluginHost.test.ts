@@ -14,6 +14,8 @@ import {
   RunId,
   RuntimeRequestId,
   ThreadId,
+  MAX_PLUGIN_PROJECT_ACCESS_REQUESTS,
+  type PluginCapability,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -85,6 +87,8 @@ const fixture = Effect.gen(function* () {
     settledAt: null,
   });
   let effectProject = projectId;
+  const threadProjects = new Map<ThreadId, ProjectId>();
+  const missingProjects = new Set<ProjectId>();
   let effectModes = { runtimeMode: shell.runtimeMode, interactionMode: shell.interactionMode };
   let launches = 0;
   const launchInputs: Array<Launch.ThreadLaunchInput> = [];
@@ -154,7 +158,7 @@ const fixture = Effect.gen(function* () {
         ...effectModes,
         ...ownedShells.get(id),
         id,
-        projectId: effectProject,
+        projectId: threadProjects.get(id) ?? effectProject,
       })),
     dispatchAuthorized: (command, authorize) =>
       Effect.gen(function* () {
@@ -270,16 +274,18 @@ const fixture = Effect.gen(function* () {
     Layer.provideMerge(
       Layer.mock(Projects.ProjectService)({
         listShells: () => Effect.succeed([projectShell]),
-        getShell: () =>
-          Effect.succeedSome({
-            id: projectId,
-            title: "Test",
-            workspaceRoot: "/fixture",
-            defaultModelSelection: projectDefaultModelSelection,
-            scripts: [],
-            createdAt: "2026-10-23T12:00:00.000Z",
-            updatedAt: "2026-10-23T12:00:00.000Z",
-          }),
+        getShell: (id) =>
+          missingProjects.has(id)
+            ? Effect.succeedNone
+            : Effect.succeedSome({
+                id: projectId,
+                title: "Test",
+                workspaceRoot: "/fixture",
+                defaultModelSelection: projectDefaultModelSelection,
+                scripts: [],
+                createdAt: "2026-10-23T12:00:00.000Z",
+                updatedAt: "2026-10-23T12:00:00.000Z",
+              }),
       }),
     ),
     Layer.provideMerge(
@@ -390,6 +396,8 @@ const fixture = Effect.gen(function* () {
     setEffectProject: (value: ProjectId) => {
       effectProject = value;
     },
+    threadProjects,
+    missingProjects,
   };
 });
 it.effect.each([false, true])("reads a transcript with a stable actor (live=%s)", (live) =>
@@ -3085,4 +3093,438 @@ it.effect.each(["threads.adopt", "threads.unarchive"] as const)(
       ).toBe("permission_denied");
       expect(f.lifecycleCommands).toEqual([]);
     }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+const projectAccessManifest = (capabilities: ReadonlyArray<PluginCapability>) => ({
+  optionalCapabilities: capabilities,
+  actions: [
+    { id: "decided", title: "Decided", placements: [] },
+    { id: "ask", title: "Ask", placements: [], agentCallable: true },
+  ],
+});
+const grantProjectAccess = Effect.fn("test.grantProjectAccess")(function* (
+  store: Store.PluginStore["Service"],
+  capabilities: ReadonlyArray<PluginCapability> = ["projects.request-access"],
+) {
+  yield* store.update((state) =>
+    Effect.succeed([
+      undefined,
+      {
+        ...state,
+        installations: state.installations.map((record) => ({
+          ...record,
+          installation: {
+            ...record.installation,
+            manifest: { ...record.installation.manifest, ...projectAccessManifest(capabilities) },
+            grants: {
+              ...record.installation.grants,
+              capabilities: [...record.installation.grants.capabilities, ...capabilities],
+            },
+          },
+        })),
+      },
+    ] as const),
+  );
+});
+const ownedConversation = { installationId: "plugin", treeId: "projects" };
+const otherProject = ProjectId.make("project-other");
+const accessRequest = {
+  projectId: otherProject,
+  threadId: ThreadId.make("conversation"),
+  actionId: "decided",
+};
+const agentInvocation = {
+  installationId: "plugin",
+  generation: "one",
+  operationId: "agent-run",
+  callId: 1,
+  actor: { ...actor, source: "agent", threadId: accessRequest.threadId } satisfies PluginActor,
+};
+const storedRequests = (store: Store.PluginStore["Service"]) =>
+  store.read.pipe(
+    Effect.map((state) => state.installations[0]?.installation.projectAccessRequests ?? []),
+  );
+
+it.effect("takes the same write path for an unknown project as for an ungranted one", () =>
+  Effect.gen(function* () {
+    const f = yield* fixture;
+    yield* grantProjectAccess(f.store);
+    const later = ThreadId.make("later-conversation");
+    f.setShell({ ...f.shell, id: accessRequest.threadId, pluginOwner: ownedConversation });
+    f.setShell({ ...f.shell, id: later, pluginOwner: ownedConversation });
+    const unknown = ProjectId.make("project-unknown");
+    f.missingProjects.add(unknown);
+    const ask = (projectId: ProjectId, threadId: ThreadId) =>
+      f.host.call(agentInvocation, "projects.requestAccess", {
+        ...accessRequest,
+        projectId,
+        threadId,
+      });
+    for (const candidate of [unknown, otherProject]) {
+      for (const threadId of [accessRequest.threadId, later]) {
+        const before = yield* f.store.read;
+        expect(yield* ask(candidate, threadId)).toEqual({ status: "pending" });
+        expect(yield* f.store.read).not.toBe(before);
+      }
+      const settled = yield* f.store.read;
+      expect(yield* ask(candidate, later)).toEqual({ status: "pending" });
+      expect(yield* f.store.read).toBe(settled);
+    }
+    expect(yield* storedRequests(f.store)).toMatchObject([
+      { projectId: unknown, threadId: later, actionId: "decided" },
+      { projectId: otherProject, threadId: later, actionId: "decided" },
+    ]);
+    expect(yield* ask(projectId, later)).toEqual({ status: "granted" });
+  }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect("caps stored requests without letting a flood erase a person's Not now", () =>
+  Effect.gen(function* () {
+    const f = yield* fixture;
+    yield* grantProjectAccess(f.store);
+    f.setShell({ ...f.shell, id: accessRequest.threadId, pluginOwner: ownedConversation });
+    yield* f.store.update((state) =>
+      Effect.succeed([
+        undefined,
+        {
+          ...state,
+          installations: state.installations.map((record) => ({
+            ...record,
+            installation: {
+              ...record.installation,
+              projectAccessRequests: [
+                {
+                  ...accessRequest,
+                  requestedAt: "2026-10-23T12:00:00.000Z",
+                  declinedAt: "2026-10-23T12:30:00.000Z",
+                },
+              ],
+            },
+          })),
+        },
+      ] as const),
+    );
+    for (let index = 0; index < MAX_PLUGIN_PROJECT_ACCESS_REQUESTS + 3; index++)
+      yield* f.host.call(agentInvocation, "projects.requestAccess", {
+        ...accessRequest,
+        projectId: ProjectId.make(`project-flood-${index}`),
+      });
+    const stored = yield* storedRequests(f.store);
+    expect(stored).toHaveLength(MAX_PLUGIN_PROJECT_ACCESS_REQUESTS);
+    expect(stored[0]?.projectId).toBe(otherProject);
+    expect(stored.at(-1)?.projectId).toBe(
+      `project-flood-${MAX_PLUGIN_PROJECT_ACCESS_REQUESTS + 2}`,
+    );
+    expect(stored.some((entry) => entry.projectId === "project-flood-0")).toBe(false);
+    expect(yield* f.host.call(agentInvocation, "projects.requestAccess", accessRequest)).toEqual({
+      status: "declined",
+    });
+  }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect("moves a repeated request to the conversation that asked last, keeping one card", () =>
+  Effect.gen(function* () {
+    const f = yield* fixture;
+    yield* grantProjectAccess(f.store);
+    const later = ThreadId.make("later-conversation");
+    f.setShell({ ...f.shell, id: accessRequest.threadId, pluginOwner: ownedConversation });
+    f.setShell({ ...f.shell, id: later, pluginOwner: ownedConversation });
+    yield* f.host.call(agentInvocation, "projects.requestAccess", accessRequest);
+    yield* f.host.call(agentInvocation, "projects.requestAccess", {
+      ...accessRequest,
+      threadId: later,
+    });
+    expect(yield* storedRequests(f.store)).toMatchObject([
+      { projectId: otherProject, threadId: later },
+    ]);
+  }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect.each([
+  { name: "a conversation it does not own", owner: undefined, request: {}, invocation: {} },
+  {
+    name: "another installation's conversation",
+    owner: { installationId: "other-plugin", treeId: "projects" },
+    request: {},
+    invocation: {},
+  },
+  {
+    name: "a background event",
+    owner: ownedConversation,
+    request: {},
+    invocation: { event: true, actor: { ...actor, source: "background" } },
+  },
+  {
+    name: "a view or status read by a person's client",
+    owner: ownedConversation,
+    request: {},
+    invocation: { actor: { ...actor, source: "client" }, clientAction: false },
+  },
+] as const)("refuses a project request from $name", ({ owner, request, invocation }) =>
+  Effect.gen(function* () {
+    const f = yield* fixture;
+    yield* grantProjectAccess(f.store);
+    f.setShell({
+      ...f.shell,
+      id: accessRequest.threadId,
+      ...(owner === undefined ? {} : { pluginOwner: owner }),
+    });
+    const before = yield* f.store.read;
+    expect(
+      (yield* f.host
+        .call({ ...agentInvocation, ...invocation }, "projects.requestAccess", {
+          ...accessRequest,
+          ...request,
+        })
+        .pipe(Effect.asVoid, Effect.flip)).reason,
+    ).toBe("permission_denied");
+    expect(yield* f.store.read).toBe(before);
+  }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect("requires the capability and a decision action agents cannot call", () =>
+  Effect.gen(function* () {
+    const f = yield* fixture;
+    f.setShell({ ...f.shell, id: accessRequest.threadId, pluginOwner: ownedConversation });
+    expect(
+      (yield* f.host
+        .call(agentInvocation, "projects.requestAccess", accessRequest)
+        .pipe(Effect.asVoid, Effect.flip)).reason,
+    ).toBe("permission_denied");
+    yield* grantProjectAccess(f.store);
+    for (const actionId of ["ask", "undeclared"])
+      expect(
+        (yield* f.host
+          .call(agentInvocation, "projects.requestAccess", { ...accessRequest, actionId })
+          .pipe(Effect.asVoid, Effect.flip)).reason,
+      ).toBe("invalid_input");
+    expect(yield* storedRequests(f.store)).toEqual([]);
+  }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect("exposes no host method that can grant, answer or edit a project request", () =>
+  Effect.gen(function* () {
+    const f = yield* fixture;
+    yield* grantProjectAccess(f.store);
+    f.setShell({ ...f.shell, id: accessRequest.threadId, pluginOwner: ownedConversation });
+    yield* f.host.call(agentInvocation, "projects.requestAccess", accessRequest);
+    const before = yield* f.store.read;
+    for (const method of [
+      "projects.grantAccess",
+      "projects.answerAccess",
+      "plugins.grantProject",
+      "plugins.answerProjectAccess",
+    ])
+      expect(
+        (yield* f.host
+          .call(agentInvocation, method, { ...accessRequest, decision: "grant" })
+          .pipe(Effect.asVoid, Effect.flip)).reason,
+      ).toBe("permission_denied");
+    expect(yield* f.store.read).toBe(before);
+    expect(before.installations[0]?.installation.grants.projectIds).toEqual([projectId]);
+  }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect("keeps a declined request quiet until the person speaks in the conversation again", () =>
+  Effect.gen(function* () {
+    const f = yield* fixture;
+    yield* grantProjectAccess(f.store);
+    const declinedAt = "2026-10-23T12:30:00.000Z";
+    const conversation = { ...f.shell, id: accessRequest.threadId, pluginOwner: ownedConversation };
+    f.setShell(conversation);
+    yield* f.store.update((state) =>
+      Effect.succeed([
+        undefined,
+        {
+          ...state,
+          installations: state.installations.map((record) => ({
+            ...record,
+            installation: {
+              ...record.installation,
+              projectAccessRequests: [
+                { ...accessRequest, requestedAt: "2026-10-23T12:00:00.000Z", declinedAt },
+              ],
+            },
+          })),
+        },
+      ] as const),
+    );
+    const before = yield* f.store.read;
+    const ask = f.host.call(agentInvocation, "projects.requestAccess", accessRequest);
+    expect(yield* ask).toEqual({ status: "declined" });
+    f.setShell({
+      ...conversation,
+      latestUserMessageAt: DateTime.makeUnsafe("2026-10-23T12:45:00.000Z"),
+      latestUserAuthoredMessageAt: DateTime.makeUnsafe("2026-10-23T12:15:00.000Z"),
+    });
+    expect(yield* ask).toEqual({ status: "declined" });
+    expect(yield* f.store.read).toBe(before);
+    f.setShell({
+      ...conversation,
+      latestUserAuthoredMessageAt: DateTime.makeUnsafe("2026-10-23T12:45:00.000Z"),
+    });
+    expect(yield* ask).toEqual({ status: "pending" });
+    const [request] = yield* storedRequests(f.store);
+    expect(request).toMatchObject(accessRequest);
+    expect(request).not.toHaveProperty("declinedAt");
+  }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+const senderTarget = ThreadId.make("receiving");
+const fromConversation = {
+  threadId: senderTarget,
+  text: "Please run this",
+  idempotencyKey: "ask",
+  fromConversation: true,
+};
+const grantSecondProject = Effect.fn("test.grantSecondProject")(function* (
+  store: Store.PluginStore["Service"],
+) {
+  yield* store.update((state) =>
+    Effect.succeed([
+      undefined,
+      {
+        ...state,
+        installations: state.installations.map((record) => ({
+          ...record,
+          installation: {
+            ...record.installation,
+            grants: {
+              ...record.installation.grants,
+              projectIds: [...record.installation.grants.projectIds, otherProject],
+            },
+          },
+        })),
+      },
+    ] as const),
+  );
+});
+
+it.effect("attributes a message to the verified caller, ignoring anything the plugin claims", () =>
+  Effect.gen(function* () {
+    const f = yield* fixture;
+    yield* grantSecondProject(f.store);
+    f.threadProjects.set(senderTarget, otherProject);
+    yield* f.host.call(agentInvocation, "threads.send", {
+      ...fromConversation,
+      senderThreadId: ThreadId.make("forged-sender"),
+      context: { version: 1, records: [], pluginSender: { projectTitle: "Forged", text: "x" } },
+    });
+    expect(f.sends[0]).toMatchObject({
+      threadId: senderTarget,
+      senderThreadId: accessRequest.threadId,
+      createdBy: "system",
+      text: '[Plugin: Test, from project "Test"]\nPlease run this',
+      context: { pluginSender: { projectTitle: "Test", text: "Please run this" } },
+    });
+  }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect("leaves ordinary plugin messages without a sender", () =>
+  Effect.gen(function* () {
+    const f = yield* fixture;
+    yield* f.host.call(agentInvocation, "threads.send", {
+      threadId: f.shell.id,
+      text: "Hello",
+      idempotencyKey: "plain",
+    });
+    expect(f.sends[0]).toMatchObject({ text: "[Plugin: Test]\nHello" });
+    expect(f.sends[0]).not.toHaveProperty("senderThreadId");
+    expect(f.sends[0]).not.toHaveProperty("context");
+  }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect.each([
+  {
+    name: "an agent's supplied target when it has no thread of its own",
+    invocation: {
+      actor: { ...actor, source: "agent" },
+      context: { threadId: accessRequest.threadId },
+    },
+  },
+  {
+    name: "the open thread of a person's view or status read",
+    invocation: {
+      actor: { ...actor, source: "client" },
+      clientAction: false,
+      context: { threadId: accessRequest.threadId },
+    },
+  },
+  {
+    name: "an event's thread",
+    invocation: {
+      actor: { ...actor, source: "background" },
+      event: true,
+      context: { threadId: accessRequest.threadId },
+    },
+  },
+] as const)("never takes the sender from $name", ({ invocation }) =>
+  Effect.gen(function* () {
+    const f = yield* fixture;
+    yield* grantSecondProject(f.store);
+    f.threadProjects.set(senderTarget, otherProject);
+    expect(
+      (yield* f.host
+        .call({ ...agentInvocation, ...invocation }, "threads.send", fromConversation)
+        .pipe(Effect.asVoid, Effect.flip)).reason,
+    ).toBe("permission_denied");
+    expect(f.sends).toEqual([]);
+  }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect("uses the thread of a person's own action as the sender", () =>
+  Effect.gen(function* () {
+    const f = yield* fixture;
+    yield* grantSecondProject(f.store);
+    f.threadProjects.set(senderTarget, otherProject);
+    yield* f.host.call(
+      {
+        ...agentInvocation,
+        actor: { ...actor, source: "client" },
+        clientAction: true,
+        context: { threadId: accessRequest.threadId },
+      },
+      "threads.send",
+      fromConversation,
+    );
+    expect(f.sends[0]?.senderThreadId).toBe(accessRequest.threadId);
+  }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect("needs a grant on both the sending and receiving projects", () =>
+  Effect.gen(function* () {
+    const f = yield* fixture;
+    f.threadProjects.set(senderTarget, otherProject);
+    expect(
+      (yield* f.host
+        .call(agentInvocation, "threads.send", fromConversation)
+        .pipe(Effect.asVoid, Effect.flip)).reason,
+    ).toBe("permission_denied");
+    yield* grantSecondProject(f.store);
+    f.threadProjects.delete(senderTarget);
+    f.threadProjects.set(accessRequest.threadId, ProjectId.make("project-ungranted"));
+    expect(
+      (yield* f.host
+        .call(agentInvocation, "threads.send", fromConversation)
+        .pipe(Effect.asVoid, Effect.flip)).reason,
+    ).toBe("permission_denied");
+    expect(f.sends).toEqual([]);
+  }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect("attributes a created conversation's first message the same way", () =>
+  Effect.gen(function* () {
+    const f = yield* fixture;
+    yield* grantSecondProject(f.store);
+    yield* f.host.call(agentInvocation, "threads.create", {
+      idempotencyKey: "first-ask",
+      projectId: otherProject,
+      text: "Please run this",
+      fromConversation: true,
+    });
+    expect(f.launchInputs[0]?.initialMessage).toMatchObject({
+      senderThreadId: accessRequest.threadId,
+      context: { pluginSender: { projectTitle: "Test", text: "Please run this" } },
+    });
+  }).pipe(Effect.provide(base()), Effect.scoped),
 );

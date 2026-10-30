@@ -1295,6 +1295,7 @@ function useMarkdownStyles(): MarkdownStyleSets {
 function AgentMessageFoldHeader(props: {
   readonly environmentId: EnvironmentId;
   readonly senderThreadId?: ThreadId;
+  readonly senderLabel?: string;
   readonly summary: string;
   readonly expanded: boolean;
   readonly onToggle: () => void;
@@ -1303,7 +1304,7 @@ function AgentMessageFoldHeader(props: {
   const senderShell = useQuietThreadShell(
     props.senderThreadId ? scopeThreadRef(props.environmentId, props.senderThreadId) : null,
   );
-  const label = senderShell?.title.trim() || "Agent";
+  const label = props.senderLabel ?? (senderShell?.title.trim() || "Agent");
   return (
     <Pressable
       accessibilityRole="button"
@@ -1987,6 +1988,9 @@ function renderFeedEntry(
                 <AgentMessageFoldHeader
                   environmentId={props.environmentId}
                   senderThreadId={message.senderThreadId}
+                  {...(presentation.senderLabel === undefined
+                    ? {}
+                    : { senderLabel: presentation.senderLabel })}
                   summary={
                     replaceComposerContextReferences(presentation.text, (ref) => ref.label)
                       .split(/\r?\n/)

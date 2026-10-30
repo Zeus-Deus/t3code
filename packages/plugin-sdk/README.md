@@ -236,6 +236,68 @@ installation cannot adopt or restore its predecessor's threads.
 `collapsedByDefault` folds group and project headings. Native thread rows stay
 expanded; wrap a branch in a group when it needs a foldable heading.
 
+## Asking for a project
+
+Grants can also be asked for during a conversation. Declare the required
+`projects.request-access` capability and an action agents cannot call:
+
+```json
+"capabilities": ["projects.request-access", "threads.send"],
+"actions": [{ "id": "project-decided", "title": "Project decided", "placements": [] }]
+```
+
+From an agent call or a person's action, name the project and a conversation
+this installation owns (see `owner` under Sidebar views):
+
+```js
+const { status } = await ctx.projects.requestAccess({
+  projectId,
+  threadId: invocation.context.threadId,
+  actionId: "project-decided",
+});
+```
+
+T3 draws the card itself from the real project and plugin names and the project's
+folder; nothing you send appears on it. If the name or folder changes before the
+person answers, T3 refuses the grant and shows the card again, so your action only
+runs on an answer to what they saw. Only a person's click on the card answers it. Agents, MCP
+tools and plugin code have no way to approve, and approval grants only that
+project. Web and desktop show the card; mobile does not yet, so a request can
+stay `pending` until the person opens it elsewhere.
+
+`status` is `granted` if you already hold the project, `declined` after **Not
+now**, and otherwise `pending`. An id that does not exist is stored and handled
+exactly the same way and simply never shows a card, so treat `pending` as "nothing
+to do yet" and do not expect it to resolve. Calling again never adds a card: each
+project has one request, which moves to the conversation that asked last, and a
+thread shows one card at a time. An installation keeps at most 64 requests. Past
+that, a new request drops your oldest unanswered one, whose card disappears until
+you ask again; **Not now** answers are kept. Stop asking at your own limit:
+flooding requests only loses your own cards. After **Not now** the status stays `declined` until the
+person next writes in the conversation you ask from.
+Other handlers (views, status, trees and events) get `permission_denied`; so does
+a conversation you do not own. An undeclared or `agentCallable` action is
+`invalid_input`.
+
+The answer invokes your action as the person, like the tree picker, with
+`context.projectId` and `context.threadId` of the asking conversation, and input
+`{ projectAccess: "granted" | "declined" }`. Its return value is discarded, so
+client requests and `card` have no effect. The grant stands even if your handler
+fails, so read `requestAccess` or `projects.list` when in doubt, and store your
+own progress before doing further work.
+
+## Sending as a conversation
+
+Pass `fromConversation: true` to `threads.send`, or to `threads.create` with
+`text`, to show the message as coming from the calling conversation's project:
+**From t3code**, with a link to that conversation, and the agent reading it
+sees that project named on the plugin line above your text. T3 takes the sender
+from the calling agent's credential or from the thread a person ran your action
+on, so that action above counts. You cannot name a sender. Views, status, trees,
+events and agents without a thread get `permission_denied`. The plugin needs
+`threads.send` (or `threads.create`) on both projects. Editing a queued message
+removes its attribution.
+
 ## Advanced
 
 ### Caller identity and lineage

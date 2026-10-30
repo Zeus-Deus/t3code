@@ -280,10 +280,22 @@ export const GuestMessageAttribution = Schema.Struct({
 });
 export type GuestMessageAttribution = typeof GuestMessageAttribution.Type;
 
+/**
+ * Marks a plugin's message as sent from another conversation. The message `text` keeps the
+ * attributed form the agent reads; clients show `text` here under `projectTitle`. The plugin host
+ * derives it from the verified caller, and the orchestrator drops it from any other sender.
+ */
+export const PluginMessageSender = Schema.Struct({
+  projectTitle: Schema.String.check(Schema.isMaxLength(200)),
+  text: Schema.String,
+});
+export type PluginMessageSender = typeof PluginMessageSender.Type;
+
 /** Structured context riding on a user message. Undecodable records are dropped, not fatal. */
 export const OrchestrationMessageContext = Schema.Struct({
   version: Schema.Literal(1),
   guest: Schema.optional(GuestMessageAttribution),
+  pluginSender: Schema.optional(PluginMessageSender),
   records: Schema.Array(Schema.Unknown)
     .check(
       Schema.isMaxLength(COMPOSER_CONTEXT_MAX_RECORDS),
