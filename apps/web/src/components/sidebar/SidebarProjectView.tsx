@@ -201,7 +201,7 @@ interface SidebarProjectHeadingConversation {
   /** Its thread is among the threads the person selected. */
   readonly inSelection: boolean;
   readonly busy: boolean;
-  /** The thread's status, in the icon column its worker rows use. */
+  /** The thread's status, at the row's right edge until its actions take over. */
   readonly status: ReactNode;
   /** Named when several environments each give this project a conversation. */
   readonly environmentLabel: string | null;
@@ -237,14 +237,16 @@ export function SidebarProjectSectionHeader(props: {
   const openSettings = (event: ReactMouseEvent) => {
     if (project) props.onOpenSettings(event, project);
   };
+  // A click leaves a conversation's heading focused, and focus-within would pin its actions over
+  // the status it just opened.
+  const hiddenForActions = conversation
+    ? "group-hover/project-section:opacity-0 group-has-[:focus-visible]/project-section:opacity-0"
+    : "group-hover/project-section:opacity-0 group-focus-within/project-section:opacity-0";
+  const shownForActions = conversation
+    ? "group-hover/project-section:opacity-100 group-has-[:focus-visible]/project-section:opacity-100"
+    : "group-hover/project-section:opacity-100 group-focus-within/project-section:opacity-100";
   const icon = (
-    <span
-      className={cn(
-        "flex",
-        foldable &&
-          "group-hover/project-section:opacity-0 group-focus-within/project-section:opacity-0 pointer-coarse:opacity-0",
-      )}
-    >
+    <span className={cn("flex", foldable && cn(hiddenForActions, "pointer-coarse:opacity-0"))}>
       {project ? (
         <ProjectFavicon project={project} className="size-4 shrink-0" />
       ) : (
@@ -264,9 +266,9 @@ export function SidebarProjectSectionHeader(props: {
   const trailing = (
     <span
       className={cn(
-        "shrink-0 text-xs tabular-nums text-sidebar-muted-foreground/70 group-hover/project-section:opacity-0 group-focus-within/project-section:opacity-0 pointer-coarse:opacity-0",
-        // Sized like a row's trailing cell, so the status icon sits in the rows' column.
-        conversation && "-mr-1.5 min-w-12 pr-1.5 text-right",
+        "shrink-0 text-xs tabular-nums text-sidebar-muted-foreground/70 pointer-coarse:opacity-0",
+        hiddenForActions,
+        conversation && "empty:hidden",
       )}
     >
       {foldable ? (
@@ -281,7 +283,8 @@ export function SidebarProjectSectionHeader(props: {
       <span className="relative flex size-4 shrink-0 items-center justify-center">
         <span
           className={cn(
-            "absolute flex opacity-0 group-hover/project-section:opacity-100 group-focus-within/project-section:opacity-100 pointer-coarse:opacity-100",
+            "absolute flex opacity-0 pointer-coarse:opacity-100",
+            shownForActions,
             !foldable && "invisible",
           )}
         >
@@ -342,12 +345,21 @@ export function SidebarProjectSectionHeader(props: {
             <span className="flex size-4 shrink-0 items-center justify-center">{icon}</span>
             <span className="min-w-0 flex-1 truncate font-medium">{name}</span>
             {conversation.environmentLabel === null ? null : (
-              <span className="shrink-0 truncate text-xs text-sidebar-muted-foreground">
+              <span className="max-w-24 shrink-0 truncate text-xs text-sidebar-muted-foreground">
                 {conversation.environmentLabel}
               </span>
             )}
-            {conversation.status}
             {trailing}
+            {/* Always reserved: the new-thread button lands here, so a name must stop short of it,
+                and touch keeps that button up, so the status moves aside instead of hiding. */}
+            <span
+              className={cn(
+                "flex size-3.5 shrink-0 items-center justify-center pointer-coarse:mr-6",
+                hiddenForActions,
+              )}
+            >
+              {conversation.status}
+            </span>
             {conversation.jumpHint}
           </button>
           {foldable ? (
@@ -360,7 +372,10 @@ export function SidebarProjectSectionHeader(props: {
                 event.stopPropagation();
                 props.onToggleFold(props.sectionKey);
               }}
-              className="absolute top-1 left-1.5 flex size-6 cursor-pointer items-center justify-center rounded-sm opacity-0 group-hover/project-section:opacity-100 group-focus-within/project-section:opacity-100 pointer-coarse:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70"
+              className={cn(
+                "absolute top-1 left-1.5 flex size-6 cursor-pointer items-center justify-center rounded-sm opacity-0 pointer-coarse:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70",
+                shownForActions,
+              )}
             >
               {chevron}
             </button>
@@ -384,7 +399,9 @@ export function SidebarProjectSectionHeader(props: {
         </div>
       )}
       {project ? (
-        <span className="-ml-8 mr-1 flex opacity-0 group-hover/project-section:opacity-100 group-focus-within/project-section:opacity-100 pointer-coarse:opacity-100">
+        <span
+          className={cn("-ml-8 mr-1 flex opacity-0 pointer-coarse:opacity-100", shownForActions)}
+        >
           <Tooltip>
             <TooltipTrigger
               render={
