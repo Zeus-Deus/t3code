@@ -22,7 +22,8 @@ export type PluginCapability =
   | "ui.conversation-cards"
   | "ui.changes"
   | "worktrees.create"
-  | "workflow.query";
+  | "workflow.query"
+  | "projects.request-access";
 export type PluginSettingValue = string | number | boolean;
 export interface PluginManifest {
   readonly id: string;
@@ -184,14 +185,21 @@ interface PluginThreadCreateOptions {
         readonly startFromOrigin?: boolean;
       };
 }
+/** Whether a person granted a project, and what a repeat `requestAccess` reports. */
+export type PluginProjectAccessStatus = "pending" | "granted" | "declined";
 /** Text starts a run immediately; a brief (1–4,000 characters) creates an empty conversation.
  * Brief creation requires ui.native-tree-conversations; its plugin-attributed snapshot travels
  * with the first eligible human message, without replacing that message's displayed text.
  */
 export type PluginThreadCreateInput = PluginThreadCreateOptions &
   (
-    | { readonly text: string; readonly brief?: never }
-    | { readonly brief: string; readonly text?: never }
+    | {
+        readonly text: string;
+        readonly brief?: never;
+        /** Attribute `text` to the verified calling conversation; see `threads.send`. */
+        readonly fromConversation?: true;
+      }
+    | { readonly brief: string; readonly text?: never; readonly fromConversation?: never }
   );
 
 export interface PluginPageInput {
@@ -374,6 +382,12 @@ export interface PluginContext {
       readonly threadId: string;
       readonly text: string;
       readonly idempotencyKey: string;
+      /**
+       * Show the message as from the calling conversation's project. The host takes that from the
+       * calling agent's credential or a person's action context, never from this input, and it
+       * requires `threads.send` on both projects.
+       */
+      readonly fromConversation?: true;
     }) => Promise<{ readonly threadId: string }>;
     readonly create: (input: PluginThreadCreateInput) => Promise<{ readonly threadId: string }>;
     /** Attach presentation ownership to a thread this installation created. Idempotent. */
@@ -396,6 +410,17 @@ export interface PluginContext {
       readonly projects: readonly PluginProjectMetadata[];
       readonly nextCursor: number | null;
     }>;
+    /**
+     * Ask a person, in a conversation this plugin owns, to grant one project. Requires
+     * `projects.request-access`. Runs only inside an agent call or a person's action. `pending` is
+     * also the answer for an id that does not exist. Their answer invokes `actionId` as described
+     * under "Asking for a project" in the author guide.
+     */
+    readonly requestAccess: (input: {
+      readonly projectId: string;
+      readonly threadId: string;
+      readonly actionId: string;
+    }) => Promise<{ readonly status: PluginProjectAccessStatus }>;
   };
   readonly models: {
     readonly list: (

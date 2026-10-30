@@ -42,6 +42,7 @@ export const PLUGIN_CAPABILITIES = [
   "ui.changes",
   "worktrees.create",
   "workflow.query",
+  "projects.request-access",
 ] as const;
 export const PluginCapability = Schema.Literals(PLUGIN_CAPABILITIES);
 export type PluginCapability = typeof PluginCapability.Type;
@@ -173,6 +174,23 @@ export const PluginGrantProjectInput = Schema.Struct({
   projectId: ProjectId,
 });
 export type PluginGrantProjectInput = typeof PluginGrantProjectInput.Type;
+/** A plugin's request, from a conversation it owns, for a person to grant it one project. */
+export const PluginProjectAccessInput = Schema.Struct({
+  projectId: ProjectId,
+  threadId: ThreadId,
+  actionId: identifier,
+});
+export type PluginProjectAccessInput = typeof PluginProjectAccessInput.Type;
+/** An unknown project id reads as "pending" too, so this says nothing about ungranted ids. */
+export const PluginProjectAccessStatus = Schema.Literals(["pending", "granted", "declined"]);
+export type PluginProjectAccessStatus = typeof PluginProjectAccessStatus.Type;
+export const PluginProjectAccessAnswerInput = Schema.Struct({
+  installationId: identifier,
+  generation: identifier,
+  projectId: ProjectId,
+  decision: Schema.Literals(["grant", "decline"]),
+});
+export type PluginProjectAccessAnswerInput = typeof PluginProjectAccessAnswerInput.Type;
 export const PluginTreeInput = Schema.Struct({
   installationId: identifier,
   generation: identifier,
@@ -238,7 +256,14 @@ export const PluginThreadCreateInput = Schema.Struct({
   runtimeMode: Schema.optionalKey(RuntimeMode),
   interactionMode: Schema.optionalKey(ProviderInteractionMode),
   workspaceStrategy: Schema.optionalKey(PluginWorkspaceStrategy),
-}).check(Schema.makeFilter((input) => (input.text === undefined) !== (input.brief === undefined)));
+  fromConversation: Schema.optionalKey(Schema.Literal(true)),
+}).check(
+  Schema.makeFilter(
+    (input) =>
+      (input.text === undefined) !== (input.brief === undefined) &&
+      (input.fromConversation === undefined || input.text !== undefined),
+  ),
+);
 export type PluginThreadCreateInput = typeof PluginThreadCreateInput.Type;
 const pluginPageFields = {
   cursor: Schema.optionalKey(NonNegativeInt),
@@ -448,6 +473,14 @@ export const PluginPendingUpdate = Schema.Struct({
   updatedAt: IsoDateTime,
 });
 export type PluginPendingUpdate = typeof PluginPendingUpdate.Type;
+/** One per project. `declinedAt` keeps a "Not now" so asking again shows no new card. */
+export const PluginProjectAccessRequest = Schema.Struct({
+  ...PluginProjectAccessInput.fields,
+  requestedAt: IsoDateTime,
+  declinedAt: Schema.optionalKey(IsoDateTime),
+});
+export type PluginProjectAccessRequest = typeof PluginProjectAccessRequest.Type;
+export const MAX_PLUGIN_PROJECT_ACCESS_REQUESTS = 1_000;
 export const PluginInstallation = Schema.Struct({
   installationId: identifier,
   generation: identifier,
@@ -501,6 +534,11 @@ export const PluginInstallation = Schema.Struct({
   // Secret keys are omitted, never replaced with their stored values.
   settings: Schema.Record(identifier, PluginSettingValue),
   grants: PluginGrants,
+  projectAccessRequests: Schema.optionalKey(
+    Schema.Array(PluginProjectAccessRequest).check(
+      Schema.isMaxLength(MAX_PLUGIN_PROJECT_ACCESS_REQUESTS),
+    ),
+  ),
   updatedAt: IsoDateTime,
 });
 export type PluginInstallation = typeof PluginInstallation.Type;

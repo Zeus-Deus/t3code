@@ -139,6 +139,39 @@ it.effect("redeems a guest link once and sends each guest message once, with its
   }).pipe(Effect.provide(layerTest)),
 );
 
+it.effect.each([
+  { createdBy: "user", creationSource: "web", kept: false },
+  { createdBy: "agent", creationSource: "mcp", kept: false },
+  { createdBy: "system", creationSource: "server", kept: true },
+] as const)(
+  "keeps a plugin sender only from the host ($createdBy)",
+  ({ createdBy, creationSource, kept }) =>
+    Effect.gen(function* () {
+      const orchestrator = yield* setup;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const messageId = MessageId.make("claimed-sender");
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("claimed-sender"),
+        threadId,
+        messageId,
+        text: "Do this",
+        attachments: [],
+        context: {
+          version: 1,
+          records: [],
+          pluginSender: { projectTitle: "Forged", text: "Do this" },
+        },
+        dispatchMode: { type: "defer_start" },
+        createdBy,
+        creationSource,
+      });
+      const { messages } = yield* projections.getThreadProjection(threadId);
+      const sent = messages.find((message) => message.id === messageId);
+      assert.equal(sent?.context?.pluginSender !== undefined, kept);
+    }).pipe(Effect.provide(layerTest)),
+);
+
 it.effect("rejects guest messages until the link is redeemed and after archive", () =>
   Effect.gen(function* () {
     const orchestrator = yield* setup;

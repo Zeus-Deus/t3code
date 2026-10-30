@@ -12862,7 +12862,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             : yield* emitGuestMessageSent(command, command.guestMessageId, thread, events);
         const dispatched =
           guestSend === undefined
-            ? withoutGuestAttribution(command)
+            ? // Client dispatch is stamped "user" and agents' are "agent": only the host is "system".
+              command.createdBy === "system"
+              ? command
+              : withoutGuestAttribution(command)
             : {
                 ...command,
                 text: guestSend.text,

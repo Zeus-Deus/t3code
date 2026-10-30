@@ -6867,3 +6867,186 @@ it.effect.each(["missing-project", "disabled", "unconsented"] as const)(
       expect(yield* f.store.read).toBe(before);
     }).pipe(Effect.provide(base()), Effect.scoped),
 );
+
+const projectAccessManager: PluginActor = {
+  ...actor,
+  scopes: [AuthAccessWriteScope, AuthTerminalOperateScope, AuthOrchestrationOperateScope],
+};
+const requestedProject = ProjectId.make("project:requested");
+const projectAccessFixture = Effect.gen(function* () {
+  const f = yield* fixture;
+  yield* f.fs.writeFileString(
+    f.path.join(f.directory, "t3-plugin.json"),
+    yield* encodeJson({ ...manifest, optionalCapabilities: ["projects.request-access"] }),
+  );
+  const enabled = yield* f.enable(["projects.request-access"]);
+  const seed = (requests: ReadonlyArray<ProjectId>) =>
+    f.store.update((state) =>
+      Effect.succeed([
+        undefined,
+        {
+          ...state,
+          installations: state.installations.map((record) => ({
+            ...record,
+            installation: {
+              ...record.installation,
+              projectAccessRequests: requests.map((id) => ({
+                projectId: id,
+                threadId,
+                actionId: "private",
+                requestedAt: stamp,
+              })),
+            },
+          })),
+        },
+      ] as const),
+    );
+  yield* seed([requestedProject]);
+  return {
+    ...f,
+    enabled,
+    seed,
+    answer: {
+      installationId: enabled.installationId,
+      generation: enabled.generation,
+      projectId: requestedProject,
+      decision: "grant" as const,
+    },
+  };
+});
+
+it.effect.each([
+  { name: "an agent", caller: { ...projectAccessManager, source: "agent" as const } },
+  {
+    name: "a background delivery",
+    caller: { ...projectAccessManager, source: "background" as const },
+  },
+  { name: "a session without access management", caller: actor },
+  {
+    name: "a session that cannot operate the terminal",
+    caller: { ...actor, scopes: [AuthAccessWriteScope, AuthOrchestrationOperateScope] },
+  },
+  {
+    name: "a session outside the project",
+    caller: { ...projectAccessManager, projectIds: [projectId] },
+  },
+] satisfies ReadonlyArray<{ name: string; caller: PluginActor }>)(
+  "never lets $name answer a project request",
+  ({ caller }) =>
+    Effect.gen(function* () {
+      const f = yield* projectAccessFixture;
+      const before = yield* f.store.read;
+      for (const decision of ["grant", "decline"] as const)
+        expect(
+          (yield* f.plugins
+            .answerProjectAccess({ ...f.answer, decision }, caller)
+            .pipe(Effect.flip)).reason,
+        ).toBe("permission_denied");
+      expect(yield* f.store.read).toBe(before);
+      expect(f.calls).toEqual([]);
+    }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect("grants only the requested project and tells the plugin through its action", () =>
+  Effect.gen(function* () {
+    const f = yield* projectAccessFixture;
+    const untouched = ProjectId.make("project:untouched");
+    yield* f.seed([requestedProject, untouched]);
+    const result = yield* f.plugins.answerProjectAccess(f.answer, projectAccessManager);
+    expect(result.grants.projectIds).toEqual([projectId, requestedProject]);
+    expect(result.projectAccessRequests).toMatchObject([{ projectId: untouched }]);
+    expect(f.calls).toMatchObject([
+      {
+        handler: "action:private",
+        input: { projectAccess: "granted" },
+        context: { projectId: requestedProject, threadId },
+        caller: { kind: "client" },
+      },
+    ]);
+    // A second device's click after the first committed changes nothing.
+    expect(
+      (yield* f.plugins
+        .answerProjectAccess({ ...f.answer, decision: "decline" }, projectAccessManager)
+        .pipe(Effect.flip)).reason,
+    ).toBe("not_found");
+    expect(f.calls).toHaveLength(1);
+  }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect("records Not now without granting, and tells the plugin the same way", () =>
+  Effect.gen(function* () {
+    const f = yield* projectAccessFixture;
+    const result = yield* f.plugins.answerProjectAccess(
+      { ...f.answer, decision: "decline" },
+      projectAccessManager,
+    );
+    expect(result.grants.projectIds).toEqual([projectId]);
+    expect(result.projectAccessRequests?.[0]?.declinedAt).toEqual(expect.any(String));
+    expect(f.calls).toMatchObject([
+      {
+        handler: "action:private",
+        input: { projectAccess: "declined" },
+        context: { projectId: requestedProject, threadId },
+      },
+    ]);
+  }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect("cannot grant a project nothing asked for, or through a stale generation", () =>
+  Effect.gen(function* () {
+    const f = yield* projectAccessFixture;
+    const before = yield* f.store.read;
+    expect(
+      (yield* f.plugins
+        .answerProjectAccess(
+          { ...f.answer, projectId: ProjectId.make("project:unasked") },
+          projectAccessManager,
+        )
+        .pipe(Effect.flip)).reason,
+    ).toBe("not_found");
+    expect(
+      (yield* f.plugins
+        .answerProjectAccess({ ...f.answer, generation: "stale" }, projectAccessManager)
+        .pipe(Effect.flip)).reason,
+    ).toBe("stale_generation");
+    expect(yield* f.store.read).toBe(before);
+    expect(f.calls).toEqual([]);
+  }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect("does not answer for a plugin without the capability", () =>
+  Effect.gen(function* () {
+    const f = yield* fixture;
+    const enabled = yield* f.enable();
+    yield* f.store.update((state) =>
+      Effect.succeed([
+        undefined,
+        {
+          ...state,
+          installations: state.installations.map((record) => ({
+            ...record,
+            installation: {
+              ...record.installation,
+              projectAccessRequests: [
+                { projectId: requestedProject, threadId, actionId: "private", requestedAt: stamp },
+              ],
+            },
+          })),
+        },
+      ] as const),
+    );
+    expect(
+      (yield* f.plugins
+        .answerProjectAccess(
+          {
+            installationId: enabled.installationId,
+            generation: enabled.generation,
+            projectId: requestedProject,
+            decision: "grant",
+          },
+          projectAccessManager,
+        )
+        .pipe(Effect.flip)).reason,
+    ).toBe("permission_denied");
+  }).pipe(Effect.provide(base()), Effect.scoped),
+);

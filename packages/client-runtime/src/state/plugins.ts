@@ -50,6 +50,11 @@ export function createPluginEnvironmentAtoms<R, E>(
       tag: WS_METHODS.pluginsGrantProject,
       ...management,
     }),
+    /** A person's answer to a plugin's project request; the plugin is told before this settles. */
+    answerProjectAccess: createEnvironmentRpcCommand(runtime, {
+      label: "environment-command:plugins:answer-project-access",
+      tag: WS_METHODS.pluginsAnswerProjectAccess,
+    }),
     setEnabled: createEnvironmentRpcCommand(runtime, {
       label: "environment-command:plugins:set-enabled",
       tag: WS_METHODS.pluginsSetEnabled,

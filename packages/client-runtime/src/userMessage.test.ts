@@ -156,6 +156,23 @@ describe("resolveUserMessageFileCards", () => {
 });
 
 describe("resolveUserMessagePresentation", () => {
+  it("shows a verified plugin sender with the plugin's own words", () => {
+    expect(
+      resolveUserMessagePresentation({
+        role: "user",
+        text: '[Plugin: Coordinator, from project "alpha"]\nRun the checks',
+        createdBy: "system",
+        creationSource: "server",
+        context: { pluginSender: { projectTitle: "alpha", text: "Run the checks" } },
+      }),
+    ).toEqual({
+      text: "Run the checks",
+      attribution: "agent",
+      scheduledTaskId: undefined,
+      senderLabel: "From alpha",
+    });
+  });
+
   const legacyText = "[Triggered by schedule task: Daily audit]\n\nCheck for crashes.\n";
 
   it("preserves user-written and assistant-quoted schedule headers", () => {

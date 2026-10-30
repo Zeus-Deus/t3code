@@ -245,11 +245,15 @@ export function guestShareAfterCancelledSend(
   };
 }
 
-/** Guest attribution comes only from `decideGuestMessageSend`; a client cannot claim it. */
+/**
+ * Guest attribution comes only from `decideGuestMessageSend`, and plugin attribution only from the
+ * plugin host; a client cannot claim either. Editing a queued message also ends its attribution.
+ */
 export function withoutGuestAttribution<
   C extends { readonly context?: OrchestrationMessageContext | undefined },
 >(command: C): C {
-  if (command.context?.guest === undefined) return command;
-  const { guest: _guest, ...context } = command.context;
+  if (command.context?.guest === undefined && command.context?.pluginSender === undefined)
+    return command;
+  const { guest: _guest, pluginSender: _pluginSender, ...context } = command.context;
   return { ...command, context };
 }

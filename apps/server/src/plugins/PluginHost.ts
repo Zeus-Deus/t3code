@@ -18,6 +18,8 @@ import {
   PluginProjectsList,
   PluginModelsListInput,
   PluginModelsList,
+  PluginProjectAccessInput,
+  MAX_PLUGIN_PROJECT_ACCESS_REQUESTS,
   isProviderAvailable,
 } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
@@ -65,6 +67,7 @@ const ThreadSend = Schema.Struct({
   threadId: ThreadId,
   projectId: Schema.optionalKey(ProjectId),
   text: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(64_000)),
+  fromConversation: Schema.optionalKey(Schema.Literal(true)),
 });
 const iso = (value: DateTime.DateTime | null | undefined) =>
   value == null ? null : DateTime.formatIso(value);
@@ -314,6 +317,7 @@ const make = Effect.gen(function* () {
           current: PluginStore.StoredInstallation,
           currentState: PluginStore.PluginState,
         ) => Effect.Effect<readonly [A, PluginStore.PluginState], PluginError>,
+        capability: "storage" | "projects.request-access" = "storage",
       ) {
         const attempt = () =>
           store.tryUpdate((currentState) =>
@@ -330,7 +334,7 @@ const make = Effect.gen(function* () {
                 PluginStore.assertMutablePluginRecord(current) ??
                 assertPluginActive(current.installation, invocation.generation);
               if (denied) return yield* denied;
-              if (!pluginCapabilityAllowed(current.installation, actor, "storage"))
+              if (!pluginCapabilityAllowed(current.installation, actor, capability))
                 return yield* pluginPermissionDenied();
               return yield* f(current, currentState);
             }),
@@ -359,6 +363,40 @@ const make = Effect.gen(function* () {
           return yield* pluginPermissionDenied();
         return shell;
       });
+      // Credential for agents, and for people the thread their own action ran on. Reads and status
+      // handlers also receive the open thread, but nobody in it asked for anything.
+      const conversationSender = Effect.fn("PluginHost.conversationSender")(function* () {
+        const threadId =
+          actor.source === "agent"
+            ? actor.threadId
+            : invocation.clientAction === true
+              ? invocation.context?.threadId
+              : undefined;
+        if (threadId === undefined) return yield* pluginPermissionDenied();
+        const thread = yield* target(threadId);
+        const project = yield* projects
+          .getShell(thread.projectId)
+          .pipe(Effect.mapError(() => pluginPermissionDenied()));
+        if (Option.isNone(project)) return yield* pluginPermissionDenied();
+        return {
+          threadId: thread.id,
+          projectId: thread.projectId,
+          projectTitle: project.value.title.slice(0, 200),
+        };
+      });
+      type ConversationSender = Effect.Success<ReturnType<typeof conversationSender>>;
+      const pluginMessage = (text: string, sender: ConversationSender | null) =>
+        sender === null
+          ? { text: `[Plugin: ${installation.manifest.name}]\n${text}` }
+          : {
+              text: `[Plugin: ${installation.manifest.name}, from project ${JSON.stringify(sender.projectTitle)}]\n${text}`,
+              senderThreadId: sender.threadId,
+              context: {
+                version: 1 as const,
+                records: [],
+                pluginSender: { projectTitle: sender.projectTitle, text },
+              },
+            };
       if (method === "settings.get") {
         yield* requireCapability("settings");
         const { key } = yield* decode(KeyInput, input);
@@ -511,6 +549,81 @@ const make = Effect.gen(function* () {
         yield* authorizeRead(selected.rows.map((project) => project.id));
         return result;
       }
+      if (method === "projects.requestAccess") {
+        const request = yield* decode(PluginProjectAccessInput, input);
+        yield* requireCapability("projects.request-access");
+        if (actor.source !== "agent" && invocation.clientAction !== true)
+          return yield* pluginPermissionDenied();
+        const shell = yield* target(request.threadId);
+        yield* requireCapability("projects.request-access", shell.projectId);
+        if (shell.pluginOwner?.installationId !== invocation.installationId)
+          return yield* pluginPermissionDenied();
+        const decisionAction = installation.manifest.actions.find(
+          (action) => action.id === request.actionId,
+        );
+        // An agent calling it could pass off its own input as a person's answer.
+        if (decisionAction === undefined || decisionAction.agentCallable === true)
+          return yield* new PluginError({
+            reason: "invalid_input",
+            message: "The project request needs a declared action agents cannot call.",
+          });
+        // From here every result for an ungranted id reads alike, whether or not the project exists.
+        if (installation.grants.projectIds.includes(request.projectId))
+          return { status: "granted" as const };
+        const project = yield* projects
+          .getShell(request.projectId)
+          .pipe(Effect.orElseSucceed(() => Option.none()));
+        if (Option.isNone(project)) return { status: "pending" as const };
+        const requestedAt = DateTime.formatIso(yield* DateTime.now);
+        const personSpokeAt = iso(shell.latestUserAuthoredMessageAt);
+        return yield* mutate((current, currentState) => {
+          const { projectAccessRequests = [], grants } = current.installation;
+          const unchanged = (status: "pending" | "granted" | "declined") =>
+            Effect.succeed([{ status }, currentState] as const);
+          if (grants.projectIds.includes(request.projectId)) return unchanged("granted");
+          const existing = projectAccessRequests.find(
+            (entry) => entry.projectId === request.projectId,
+          );
+          // After "Not now", only a new message from the person reopens the question.
+          if (
+            existing?.declinedAt !== undefined &&
+            (personSpokeAt === null || personSpokeAt <= existing.declinedAt)
+          )
+            return unchanged("declined");
+          if (
+            existing !== undefined &&
+            existing.declinedAt === undefined &&
+            existing.threadId === request.threadId &&
+            existing.actionId === request.actionId
+          )
+            return unchanged("pending");
+          const next = { ...request, requestedAt };
+          return Effect.succeed([
+            { status: "pending" as const },
+            {
+              ...currentState,
+              installations: currentState.installations.map((entry) =>
+                entry === current
+                  ? {
+                      ...entry,
+                      installation: {
+                        ...entry.installation,
+                        projectAccessRequests:
+                          existing === undefined
+                            ? [...projectAccessRequests, next].slice(
+                                -MAX_PLUGIN_PROJECT_ACCESS_REQUESTS,
+                              )
+                            : projectAccessRequests.map((item) =>
+                                item === existing ? next : item,
+                              ),
+                      },
+                    }
+                  : entry,
+              ),
+            },
+          ] as const);
+        }, "projects.request-access");
+      }
       if (method === "models.list") {
         const request = yield* decode(PluginModelsListInput, input);
         yield* requireCapability("threads.read", request.projectId);
@@ -575,10 +688,12 @@ const make = Effect.gen(function* () {
         const shell = yield* target(request.threadId, request.projectId);
         yield* requireCapability("threads.send", shell.projectId);
         if (!pluginTargetWithinCeiling(actor, shell)) return yield* pluginPermissionDenied();
+        const sender = request.fromConversation === true ? yield* conversationSender() : null;
+        if (sender !== null) yield* requireCapability("threads.send", sender.projectId);
         return yield* dispatch(
           method,
           request.idempotencyKey,
-          request,
+          { ...request, ...(sender === null ? {} : { senderThreadId: sender.threadId }) },
           Effect.fn("PluginHost.send")(function* (commandKey) {
             const result = yield* threads
               .sendToThread({
@@ -586,7 +701,7 @@ const make = Effect.gen(function* () {
                 threadId: shell.id,
                 commandId: CommandId.make(commandKey),
                 messageId: MessageId.make(`${commandKey}:message`),
-                text: `[Plugin: ${installation.manifest.name}]\n${request.text}`,
+                ...pluginMessage(request.text, sender),
                 attachments: [],
                 mode: "queue",
                 createdBy: "system",
@@ -610,6 +725,11 @@ const make = Effect.gen(function* () {
               !pluginTargetWithinCeiling(actor, latest)
             )
               return yield* pluginPermissionDenied();
+            if (sender !== null) {
+              const source = yield* target(sender.threadId, sender.projectId);
+              if (!pluginCapabilityAllowed(current, actor, "threads.send", source.projectId))
+                return yield* pluginPermissionDenied();
+            }
           }),
         );
       }
@@ -773,10 +893,16 @@ const make = Effect.gen(function* () {
           (actor.interactionMode === "plan" ? "plan" : (caller?.interactionMode ?? "default"));
         if (!pluginTargetWithinCeiling(actor, { runtimeMode, interactionMode }))
           return yield* pluginPermissionDenied();
+        const sender = request.fromConversation === true ? yield* conversationSender() : null;
+        if (sender !== null) yield* requireCapability("threads.create", sender.projectId);
         return yield* dispatch(
           method,
           request.idempotencyKey,
-          { ...request, ...(caller === null ? {} : { launchedFrom: { threadId: caller.id } }) },
+          {
+            ...request,
+            ...(caller === null ? {} : { launchedFrom: { threadId: caller.id } }),
+            ...(sender === null ? {} : { senderThreadId: sender.threadId }),
+          },
           Effect.fn("PluginHost.create")(function* (commandKey, revalidate) {
             if (workspaceStrategy.type === "worktree") {
               yield* launch
@@ -810,7 +936,7 @@ const make = Effect.gen(function* () {
                   ? {
                       initialMessage: {
                         messageId: MessageId.make(`${commandKey}:message`),
-                        text: `[Plugin: ${installation.manifest.name}]\n${request.text}`,
+                        ...pluginMessage(request.text ?? "", sender),
                         attachments: [],
                       },
                     }
@@ -856,6 +982,11 @@ const make = Effect.gen(function* () {
             if (caller !== null) {
               const source = yield* target(caller.id, caller.projectId);
               if (!pluginCapabilityAllowed(current, actor, "threads.read", source.projectId))
+                return yield* pluginPermissionDenied();
+            }
+            if (sender !== null) {
+              const source = yield* target(sender.threadId, sender.projectId);
+              if (!pluginCapabilityAllowed(current, actor, "threads.create", source.projectId))
                 return yield* pluginPermissionDenied();
             }
           }),
