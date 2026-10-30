@@ -54,8 +54,11 @@ existing T3 project or add one from any source Add project offers. T3 asks befor
 granting access to another project; that approval does not approve a pending
 plugin update.
 A plugin that coordinates work across projects can also ask from one of its own
-conversations. T3 shows a card with the real project and plugin names, and only
-your click on **Add** grants that one project. **Not now** leaves it out, and the
+conversations. T3 shows a card with the real project and plugin names and the
+project's folder, plus its environment when that could be ambiguous, and only
+your click on **Add** grants that one project. Check the folder: an agent can rename
+a project. If the name or folder changes while the card is open, T3 refuses the
+grant and shows the card again. **Not now** leaves it out, and the
 plugin stays quiet about that project until you next write in that conversation.
 You can answer on web and desktop; mobile does not show the card yet.
 Its messages to another project's conversation show which project they came from,

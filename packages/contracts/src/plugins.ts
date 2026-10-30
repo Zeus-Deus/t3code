@@ -189,6 +189,8 @@ export const PluginProjectAccessAnswerInput = Schema.Struct({
   generation: identifier,
   projectId: ProjectId,
   decision: Schema.Literals(["grant", "decline"]),
+  /** What the card named, so a grant cannot land on a project that changed under the person. */
+  shown: Schema.Struct({ title: Schema.String, workspaceRoot: Schema.String }),
 });
 export type PluginProjectAccessAnswerInput = typeof PluginProjectAccessAnswerInput.Type;
 export const PluginTreeInput = Schema.Struct({

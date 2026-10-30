@@ -257,8 +257,10 @@ const { status } = await ctx.projects.requestAccess({
 });
 ```
 
-T3 draws the card itself from the real project and plugin names; nothing you
-send appears on it. Only a person's click on the card answers it. Agents, MCP
+T3 draws the card itself from the real project and plugin names and the project's
+folder; nothing you send appears on it. If the name or folder changes before the
+person answers, T3 refuses the grant and shows the card again, so your action only
+runs on an answer to what they saw. Only a person's click on the card answers it. Agents, MCP
 tools and plugin code have no way to approve, and approval grants only that
 project. Web and desktop show the card; mobile does not yet, so a request can
 stay `pending` until the person opens it elsewhere.

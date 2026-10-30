@@ -184,6 +184,7 @@ const makeFixture = Effect.fn("PluginServiceTest.fixture")(function* (realWorker
   let beforeUpdate: (() => Effect.Effect<void>) | undefined;
   let beforeRead: (() => Effect.Effect<void>) | undefined;
   let projectExists = true;
+  let projectIdentity: { readonly title?: string; readonly workspaceRoot?: string } = {};
   const lifecycleCommands: OrchestrationV2ServerCommand[] = [];
   const shellReads: Array<string> = [];
   const metadataReads: Array<ThreadId> = [];
@@ -424,6 +425,7 @@ const makeFixture = Effect.fn("PluginServiceTest.fixture")(function* (realWorker
                   scripts: [],
                   createdAt: stamp,
                   updatedAt: stamp,
+                  ...projectIdentity,
                 })
               : Option.none(),
           ),
@@ -469,6 +471,9 @@ const makeFixture = Effect.fn("PluginServiceTest.fixture")(function* (realWorker
     enable,
     setProjectExists: (value: boolean) => {
       projectExists = value;
+    },
+    setProjectIdentity: (value: typeof projectIdentity) => {
+      projectIdentity = value;
     },
     calls,
     commands,
@@ -6911,6 +6916,7 @@ const projectAccessFixture = Effect.gen(function* () {
       generation: enabled.generation,
       projectId: requestedProject,
       decision: "grant" as const,
+      shown: { title: "Test", workspaceRoot: f.directory },
     },
   };
 });
@@ -7014,6 +7020,42 @@ it.effect("cannot grant a project nothing asked for, or through a stale generati
   }).pipe(Effect.provide(base()), Effect.scoped),
 );
 
+it.effect.each([
+  { changed: "title", identity: { title: "Sandbox" } },
+  { changed: "folder", identity: { workspaceRoot: "/projects/sandbox" } },
+])("refuses a grant when the project's $changed changed since the card was shown", ({ identity }) =>
+  Effect.gen(function* () {
+    const f = yield* projectAccessFixture;
+    f.setProjectIdentity(identity);
+    const before = yield* f.store.read;
+    expect(
+      yield* f.plugins.answerProjectAccess(f.answer, projectAccessManager).pipe(Effect.flip),
+    ).toMatchObject({ reason: "permission_denied", code: "project_changed" });
+    expect(yield* f.store.read).toBe(before);
+    expect(f.calls).toEqual([]);
+
+    // The request survives, so the re-rendered card can be answered for what it now shows.
+    const result = yield* f.plugins.answerProjectAccess(
+      { ...f.answer, shown: { ...f.answer.shown, ...identity } },
+      projectAccessManager,
+    );
+    expect(result.grants.projectIds).toContain(requestedProject);
+  }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect("still takes Not now for a project renamed while the card was open", () =>
+  Effect.gen(function* () {
+    const f = yield* projectAccessFixture;
+    f.setProjectIdentity({ title: "Sandbox" });
+    const result = yield* f.plugins.answerProjectAccess(
+      { ...f.answer, decision: "decline" },
+      projectAccessManager,
+    );
+    expect(result.grants.projectIds).toEqual([projectId]);
+    expect(result.projectAccessRequests?.[0]?.declinedAt).toEqual(expect.any(String));
+  }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
 it.effect("does not answer for a plugin without the capability", () =>
   Effect.gen(function* () {
     const f = yield* fixture;
@@ -7043,6 +7085,7 @@ it.effect("does not answer for a plugin without the capability", () =>
             generation: enabled.generation,
             projectId: requestedProject,
             decision: "grant",
+            shown: { title: "Test", workspaceRoot: f.directory },
           },
           projectAccessManager,
         )

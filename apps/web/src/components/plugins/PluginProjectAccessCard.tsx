@@ -1,5 +1,9 @@
 import { pluginProjectAccessRequest } from "@t3tools/client-runtime/plugins";
 import {
+  buildProjectGroups,
+  selectProjectGroupingSettings,
+} from "@t3tools/client-runtime/state/project-grouping";
+import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
@@ -13,7 +17,9 @@ import type {
 import { useAtomValue } from "@effect/atom-react";
 import { useState } from "react";
 
+import { useClientSettings } from "../../hooks/useSettings";
 import { useProjects } from "../../state/entities";
+import { useEnvironment, usePrimaryEnvironmentId } from "../../state/environments";
 import { pluginEnvironment, usePluginCatalogue } from "../../state/plugins";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { Button } from "../ui/button";
@@ -24,6 +30,9 @@ interface PluginProjectAccess {
   readonly installation: PluginInstallation;
   readonly request: PluginProjectAccessRequest;
   readonly projectTitle: string;
+  readonly workspaceRoot: string;
+  /** Set when the folder alone would not say which machine this grant is about. */
+  readonly environmentLabel: string | null;
 }
 
 /** The request to show in this thread. A project this client cannot name never shows a card. */
@@ -31,6 +40,9 @@ export function usePluginProjectAccess(threadRef: ScopedThreadRef): PluginProjec
   const { environmentId, threadId } = threadRef;
   const { installations } = usePluginCatalogue(environmentId);
   const projects = useProjects();
+  const groupingSettings = useClientSettings(selectProjectGroupingSettings);
+  const primaryEnvironmentId = usePrimaryEnvironmentId();
+  const environment = useEnvironment(environmentId);
   const find = (projectId: ProjectId) =>
     projects.find((entry) => entry.environmentId === environmentId && entry.id === projectId);
   const access = pluginProjectAccessRequest(
@@ -39,9 +51,24 @@ export function usePluginProjectAccess(threadRef: ScopedThreadRef): PluginProjec
     (projectId) => find(projectId) !== undefined,
   );
   const project = access === null ? undefined : find(access.request.projectId);
-  return access === null || project === undefined
-    ? null
-    : { ...access, projectTitle: project.title };
+  if (access === null || project === undefined) return null;
+  const group = buildProjectGroups({ projects, settings: groupingSettings }).find((entry) =>
+    entry.members.some(
+      (member) =>
+        member.project.environmentId === environmentId && member.project.id === project.id,
+    ),
+  );
+  const spansEnvironments =
+    new Set(group?.members.map((member) => member.project.environmentId)).size > 1;
+  return {
+    ...access,
+    projectTitle: project.title,
+    workspaceRoot: project.workspaceRoot,
+    environmentLabel:
+      environmentId !== primaryEnvironmentId || spansEnvironments
+        ? (environment?.label ?? null)
+        : null,
+  };
 }
 
 /**
@@ -53,7 +80,7 @@ export function PluginProjectAccessCard(props: {
   readonly access: PluginProjectAccess;
 }) {
   const { environmentId, access } = props;
-  const { installation, request, projectTitle } = access;
+  const { installation, request, projectTitle, workspaceRoot, environmentLabel } = access;
   const pluginName = installation.manifest.name;
   const destination = installation.manifest.nativeTrees?.[0]?.title ?? pluginName;
   const answer = useAtomCommand(pluginEnvironment.answerProjectAccess, { reportFailure: false });
@@ -71,6 +98,7 @@ export function PluginProjectAccessCard(props: {
         generation: installation.generation,
         projectId: request.projectId,
         decision,
+        shown: { title: projectTitle, workspaceRoot },
       },
     }).finally(() => setAnswering(false));
     if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
@@ -99,6 +127,10 @@ export function PluginProjectAccessCard(props: {
           </p>
           <p className="text-xs text-muted-foreground/80">
             It can use this project with the permissions you already gave it.
+          </p>
+          {/* The title is editable by agents; the grant goes to this folder's project. */}
+          <p className="pt-1 font-mono text-xs wrap-anywhere text-muted-foreground">
+            {environmentLabel === null ? workspaceRoot : `${environmentLabel}: ${workspaceRoot}`}
           </p>
         </div>
         {canAnswer ? (

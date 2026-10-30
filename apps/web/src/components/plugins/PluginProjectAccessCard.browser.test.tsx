@@ -9,6 +9,8 @@ const state = vi.hoisted(() => ({
   answers: [] as unknown[],
   canAnswer: true,
   installations: [] as PluginInstallation[],
+  primaryEnvironmentId: "environment-test",
+  projects: [] as unknown[],
 }));
 
 vi.mock(import("../../state/plugins"), async (original) => {
@@ -35,7 +37,12 @@ vi.mock(import("../../state/plugins"), async (original) => {
 });
 vi.mock(import("../../state/entities"), async (original) => ({
   ...(await original()),
-  useProjects: () => [{ environmentId, id: projectId, title: "alpha-service" }] as never,
+  useProjects: () => state.projects as never,
+}));
+vi.mock(import("../../state/environments"), async (original) => ({
+  ...(await original()),
+  useEnvironment: () => ({ label: "build-box" }) as never,
+  usePrimaryEnvironmentId: () => state.primaryEnvironmentId as never,
 }));
 vi.mock(import("../../state/use-atom-command"), async (original) => ({
   ...(await original()),
@@ -52,9 +59,21 @@ const threadId = ThreadId.make("conversation");
 const projectId = ProjectId.make("project-alpha");
 const digest = "a".repeat(64);
 
+const project = (title: string, workspaceRoot: string) => ({
+  id: projectId,
+  environmentId,
+  title,
+  workspaceRoot,
+  repositoryIdentity: null,
+  createdAt: "2026-10-23T12:00:00.000Z",
+  updatedAt: "2026-10-23T12:00:00.000Z",
+});
+
 function setup(canAnswer = true) {
   state.answers = [];
   state.canAnswer = canAnswer;
+  state.primaryEnvironmentId = environmentId;
+  state.projects = [project("alpha-service", "/srv/alpha-service")];
   state.installations = [
     {
       installationId: "inst-coordinator",
@@ -101,6 +120,7 @@ it("names the real project and plugin and answers for exactly that project", asy
   await expect
     .element(screen.getByText(/Project Coordinator will be able to see alpha-service's threads/))
     .toBeVisible();
+  await expect.element(screen.getByText("/srv/alpha-service", { exact: true })).toBeVisible();
 
   await userEvent.click(screen.getByRole("button", { name: "Add alpha-service" }));
   await vi.waitFor(() =>
@@ -112,10 +132,41 @@ it("names the real project and plugin and answers for exactly that project", asy
           generation: "gen-1",
           projectId,
           decision: "grant",
+          shown: { title: "alpha-service", workspaceRoot: "/srv/alpha-service" },
         },
       },
     ]),
   );
+});
+
+it("names the environment of a project that is not local", async () => {
+  setup();
+  state.primaryEnvironmentId = "environment-laptop";
+  await using screen = await render(<Card />);
+  await expect.element(screen.getByText("build-box: /srv/alpha-service")).toBeVisible();
+});
+
+it("answers for what it shows after a project changes while the card is open", async () => {
+  setup();
+  await using screen = await render(<Card />);
+  await expect.element(screen.getByText("/srv/alpha-service", { exact: true })).toBeVisible();
+
+  state.projects = [project("Sandbox", "/srv/sandbox")];
+  await screen.rerender(<Card />);
+  await expect.element(screen.getByText("/srv/sandbox", { exact: true })).toBeVisible();
+  await userEvent.click(screen.getByRole("button", { name: "Add Sandbox" }));
+  await vi.waitFor(() =>
+    expect(state.answers).toMatchObject([
+      { input: { shown: { title: "Sandbox", workspaceRoot: "/srv/sandbox" } } },
+    ]),
+  );
+});
+
+it("shows no card for a project this client does not know", async () => {
+  setup();
+  state.projects = [];
+  await using screen = await render(<Card />);
+  await expect.element(screen.getByRole("group")).not.toBeInTheDocument();
 });
 
 it("offers no answer to a session that cannot manage access", async () => {
