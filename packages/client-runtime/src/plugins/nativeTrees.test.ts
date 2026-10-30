@@ -22,6 +22,7 @@ interface Thread {
   readonly id: ThreadId;
   readonly environmentId: EnvironmentId;
   readonly lineage: { readonly parentThreadId: ThreadId | null };
+  readonly launchedFrom?: { readonly threadId: ThreadId };
   readonly projectId?: ProjectId;
   readonly pluginOwner?: { readonly installationId: string; readonly treeId: string };
 }
@@ -36,6 +37,10 @@ const owned = (id: string, projectId: string, environmentId = local): Thread => 
   ...thread(id, environmentId),
   projectId: ProjectId.make(projectId),
   pluginOwner: { installationId: "inst-1", treeId: "projects" },
+});
+const launched = (id: string, from: string, environmentId = local): Thread => ({
+  ...thread(id, environmentId),
+  launchedFrom: { threadId: ThreadId.make(from) },
 });
 const exclusiveSource = (
   environmentId: EnvironmentId,
@@ -90,6 +95,7 @@ function layout(input: {
   readonly sources: ReadonlyArray<PluginTreeSource>;
   readonly threads: ReadonlyArray<Thread>;
   readonly parked?: ReadonlyArray<Thread>;
+  readonly settled?: ReadonlyArray<Thread>;
   readonly folds?: ReadonlyArray<string>;
   readonly route?: Thread;
   readonly emptyProjects?: boolean;
@@ -101,6 +107,7 @@ function layout(input: {
     sources: input.sources,
     threads: input.threads,
     liveThreadKeys: new Set(input.threads.map(key).filter((entry) => !parked.has(entry))),
+    ...(input.settled === undefined ? {} : { settledThreadKeys: new Set(input.settled.map(key)) }),
     // Both environments' "app" projects are one logical project to the host.
     project: (environmentId, projectId) =>
       projectId === "missing"
@@ -150,7 +157,7 @@ describe("pluginTreeFamilyRoots", () => {
   const listed = (id: string, root: string, environmentId = local) => ({
     id: ThreadId.make(id),
     environmentId,
-    lineage: { rootThreadId: ThreadId.make(root) },
+    lineage: { rootThreadId: ThreadId.make(root), parentThreadId: null },
   });
 
   it("loads a missing worker through its nearest listed ancestor, across headings and missing rows", () => {
@@ -243,6 +250,30 @@ describe("pluginTreeFamilyRoots", () => {
         { environmentId: remote, nodes },
       ]),
     ).toEqual(new Set([`${local}:coordinator`]));
+  });
+
+  it("loads what an exclusive tree places, for the settled workers it leaves out", () => {
+    const threads = [
+      { ...listed("heading", "heading"), projectId: ProjectId.make("shelf") },
+      { ...listed("row", "row-root"), projectId: ProjectId.make("shelf") },
+      { ...owned("owned", "shelf"), lineage: { rootThreadId: "owned", parentThreadId: null } },
+      { ...listed("loose", "loose"), projectId: ProjectId.make("shelf") },
+      { ...listed("elsewhere", "elsewhere", remote), projectId: ProjectId.make("shelf") },
+    ].map((entry) => ({
+      ...entry,
+      lineage: {
+        ...entry.lineage,
+        rootThreadId: ThreadId.make(entry.lineage.rootThreadId),
+      },
+    }));
+    const nodes = [conversation("n-heading", "shelf", { threadId: "heading" }), placed("n", "row")];
+    const roots = (exclusive: boolean) =>
+      pluginTreeFamilyRoots({
+        sources: [exclusiveSource(local, nodes, exclusive)],
+        threads,
+      }).map((ref) => ref.threadId);
+    expect(roots(true).toSorted()).toEqual(["heading", "owned", "row-root"]);
+    expect(roots(false)).toEqual([]);
   });
 
   it("keeps a loaded family mounted while its placed workers are still missing from the shell", () => {
@@ -704,6 +735,79 @@ describe("buildPluginTreeLayout with owned project conversations", () => {
       pluginOwner: { installationId: "inst-2", treeId: "projects" },
     };
     expect(outline(layout({ sources: [exclusiveSource(local)], threads: [foreign] }))).toEqual([]);
+  });
+
+  it("shelves settled threads related to the tree, by lineage or launch, and nothing else", () => {
+    const main = owned("shelf-main", "shelf");
+    const rowParent = thread("row-parent");
+    const worker = thread("worker", local, "shelf-main");
+    const nested = thread("nested", local, "worker");
+    const underPlacedRow = thread("under-row", local, "row-parent");
+    const launchedWorker = {
+      ...launched("launched", "shelf-main"),
+      projectId: ProjectId.make("x"),
+    };
+    const launchedChain = launched("launched-chain", "launched");
+    const placedSettled = thread("placed-settled", local, "shelf-main");
+    const unrelated = thread("unrelated");
+    const unrelatedChild = launched("unrelated-child", "unrelated");
+    const loop = launched("loop", "loop-back");
+    const loopBack = launched("loop-back", "loop");
+    // Thread ids are environment-local, so another environment's parent is no relation.
+    const foreign = launched("foreign", "shelf-main", remote);
+    const settled = [
+      worker,
+      nested,
+      underPlacedRow,
+      launchedWorker,
+      launchedChain,
+      placedSettled,
+      unrelated,
+      unrelatedChild,
+      loop,
+      loopBack,
+      foreign,
+    ];
+    const live = thread("live-worker", local, "shelf-main");
+    const liveUnderSettled = thread("live-under-settled", local, "worker");
+    const result = layout({
+      sources: [
+        exclusiveSource(local, [placed("n-row", "row-parent"), placed("n-kept", "placed-settled")]),
+        exclusiveSource(remote),
+      ],
+      threads: [main, rowParent, live, liveUnderSettled, ...settled],
+      parked: settled,
+      settled,
+    });
+    expect([...result.shelvedKeys].toSorted()).toEqual(
+      [launchedWorker, launchedChain, nested, underPlacedRow, worker].map(key).toSorted(),
+    );
+    // A placed row stays put, and a live thread outlives its shelved parent's row.
+    expect(outline(result)).toEqual([
+      '- 2: ["row-parent","placed-settled"]',
+      'shelf 2: ["live-worker","live-under-settled"]',
+    ]);
+    for (const shelved of result.shelvedKeys) expect(result.placedKeys.has(shelved)).toBe(false);
+  });
+
+  it("keeps settled threads as followers outside exclusive trees and for hosts without a shelf", () => {
+    const main = owned("shelf-main", "shelf");
+    const worker = thread("worker", local, "shelf-main");
+    const open = layout({
+      sources: [exclusiveSource(local, [], false), exclusiveSource(remote)],
+      threads: [main, worker],
+      parked: [worker],
+      settled: [worker],
+    });
+    expect(outline(open)).toEqual(['shelf 1: ["worker"]']);
+    expect(open.shelvedKeys.size).toBe(0);
+    const unshelved = layout({
+      sources: [exclusiveSource(local)],
+      threads: [main, worker],
+      parked: [worker],
+    });
+    expect(outline(unshelved)).toEqual(['shelf 1: ["worker"]']);
+    expect(unshelved.shelvedKeys.size).toBe(0);
   });
 
   it("orders an exclusive tree's projects across environments by their latest activity", () => {

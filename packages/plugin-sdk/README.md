@@ -221,6 +221,10 @@ the host verifies its creation receipt. Ownership gives no extra authority.
 Activity hides it only while this client can offer that installation's tree with
 current project access; disabling or removing the plugin restores normal shelves.
 Exclusive trees retain owned conversations even if a snapshot omits them.
+On web and desktop, a settled thread an exclusive tree omits moves to T3's Settled
+section at the bottom when its lineage parent or `launchedFrom` chain reaches a
+thread the tree places, so stop listing settled workers to shelve them; a listed
+row stays in the tree. Unrelated settled threads stay in Activity.
 Search and native Archive remain available.
 
 `threads.unarchive({ threadId })` restores a thread this installation created,

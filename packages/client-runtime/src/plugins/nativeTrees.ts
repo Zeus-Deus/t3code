@@ -21,6 +21,7 @@ interface PluginTreeThread {
   readonly id: ThreadId;
   readonly environmentId: EnvironmentId;
   readonly lineage: { readonly parentThreadId: ThreadId | null };
+  readonly launchedFrom?: { readonly threadId: ThreadId } | undefined;
   readonly projectId?: ProjectId;
   readonly pluginOwner?: PluginThreadOwner | undefined;
 }
@@ -140,7 +141,8 @@ export interface PluginTreeSource {
   readonly conversations?: boolean;
   /**
    * Set when the serving installation holds ui.native-tree-projects. Its own main conversations
-   * always show as headings, whatever the snapshot left out; an exclusive tree lists nothing else.
+   * always show as headings, whatever the snapshot left out; an exclusive tree lists only those,
+   * what it places, and their followers and settled shelf.
    */
   readonly projects?: {
     readonly installationId: string;
@@ -186,11 +188,11 @@ export function pluginTreeConversationThreadKeys(
 /** Families needed for placed references the shell omitted, anchored by listed ancestors. */
 export function pluginTreeFamilyRoots(input: {
   readonly sources: ReadonlyArray<PluginTreeSource>;
-  readonly threads: ReadonlyArray<{
-    readonly id: ThreadId;
-    readonly environmentId: EnvironmentId;
-    readonly lineage: { readonly rootThreadId: ThreadId };
-  }>;
+  readonly threads: ReadonlyArray<
+    PluginTreeThread & {
+      readonly lineage: { readonly rootThreadId: ThreadId };
+    }
+  >;
   /** Unmerged shell keys keep a loaded family's mount alive. */
   readonly shellThreadKeys?: ReadonlySet<string>;
 }): ReadonlyArray<ScopedThreadRef> {
@@ -226,6 +228,24 @@ export function pluginTreeFamilyRoots(input: {
           }
         }
         parentId = parent.parentId;
+      }
+    }
+    // The shell leaves idle workers out, so the settled ones an exclusive tree omits, which no
+    // node above names, only reach its shelf through the families of what it places.
+    if (source.projects?.exclusive !== true) continue;
+    const namedThreadIds = new Set(
+      source.nodes.flatMap(
+        (node) =>
+          (node.kind === "thread" ? node.threadId : conversationThreadId(source, node)) ?? [],
+      ),
+    );
+    for (const thread of input.threads) {
+      if (
+        thread.environmentId === source.environmentId &&
+        (namedThreadIds.has(thread.id) || ownsThread(source, thread))
+      ) {
+        const ref = scopeThreadRef(source.environmentId, thread.lineage.rootThreadId);
+        roots.set(scopedThreadKey(ref), ref);
       }
     }
   }
@@ -308,6 +328,8 @@ export function buildPluginTreeLayout<TProject, TThread extends PluginTreeThread
   readonly threads: ReadonlyArray<TThread>;
   /** Threads that belong in the list rather than on a shelf when the tree leaves them out. */
   readonly liveThreadKeys: ReadonlySet<string>;
+  /** Settled threads an exclusive tree shelves instead of nesting; absent, they follow as rows. */
+  readonly settledThreadKeys?: ReadonlySet<string>;
   /** The host's logical project for an environment's project, or null when it has none. */
   readonly project: (
     environmentId: EnvironmentId,
@@ -323,6 +345,8 @@ export function buildPluginTreeLayout<TProject, TThread extends PluginTreeThread
   readonly sections: ReadonlyArray<PluginTreeSection<TProject, TThread>>;
   /** Threads the tree placed, directly or by following a placed parent. */
   readonly placedKeys: ReadonlySet<string>;
+  /** Settled threads an exclusive tree left out that still belong to it; never also placed. */
+  readonly shelvedKeys: ReadonlySet<string>;
 } {
   type Heading = HeadingNode<TProject, TThread>;
   type Thread = ThreadNode<TProject, TThread>;
@@ -527,11 +551,37 @@ export function buildPluginTreeLayout<TProject, TThread extends PluginTreeThread
     }
     return null;
   };
+  // Lineage or launch: the relationship the server accepts for nesting across projects.
+  const reachesTree = (thread: TThread): boolean => {
+    const seen = new Set([threadKey(thread)]);
+    const pending = [thread];
+    for (const current of pending) {
+      const launchedFrom = current.launchedFrom?.threadId;
+      for (const key of [
+        parentKey(current),
+        launchedFrom === undefined
+          ? null
+          : scopedThreadKey(scopeThreadRef(current.environmentId, launchedFrom)),
+      ]) {
+        if (key === null || seen.has(key)) continue;
+        if (treePlaced.has(key)) return true;
+        seen.add(key);
+        const next = threadsByKey.get(key);
+        if (next !== undefined) pending.push(next);
+      }
+    }
+    return false;
+  };
+  const shelvedKeys = new Set<string>();
   const followers = new Map<string, TThread[]>();
   const others: TThread[] = [];
   for (const thread of input.threads) {
     const key = threadKey(thread);
     if (treePlaced.has(key)) continue;
+    if (exclusive && input.settledThreadKeys?.has(key) === true) {
+      if (reachesTree(thread)) shelvedKeys.add(key);
+      continue;
+    }
     if (anchorOf(thread) === null) {
       if (input.liveThreadKeys.has(key)) others.push(thread);
       continue;
@@ -539,9 +589,19 @@ export function buildPluginTreeLayout<TProject, TThread extends PluginTreeThread
     placedKeys.add(key);
   }
   const otherKeys = new Set(others.map(threadKey));
+  // A live thread under a shelved one hangs from the nearest ancestor that kept a row.
+  const rowParentKey = (thread: TThread) => {
+    const seen = new Set<string>();
+    let cursor = parentKey(thread);
+    while (cursor !== null && shelvedKeys.has(cursor) && !seen.has(cursor)) {
+      seen.add(cursor);
+      cursor = parentKey(threadsByKey.get(cursor)!);
+    }
+    return cursor;
+  };
   for (const thread of input.threads) {
     const key = threadKey(thread);
-    const parent = parentKey(thread);
+    const parent = rowParentKey(thread);
     if (treePlaced.has(key) || parent === null) continue;
     // Followers hang under their direct parent; so do unplaced live threads among themselves.
     const follows = placedKeys.has(key) && (placedKeys.has(parent) || treePlaced.has(parent));
@@ -738,7 +798,7 @@ export function buildPluginTreeLayout<TProject, TThread extends PluginTreeThread
       ),
     );
   }
-  return { sections, placedKeys };
+  return { sections, placedKeys, shelvedKeys };
 }
 
 /** Thread keys in the order the tree shows them, for keyboard traversal and jump hints. */

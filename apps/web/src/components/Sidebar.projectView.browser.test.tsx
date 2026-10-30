@@ -61,6 +61,9 @@ const data = vi.hoisted(() => {
     menus: [] as string[][],
     menuChoice: null as string | null,
     archived: [] as unknown[],
+    // Older settled threads the server counts per project, and the pages each read asked for.
+    olderCount: 0,
+    olderPageReads: [] as Array<{ environmentId: string; pages: number }>,
   };
   return {
     read: () => snapshot,
@@ -204,10 +207,49 @@ vi.mock("../state/projects", async (original) => ({
   ...(await original<object>()),
   environmentProjects: { projectConfigsReadyAtom: Atom.make(true) },
 }));
-vi.mock("../state/threads", async (original) => ({
-  ...(await original<object>()),
-  threadEnvironment: { updateMetadata: {} },
-}));
+vi.mock("../state/threads", async (original) => {
+  const actual = await original<typeof import("../state/threads")>();
+  const shelf = Atom.family((key: string) => {
+    const scopes = JSON.parse(key) as Array<{
+      scope: { environmentId: string };
+      pages: number;
+    }>;
+    return Atom.make((get) => {
+      get.addFinalizer(data.subscribe(() => get.refreshSelf()));
+      const before = "2026-01-01T00:00:00.000Z";
+      return new Map(
+        scopes.map(({ scope, pages }) => {
+          if (pages > 0) {
+            data.read().olderPageReads.push({ environmentId: scope.environmentId, pages });
+          }
+          return [
+            scope.environmentId,
+            {
+              older: {
+                before,
+                beforeMs: Date.parse(before),
+                counts: new Map([[ProjectId.make("p1"), data.read().olderCount]]),
+              },
+              pages: {
+                reads: [],
+                frontier: pages > 0 ? null : { settledAt: before },
+                status: "ready",
+              },
+            },
+          ];
+        }),
+      );
+    });
+  });
+  return {
+    ...actual,
+    threadEnvironment: { updateMetadata: {} },
+    olderSettledThreads: {
+      ...actual.olderSettledThreads,
+      shelfAtom: (scopes: unknown) => shelf(JSON.stringify(scopes)),
+    },
+  };
+});
 vi.mock("../state/shell", async (original) => ({
   ...(await original<object>()),
   environmentSnapshotAtom: Atom.family((environmentId: string) =>
@@ -795,6 +837,8 @@ function setupTree(input: {
     trees: new Map(input.trees),
     treeRevision: 0,
     treeReads: [],
+    olderCount: 0,
+    olderPageReads: [],
   });
   window.localStorage.setItem(
     "t3code:sidebar:view",
@@ -1016,10 +1060,12 @@ describe("Sidebar plugin tree", () => {
     await expect
       .element(page.getByText("Couldn't load Focus. It may be incomplete."))
       .toBeVisible();
-    // Its children follow it here too; "loose" and the settled shelf stay in Activity.
+    // Its children follow it here too; "loose" and the unrelated settled thread stay in Activity.
     await expect.poll(rowTitles).toEqual(["launched", "worker"]);
     expect(sectionNames()).toEqual(["project:repo:app"]);
-    expect(page.getByTestId("sidebar-settled-shelf-toggle").elements()).toHaveLength(0);
+    await expect
+      .element(page.getByTestId("sidebar-settled-shelf-toggle"))
+      .toHaveTextContent("Settled0");
     expect(page.getByText("Start a project.").elements()).toHaveLength(0);
 
     // Removing it from the view is the native archive of the main thread alone.
@@ -1034,6 +1080,109 @@ describe("Sidebar plugin tree", () => {
     // Disabled, the plugin returns its conversation to Activity.
     await act(() => data.update({ installations: [ownedTreePlugin(false)] }));
     await expect.poll(rowTitles).toEqual(["launched", "loose", "main"]);
+  });
+
+  it("shelves settled threads an exclusive tree leaves out, as Activity shows them", async () => {
+    const main = {
+      ...thread("main", laptop, "p1"),
+      pluginOwner: { installationId: "inst-projects", treeId: "focus" },
+    };
+    const worker = thread("worker", laptop, "p1", {
+      ...settled,
+      source: { ...main.source, creationSource: "mcp" },
+      lineage: { rootThreadId: main.id, parentThreadId: main.id, relationshipToParent: "subagent" },
+    });
+    // Another project, no lineage: only its launch ties it to the tree.
+    const launched = thread("launched", laptop, "p9", {
+      ...settled,
+      launchedFrom: { threadId: main.id },
+    });
+    const kept = thread("kept", laptop, "p1", settled);
+    const unrelated = thread("unrelated", laptop, "p1", settled);
+    const trees = (...nodes: PluginTreeNode[]) =>
+      new Map([
+        [laptop, nodes],
+        [server, []],
+      ]);
+    setupTree({
+      threads: [main, worker, launched, kept, unrelated],
+      route: null,
+      trees: trees(treeThread("kept", kept.id)),
+    });
+    data.update({ installations: [ownedTreePlugin(true, ["p1", "p9"])] });
+    await using _screen = await renderSidebar();
+
+    await expect.poll(rowTitles).toEqual(["kept"]);
+    const shelf = page.getByTestId("sidebar-settled-shelf-toggle");
+    await expect.element(shelf).toHaveTextContent("Settled2");
+    await userEvent.click(shelf);
+    await expect.poll(rowTitles).toEqual(["kept", "launched", "worker"]);
+    const rows = page.getByTestId("thread-row").elements();
+    expect(rows.map((row) => row.getAttribute("data-variant"))).toEqual([
+      "project",
+      "slim",
+      "slim",
+    ]);
+    expect(rows[1]?.getAttribute("data-action")).toBe("unsettle");
+
+    // Unsettled and listed again, it returns to the tree.
+    const unsettledWorker = { ...worker, settledOverride: null, settledAt: null };
+    await act(() =>
+      data.update({
+        threads: [main, unsettledWorker, launched, kept, unrelated],
+        trees: trees(treeThread("kept", kept.id), treeThread("worker", worker.id)),
+        treeRevision: 1,
+      }),
+    );
+    await expect.poll(rowTitles).toEqual(["kept", "worker", "launched"]);
+    await expect.element(shelf).toHaveTextContent("Settled1");
+
+    // Activity keeps the unrelated thread it always had, and still leaves out the tree's own.
+    await userEvent.click(page.getByRole("button", { name: "Toggle Focus view", exact: true }));
+    await expect.poll(rowTitles).toEqual(["kept", "launched", "unrelated"]);
+    await expect.element(shelf).toHaveTextContent("Settled3");
+  });
+
+  it("reads older settled pages for an exclusive tree only on request, without counting them", async () => {
+    const main = {
+      ...thread("main", laptop, "p1"),
+      pluginOwner: { installationId: "inst-projects", treeId: "focus" },
+    };
+    const worker = thread("worker", laptop, "p1", {
+      ...settled,
+      launchedFrom: { threadId: main.id },
+    });
+    setupTree({
+      threads: [main, worker],
+      route: null,
+      trees: new Map([[laptop, []]]),
+    });
+    data.update({ installations: [ownedTreePlugin()], olderCount: 30 });
+    using mountRows = vi.spyOn(threadFamilies, "mountRows").mockReturnValue(() => {});
+    await using _screen = await renderSidebar();
+
+    const shelf = page.getByTestId("sidebar-settled-shelf-toggle");
+    await expect.element(shelf).toHaveTextContent("Settled1");
+    await userEvent.click(shelf);
+    await expect.poll(rowTitles).toEqual(["worker"]);
+    // Nothing reads ahead to fill the shelf, and the server's count is not claimed as rows.
+    const older = page.getByRole("treeitem", { name: "Show older", exact: true });
+    await expect.element(older).toBeVisible();
+    expect(data.read().olderPageReads).toEqual([]);
+    expect(mountRows).not.toHaveBeenCalled();
+
+    data.update({ olderPageReads: [] });
+    await userEvent.click(older);
+    await expect
+      .poll(() => data.read().olderPageReads)
+      .toContainEqual({
+        environmentId: laptop,
+        pages: 1,
+      });
+    // The last page matched nothing here: the offer ends instead of spinning on it.
+    await act(() => data.update({ olderCount: 0 }));
+    await expect.element(older).not.toBeInTheDocument();
+    await expect.element(shelf).toHaveTextContent("Settled1");
   });
 
   it("gives an owned conversation back to Activity once its project's grant is revoked", async () => {
