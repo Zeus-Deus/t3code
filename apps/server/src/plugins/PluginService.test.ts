@@ -414,6 +414,12 @@ const makeFixture = Effect.fn("PluginServiceTest.fixture")(function* (realWorker
     ),
     Layer.provide(
       Layer.mock(Projects.ProjectService)({
+        getIdentity: () =>
+          Effect.sync(() =>
+            projectExists
+              ? Option.some({ title: "Test", workspaceRoot: directory, ...projectIdentity })
+              : Option.none(),
+          ),
         getShell: (id) =>
           Effect.succeed(
             projectExists
@@ -7040,6 +7046,37 @@ it.effect.each([
       projectAccessManager,
     );
     expect(result.grants.projectIds).toContain(requestedProject);
+  }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect("refuses a grant when the folder changes during authorization", () =>
+  Effect.gen(function* () {
+    const f = yield* projectAccessFixture;
+    const before = yield* f.store.read;
+    const moving: PluginActor = {
+      ...projectAccessManager,
+      authorize: () =>
+        Effect.sync(() => f.setProjectIdentity({ workspaceRoot: "/projects/moved" })),
+    };
+    expect(yield* f.plugins.answerProjectAccess(f.answer, moving).pipe(Effect.flip)).toMatchObject({
+      reason: "permission_denied",
+      code: "project_changed",
+    });
+    expect(yield* f.store.read).toBe(before);
+    expect(f.calls).toEqual([]);
+  }).pipe(Effect.provide(base()), Effect.scoped),
+);
+
+it.effect("refuses a grant when the folder changes just before the store update", () =>
+  Effect.gen(function* () {
+    const f = yield* projectAccessFixture;
+    f.beforeUpdate(() =>
+      Effect.sync(() => f.setProjectIdentity({ workspaceRoot: "/projects/moved" })),
+    );
+    expect(
+      yield* f.plugins.answerProjectAccess(f.answer, projectAccessManager).pipe(Effect.flip),
+    ).toMatchObject({ code: "project_changed" });
+    expect(f.calls).toEqual([]);
   }).pipe(Effect.provide(base()), Effect.scoped),
 );
 

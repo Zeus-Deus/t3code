@@ -272,7 +272,8 @@ to do yet" and do not expect it to resolve. Calling again never adds a card: eac
 project has one request, which moves to the conversation that asked last, and a
 thread shows one card at a time. An installation keeps at most 64 requests. Past
 that, a new request drops your oldest unanswered one, whose card disappears until
-you ask again; **Not now** answers are kept. After **Not now** the status stays `declined` until the
+you ask again; **Not now** answers are kept. Stop asking at your own limit:
+flooding requests only loses your own cards. After **Not now** the status stays `declined` until the
 person next writes in the conversation you ask from.
 Other handlers (views, status, trees and events) get `permission_denied`; so does
 a conversation you do not own. An undeclared or `agentCallable` action is

@@ -1816,7 +1816,6 @@ const make = Effect.gen(function* () {
     actor: PluginActor,
     change: (
       record: PluginStore.StoredInstallation,
-      project: { readonly title: string; readonly workspaceRoot: string },
     ) => Effect.Effect<readonly [A, PluginStore.StoredInstallation], PluginError>,
   ) {
     if (
@@ -1833,7 +1832,6 @@ const make = Effect.gen(function* () {
         .pipe(Effect.mapError(() => pluginPermissionDenied()));
       if (Option.isNone(project) || project.value.id !== input.projectId)
         return yield* pluginPermissionDenied();
-      const { title, workspaceRoot } = project.value;
       yield* actor.authorize?.() ?? Effect.void;
       const result = yield* store
         .tryUpdate((state) =>
@@ -1846,7 +1844,7 @@ const make = Effect.gen(function* () {
               assertPluginActive(present(record), input.generation) ??
               assertNotTransitioning(input.installationId);
             if (denied) return yield* denied;
-            const [value, next] = yield* change(record, { title, workspaceRoot });
+            const [value, next] = yield* change(record);
             return [
               value,
               next === record
@@ -1891,7 +1889,7 @@ const make = Effect.gen(function* () {
   const answerProjectAccessRequest = Effect.fn("PluginService.answerProjectAccessRequest")(
     function* (input: PluginProjectAccessAnswerInput, actor: PluginActor) {
       const declinedAt = yield* now;
-      return yield* changeProjectAccess(input, actor, (record, project) => {
+      return yield* changeProjectAccess(input, actor, (record) => {
         const requests = record.installation.projectAccessRequests ?? [];
         const request = requests.find(
           (entry) => entry.projectId === input.projectId && entry.declinedAt === undefined,
@@ -1906,31 +1904,38 @@ const make = Effect.gen(function* () {
               message: "This project request has already been answered.",
             }),
           );
-        if (
-          input.decision === "grant" &&
-          (project.title !== input.shown.title ||
-            project.workspaceRoot !== input.shown.workspaceRoot)
-        )
-          return Effect.fail(
-            new PluginError({
-              reason: "permission_denied",
-              code: "project_changed",
-              message:
-                "This project's name or folder changed. Check the card again before adding it.",
-            }),
-          );
         const remaining =
           input.decision === "grant"
             ? requests.filter((entry) => entry !== request)
             : requests.map((entry) => (entry === request ? { ...entry, declinedAt } : entry));
         const answered = input.decision === "grant" ? withProject(record, input.projectId) : record;
-        return Effect.succeed([
+        const result = [
           request,
           {
             ...answered,
             installation: { ...answered.installation, projectAccessRequests: remaining },
           },
-        ] as const);
+        ] as const;
+        if (input.decision === "decline") return Effect.succeed(result);
+        // Project writes don't touch this store, so compare here, after authorization and under
+        // its lock. A later rename is ordered after the grant, like one a moment after it.
+        return projects.getIdentity(input.projectId).pipe(
+          Effect.mapError(() => pluginPermissionDenied()),
+          Effect.filterOrFail(
+            (project) =>
+              Option.isSome(project) &&
+              project.value.title === input.shown.title &&
+              project.value.workspaceRoot === input.shown.workspaceRoot,
+            () =>
+              new PluginError({
+                reason: "permission_denied",
+                code: "project_changed",
+                message:
+                  "This project's name or folder changed. Check the card again before adding it.",
+              }),
+          ),
+          Effect.as(result),
+        );
       });
     },
     lifecycle,
