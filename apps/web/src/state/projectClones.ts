@@ -64,6 +64,11 @@ export function waitForProjectClone(
   });
 }
 
+/** Resolves once the checkout exists, through any failures and retries, or null once removed. */
+export function waitForProjectCloneDone(ref: ScopedProjectRef) {
+  return waitForProjectClone(ref, ({ phase }) => phase === "done");
+}
+
 const silencedCloneToasts = new Set<string>();
 
 /**

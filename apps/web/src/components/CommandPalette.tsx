@@ -123,7 +123,7 @@ import {
   usePrimaryEnvironmentId,
 } from "../state/environments";
 import { useProjects, useServerConfigs, useThreadShells, waitForProject } from "../state/entities";
-import { waitForProjectClone } from "../state/projectClones";
+import { waitForProjectClone, waitForProjectCloneDone } from "../state/projectClones";
 import { resolveThreadActionProjectRef, startNewThreadFromContext } from "../lib/chatThreadActions";
 import {
   appendBrowsePathSegment,
@@ -2162,13 +2162,16 @@ function OpenCommandPaletteDialog(props: {
         addProjectCloneFlow.remoteUrl,
       );
       // Closing ends the choice, so the palette stays open until the checkout exists. A failed
-      // clone already toasts and keeps its retry, so the person can back out from here.
+      // clone already toasts and keeps its retry, so it releases the palette for the person to
+      // back out, while the choice keeps waiting for a retry to finish.
+      void waitForProjectClone(projectRef, ({ phase }) => phase !== "running").then(() =>
+        setIsRemoteProjectCloning(false),
+      );
       const reached = await cloneReachedChoice(
         projectPicker,
         pickerAttempt,
-        waitForProjectClone(projectRef, ({ phase }) => phase !== "running"),
+        waitForProjectCloneDone(projectRef),
       );
-      setIsRemoteProjectCloning(false);
       if (!reached) return;
       await waitForProject(projectRef, 3_000).catch(() => null);
       deliverProject(pickerAttempt, projectRef);
