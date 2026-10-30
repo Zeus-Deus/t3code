@@ -49,6 +49,7 @@ import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as Metrics from "../observability/Metrics.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
+import * as DueHint from "../scheduling/DueHint.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import { isMissedFixedTimeRun, isSameSchedule, nextScheduledRunAt } from "./Schedule.ts";
 import {
@@ -426,7 +427,13 @@ export const layer = Layer.effect(
     const activeRuns = yield* Ref.make<ReadonlySet<ScheduledTaskId>>(new Set());
     // Notifications re-emit the full list; slow subscribers need only the newest dirty signal.
     const changesPubSub = yield* PubSub.sliding<void>(1);
-    const notifyChanged = PubSub.publish(changesPubSub, undefined).pipe(Effect.asVoid);
+    const dueTasks = DueHint.make();
+    const pendingWebhooks = DueHint.make();
+    // Every scheduled_tasks write that can change next_run_at, enabled or run state notifies.
+    const notifyChanged = dueTasks.invalidate.pipe(
+      Effect.andThen(PubSub.publish(changesPubSub, undefined)),
+      Effect.asVoid,
+    );
 
     const selectAllRows = () =>
       sql<ScheduledTaskRow>`
@@ -972,6 +979,28 @@ export const layer = Layer.effect(
 
     const runDueTasks = Effect.fn("ScheduledTaskService.runDueTasks")(function* () {
       const now = yield* localNow;
+      const nowMs = DateTime.toEpochMillis(now);
+      if (yield* dueTasks.isIdle(nowMs)) return;
+      const readVersion = yield* dueTasks.version;
+      const [next] = yield* sql<{ next_run_at: string | null }>`
+        SELECT MIN(next_run_at) AS next_run_at FROM scheduled_tasks
+        WHERE enabled = 1 AND next_run_at IS NOT NULL AND last_run_status <> 'running'
+      `.pipe(
+        NodeSqliteClient.readOnly,
+        Effect.mapError((cause) => taskError("Could not list schedule tasks.", { cause })),
+      );
+      // Compare as text like listDueTasks: expanded years (`+011533-…`) sort first but parse far ahead.
+      const nextRunAt = next?.next_run_at ?? null;
+      if (nextRunAt === null || nextRunAt > iso(now)) {
+        const nextDueAt =
+          nextRunAt === null
+            ? Option.some(Infinity)
+            : DateTime.make(nextRunAt).pipe(Option.map(DateTime.toEpochMillis));
+        if (Option.isSome(nextDueAt) && nextDueAt.value > nowMs) {
+          yield* dueTasks.record(readVersion, nextDueAt.value, nowMs);
+        }
+        return;
+      }
       const tasks = yield* listDueTasks(now).pipe(
         Effect.mapError((cause) => taskError("Could not list schedule tasks.", { cause })),
       );
@@ -1695,6 +1724,8 @@ export const layer = Layer.effect(
 
     const triggerWebhook: ScheduledTaskService["Service"]["triggerWebhook"] = (request) =>
       triggerWebhookUnobserved(request).pipe(
+        // Accepted deliveries may have queued a coalescing window.
+        Effect.ensuring(pendingWebhooks.invalidate),
         Effect.tapError(() => observeDelivery(request, "error", undefined, undefined)),
         Metrics.withMetrics({ timer: Metrics.webhookDeliveryDuration }),
         Effect.withSpan("ScheduledTaskService.triggerWebhook", {
@@ -2090,10 +2121,19 @@ export const layer = Layer.effect(
 
     const dispatchPending = Effect.fn("ScheduledTaskService.dispatchPendingWebhooks")(function* () {
       const now = DateTime.toEpochMillis(yield* localNow);
+      if (yield* pendingWebhooks.isIdle(now)) return;
+      const readVersion = yield* pendingWebhooks.version;
       yield* sql`UPDATE scheduled_task_webhook_pending SET state = 'dispatching' WHERE state = 'pending' AND due_at <= ${now}`;
       const tasks = yield* sql<{ task_id: ScheduledTaskId }>`
         SELECT DISTINCT task_id FROM scheduled_task_webhook_pending WHERE state IN ('dispatching', 'running', 'completed', 'failed')
       `.pipe(NodeSqliteClient.readOnly);
+      // Workers can leave rows behind to retry, so keep polling while any are claimed.
+      if (tasks.length === 0) {
+        const [next] = yield* sql<{ due_at: number | null }>`
+          SELECT MIN(due_at) AS due_at FROM scheduled_task_webhook_pending WHERE state = 'pending'
+        `.pipe(NodeSqliteClient.readOnly);
+        yield* pendingWebhooks.record(readVersion, next?.due_at ?? Infinity, now);
+      }
       yield* Effect.forEach(
         tasks,
         ({ task_id: taskId }) =>

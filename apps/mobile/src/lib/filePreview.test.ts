@@ -222,6 +222,11 @@ vi.mock("react-native-safe-area-context", () => ({
 }));
 vi.mock("expo-haptics", () => ({ selectionAsync: async () => {} }));
 vi.mock("expo-image", () => ({}));
+// Plugin menus and cards read live plugin state, which a file-preview render doesn't need.
+vi.mock("../features/plugins/AssistantMessagePluginMenu", () => ({
+  AssistantMessagePluginMenu: ({ children }: { readonly children: ReactNode }) => children,
+}));
+vi.mock("../features/plugins/ThreadPluginCard", () => ({ ThreadPluginCard: () => null }));
 vi.mock("uniwind", () => ({}));
 vi.mock("../components/ui/Dialog", () => ({}));
 vi.mock("../components/ui/NativePresentation", () => ({

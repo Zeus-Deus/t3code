@@ -31,6 +31,7 @@ import {
 const SINGLE_ENVIRONMENT_PATHS: ReadonlySet<string> = new Set([
   "/settings/providers",
   "/settings/plugins",
+  "/settings/secrets",
 ]);
 
 function RestoreDeviceDefaultsButton({ onRestored }: { onRestored: () => void }) {
