@@ -26,6 +26,7 @@ import {
   type EnvironmentMachineKind,
   type FilesystemBrowseEntry,
   type KeybindingCommand,
+  type ProjectCloneSnapshot,
   type ScopedProjectRef,
   type SourceControlDiscoveryResult,
   type SourceControlRepositoryInfo,
@@ -183,15 +184,28 @@ export function resolveAddProjectEntry(
   return { kind: "choose-source", environmentId: defaultEnvironmentId };
 }
 
+/** Splits the add-project environments by whether a project choice can take their projects. */
+export function scopeAddProjectEnvironments<T extends { readonly environmentId: EnvironmentId }>(
+  options: ReadonlyArray<T>,
+  choice: Pick<CommandPaletteProjectChoice, "environmentIds"> | null,
+): { readonly offered: ReadonlyArray<T>; readonly excluded: ReadonlyArray<T> } {
+  if (choice === null) return { offered: options, excluded: [] };
+  const isOffered = (option: T) => choice.environmentIds.includes(option.environmentId);
+  return {
+    offered: options.filter(isOffered),
+    excluded: options.filter((option) => !isOffered(option)),
+  };
+}
+
 export interface ProjectPickerAttempt {
   readonly choice: CommandPaletteProjectChoice;
   readonly epoch: number;
 }
 
 /**
- * The palette's live project choice. An add-folder awaits its create, so it holds an attempt that
- * lapses when the palette closes, returns to its root, takes another choice, or leaves a view;
- * a lapsed attempt delivers nothing, and the choice stays live for another pick.
+ * The palette's live project choice. Adding a project awaits its create or clone, so it holds an
+ * attempt that lapses when the palette closes, returns to its root, takes another choice, or
+ * leaves a view; a lapsed attempt delivers nothing, and the choice stays live for another pick.
  */
 export function createProjectPicker() {
   let live: CommandPaletteProjectChoice | null = null;
@@ -219,6 +233,18 @@ export function createProjectPicker() {
 }
 
 export type ProjectPicker = ReturnType<typeof createProjectPicker>;
+
+/**
+ * Whether a clone may reach its choice: a clone's project exists before its checkout does, so it
+ * waits for the clone to finish, and the attempt must outlive that wait.
+ */
+export async function cloneReachedChoice(
+  picker: ProjectPicker,
+  attempt: ProjectPickerAttempt,
+  clone: Promise<Pick<ProjectCloneSnapshot, "phase"> | null>,
+): Promise<boolean> {
+  return (await clone)?.phase === "done" && picker.isLive(attempt);
+}
 
 export interface CommandPaletteThreadContentMatch {
   readonly source: "user" | "assistant";

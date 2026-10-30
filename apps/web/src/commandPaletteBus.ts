@@ -12,12 +12,15 @@ export interface CommandPaletteLinkedThreads {
 }
 
 /**
- * Lists these environments' projects and the add-folder flow, and hands the project the person
- * chose or added to `choose` instead of opening a draft. Closing the palette chooses nothing.
+ * Lists these environments' projects and the Add project flow, and hands the project the person
+ * chose, created or cloned to `choose` instead of opening a draft. Closing the palette chooses
+ * nothing.
  */
 export interface CommandPaletteProjectChoice {
   readonly environmentIds: ReadonlyArray<EnvironmentId>;
   readonly choose: (project: ScopedProjectRef) => void;
+  /** Why a connected environment outside `environmentIds` is not offered; shown beside it. */
+  readonly unavailableReason?: string;
 }
 
 export interface CommandPaletteOpenDetail {

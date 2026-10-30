@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from "vite-plus/test";
-import { EnvironmentId, ProjectId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  ProjectId,
+  ProviderInstanceId,
+  ThreadId,
+  type ProjectClonePhase,
+} from "@t3tools/contracts";
 import type { Thread } from "../types";
 import { makeThreadFixture } from "../test-fixtures";
 import {
@@ -10,10 +16,13 @@ import {
   filterCommandPaletteGroups,
   reduceCommandPaletteUiState,
   resolveAddProjectEntry,
+  scopeAddProjectEnvironments,
+  cloneReachedChoice,
   createCommandPaletteSearchState,
   reduceCommandPaletteSearchState,
   type CommandPaletteUiState,
   createProjectPicker,
+  type ProjectPicker,
 } from "./CommandPalette.logic";
 
 describe("linked pull request thread navigation", () => {
@@ -920,6 +929,34 @@ describe("returning from file and content search", () => {
   });
 });
 
+describe("scopeAddProjectEnvironments", () => {
+  const local = EnvironmentId.make("environment-local");
+  const remote = EnvironmentId.make("environment-remote");
+  const options = [{ environmentId: local }, { environmentId: remote }];
+
+  it("leaves the ordinary flow every environment", () => {
+    expect(scopeAddProjectEnvironments(options, null)).toEqual({ offered: options, excluded: [] });
+  });
+
+  it("skips the environment step when a choice leaves one, and reports the rest", () => {
+    const { offered, excluded } = scopeAddProjectEnvironments(options, {
+      environmentIds: [remote],
+    });
+    expect(resolveAddProjectEntry(offered, offered[0]?.environmentId ?? null)).toEqual({
+      kind: "choose-source",
+      environmentId: remote,
+    });
+    expect(excluded).toEqual([{ environmentId: local }]);
+  });
+
+  it("keeps the environment step when a choice leaves several", () => {
+    const { offered } = scopeAddProjectEnvironments(options, {
+      environmentIds: [local, remote],
+    });
+    expect(resolveAddProjectEntry(offered, local)).toEqual({ kind: "choose-environment" });
+  });
+});
+
 describe("createProjectPicker", () => {
   const environmentId = EnvironmentId.make("environment-remote");
   const project = { environmentId, projectId: ProjectId.make("project-1") };
@@ -973,5 +1010,60 @@ describe("createProjectPicker", () => {
     const next = picker.attempt(choice);
     expect(next && picker.deliver(next, project)).toBe(true);
     expect(choose).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("cloneReachedChoice", () => {
+  const environmentId = EnvironmentId.make("environment-local");
+  const project = { environmentId, projectId: ProjectId.make("project-1") };
+
+  const pending = () => {
+    const picker = createProjectPicker();
+    const choose = vi.fn();
+    const choice = { environmentIds: [environmentId], choose };
+    picker.set(choice);
+    const attempt = picker.attempt(choice);
+    if (attempt === null) throw new Error("expected an attempt");
+    let resolve: (clone: { readonly phase: ProjectClonePhase } | null) => void = () => {};
+    const clone = new Promise<{ readonly phase: ProjectClonePhase } | null>((settle) => {
+      resolve = settle;
+    });
+    return {
+      picker,
+      choose,
+      attempt,
+      reached: cloneReachedChoice(picker, attempt, clone),
+      resolve: (settled: Awaited<typeof clone>) => resolve(settled),
+    };
+  };
+
+  it("lets a finished clone through to its live choice", async () => {
+    const { picker, choose, attempt, reached, resolve } = pending();
+    resolve({ phase: "done" });
+    await expect(reached).resolves.toBe(true);
+    expect(picker.deliver(attempt, project)).toBe(true);
+    expect(choose).toHaveBeenCalledExactlyOnceWith(project);
+  });
+
+  it.each([{ phase: "failed" as const }, { phase: "cancelled" as const }, null])(
+    "stops a clone that ended as %j, leaving the choice live",
+    async (clone) => {
+      const { attempt, picker, reached, resolve } = pending();
+      resolve(clone);
+      await expect(reached).resolves.toBe(false);
+      expect(picker.isLive(attempt)).toBe(true);
+    },
+  );
+
+  it.each([
+    ["closing", (picker: ProjectPicker) => picker.set(null)],
+    ["backing out", (picker: ProjectPicker) => picker.leaveView()],
+  ])("drops a clone that finishes after %s", async (_name, cancel) => {
+    const { picker, choose, attempt, reached, resolve } = pending();
+    cancel(picker);
+    resolve({ phase: "done" });
+    await expect(reached).resolves.toBe(false);
+    expect(picker.deliver(attempt, project)).toBe(false);
+    expect(choose).not.toHaveBeenCalled();
   });
 });

@@ -123,6 +123,7 @@ import {
   usePrimaryEnvironmentId,
 } from "../state/environments";
 import { useProjects, useServerConfigs, useThreadShells, waitForProject } from "../state/entities";
+import { waitForProjectClone } from "../state/projectClones";
 import { resolveThreadActionProjectRef, startNewThreadFromContext } from "../lib/chatThreadActions";
 import {
   appendBrowsePathSegment,
@@ -141,6 +142,7 @@ import {
   dispatchCommandPalette,
   getCommandPaletteReturnFocus,
   useCommandPaletteMount,
+  useLiveProjectChoice,
   useCommandPaletteStore,
 } from "../commandPaletteStore";
 import { PULL_REQUESTS_PANEL_REF, useRightPanelStore } from "../rightPanelStore";
@@ -185,6 +187,8 @@ import {
   createCommandPaletteSearchState,
   type CommandPaletteGroup,
   resolveAddProjectEntry,
+  scopeAddProjectEnvironments,
+  cloneReachedChoice,
   type AddProjectCloneFlow,
   type AddProjectEnvironmentOption,
   buildPaletteRemoteSourceReadiness,
@@ -506,11 +510,10 @@ function OpenCommandPaletteDialog(props: {
   const [isPickingProjectFolder, setIsPickingProjectFolder] = useState(false);
   // Set only by the choose-project intent and dropped on returning to the root list, so an
   // ordinary add-project flow never hands its project to a caller.
-  const [projectChoice, setProjectChoice] = useState<CommandPaletteProjectChoice | null>(() => {
-    const choice = props.openIntent?.kind === "choose-project" ? props.openIntent.choice : null;
-    projectPicker.set(choice);
-    return choice;
-  });
+  const [projectChoice, setProjectChoice] = useState<CommandPaletteProjectChoice | null>(() =>
+    props.openIntent?.kind === "choose-project" ? props.openIntent.choice : null,
+  );
+  useLiveProjectChoice(projectPicker, projectChoice);
   const selectProjectChoice = (choice: CommandPaletteProjectChoice | null) => {
     projectPicker.set(choice);
     setProjectChoice(choice);
@@ -553,7 +556,7 @@ function OpenCommandPaletteDialog(props: {
     ]),
   );
 
-  const addProjectEnvironmentOptions = (() => {
+  const allAddProjectEnvironmentOptions = (() => {
     const options = environments
       .filter((environment) => canCreateProjectInEnvironment(environment.connection.phase))
       .map((environment): AddProjectEnvironmentOption => {
@@ -581,6 +584,9 @@ function OpenCommandPaletteDialog(props: {
 
     return options;
   })();
+  // Scoped here so every Add project step offers only what a project choice can take.
+  const { offered: addProjectEnvironmentOptions, excluded: excludedAddProjectEnvironmentOptions } =
+    scopeAddProjectEnvironments(allAddProjectEnvironmentOptions, projectChoice);
   const defaultAddProjectEnvironmentId =
     addProjectEnvironmentOptions.find((option) => option.isConnected)?.environmentId ?? null;
   const wslAddProjectEnvironmentOption =
@@ -753,9 +759,8 @@ function OpenCommandPaletteDialog(props: {
       browseNavigation.invalidate();
       // A replaced or closed session must not report its in-flight lookup.
       cloneLookupGeneration.current += 1;
-      projectPicker.set(null);
     },
-    [browseNavigation, projectPicker],
+    [browseNavigation],
   );
 
   const openProjectFromSearch = async (project: (typeof projects)[number]) => {
@@ -874,6 +879,8 @@ function OpenCommandPaletteDialog(props: {
     setAddProjectCloneFlow(null);
     setNewProjectFlow(null);
     projectPicker.leaveView();
+    // A chooser's clone holds this until it ends, which the view it lapsed for should not inherit.
+    if (projectChoice !== null) setIsRemoteProjectCloning(false);
     if (viewStack.length <= 1) {
       setAddProjectEnvironmentId(null);
       selectProjectChoice(null);
@@ -1055,7 +1062,11 @@ function OpenCommandPaletteDialog(props: {
       });
     }
 
-    return [{ value: `sources:${environmentId}`, label: "Sources", items: sourceItems }];
+    return [
+      { value: `sources:${environmentId}`, label: "Sources", items: sourceItems },
+      // With no environment step to explain them, the excluded ones are explained here.
+      ...(addProjectEntry.kind === "choose-source" ? unavailableEnvironmentGroups : []),
+    ];
   };
 
   const startAddProjectSourceSelection = (environmentId: EnvironmentId): void => {
@@ -1115,12 +1126,33 @@ function OpenCommandPaletteDialog(props: {
     (option) => option.isConnected && newProjectsRootFor(option.environmentId) !== null,
   );
 
+  const unavailableReason = projectChoice?.unavailableReason;
+  const unavailableEnvironmentGroups: ReadonlyArray<CommandPaletteGroup> =
+    unavailableReason === undefined || excludedAddProjectEnvironmentOptions.length === 0
+      ? []
+      : [
+          {
+            value: "unavailable-environments",
+            label: "Unavailable",
+            items: excludedAddProjectEnvironmentOptions.map((option) => ({
+              ...buildEnvironmentItem(
+                option,
+                `action:add-project:unavailable:${option.environmentId}`,
+                () => {},
+              ),
+              description: unavailableReason,
+              disabled: true,
+            })),
+          },
+        ];
+
   const addProjectEnvironmentGroups = [
     {
       value: "environments",
       label: "Environments",
       items: addProjectEnvironmentItems,
     },
+    ...unavailableEnvironmentGroups,
   ];
 
   const openConnectionSettings = () => {
@@ -1194,48 +1226,19 @@ function OpenCommandPaletteDialog(props: {
     setOpen(false);
   };
 
-  const openChosenProjectFolderFlow = async (
-    folderEnvironments: ReadonlyArray<AddProjectEnvironmentOption>,
-  ): Promise<void> => {
-    const only = folderEnvironments.length === 1 ? folderEnvironments[0] : undefined;
-    if (only !== undefined) {
-      await startAddProjectBrowse(only.environmentId);
-      return;
-    }
-    pushPaletteView({
-      addonIcon: <FolderPlusIcon className={ADDON_ICON_CLASS} />,
-      groups: [
-        {
-          value: "environments",
-          label: "Environments",
-          items: folderEnvironments.map((option) =>
-            buildEnvironmentItem(
-              option,
-              `choose-project:environment:${option.environmentId}`,
-              (environmentId) => void startAddProjectBrowse(environmentId),
-            ),
-          ),
-        },
-      ],
-    });
-  };
-
   const buildChooseProjectGroups = (
     choice: CommandPaletteProjectChoice,
   ): CommandPaletteView["groups"] => {
     const offered = (environmentId: EnvironmentId) => choice.environmentIds.includes(environmentId);
-    const folderEnvironments = addProjectEnvironmentOptions.filter(
-      (option) => option.isConnected && offered(option.environmentId),
-    );
-    const addFolder: CommandPaletteActionItem = {
+    const addProject: CommandPaletteActionItem = {
       kind: "action",
-      value: "choose-project:add-folder",
-      searchTerms: ["add project", "folder", "directory", "browse"],
+      value: "choose-project:add-project",
+      searchTerms: ["add project", "folder", "directory", "browse", "clone", "repository", "git"],
       title: "Add project",
       icon: <FolderPlusIcon className={ITEM_ICON_CLASS} />,
       keepOpen: true,
       run: async () => {
-        await openChosenProjectFolderFlow(folderEnvironments);
+        openAddProjectFlow();
       },
     };
     const projectItems = buildNewThreadInProjectItems({
@@ -1260,7 +1263,7 @@ function OpenCommandPaletteDialog(props: {
         value: "projects",
         label: "Projects",
         items: [
-          ...(folderEnvironments.length > 0 ? [addFolder] : []),
+          ...(addProjectEnvironmentOptions.length > 0 ? [addProject] : []),
           // Closing ends the choice, so these close only after delivering.
           ...projectItems.map((item) => ({ ...item, keepOpen: true })),
         ],
@@ -1912,7 +1915,10 @@ function OpenCommandPaletteDialog(props: {
       return;
     }
     if (attempt !== null) {
-      deliverProject(attempt, scopeProjectRef(input.environmentId, projectId));
+      const projectRef = scopeProjectRef(input.environmentId, projectId);
+      // The choice names the project, so it waits for the client to know it.
+      await waitForProject(projectRef, 3_000).catch(() => null);
+      deliverProject(attempt, projectRef);
       return;
     }
 
@@ -1961,6 +1967,8 @@ function OpenCommandPaletteDialog(props: {
     if (newProjectFlow === null || !canSubmitNewProject || newProjectSubmittingRef.current) {
       return;
     }
+    const pickerAttempt = projectPicker.attempt(projectChoice);
+    if (projectChoice !== null && pickerAttempt === null) return;
     newProjectSubmittingRef.current = true;
     setIsCreatingNewProject(true);
     const created = await settlePromise(() =>
@@ -1968,12 +1976,21 @@ function OpenCommandPaletteDialog(props: {
         environmentId: newProjectFlow.environmentId,
         name: newProjectName,
         publishTo: newProjectPublishes ? newProjectPublishTarget : null,
+        ...(pickerAttempt === null
+          ? {}
+          : {
+              openProject: (projectRef: ScopedProjectRef) =>
+                deliverProject(pickerAttempt, projectRef),
+            }),
       }),
     );
     newProjectSubmittingRef.current = false;
     setIsCreatingNewProject(false);
     if (created._tag === "Failure") throw squashAtomCommandFailure(created);
-    if (created.value) setOpen(false);
+    // A lapsed attempt stays where the person went; a delivered one has already closed.
+    if (created.value && (pickerAttempt === null || projectPicker.isLive(pickerAttempt))) {
+      setOpen(false);
+    }
   }
 
   function getDefaultCloneParentPath(environmentId: EnvironmentId): string {
@@ -2109,6 +2126,9 @@ function OpenCommandPaletteDialog(props: {
       return;
     }
 
+    const pickerAttempt = projectPicker.attempt(projectChoice);
+    if (projectChoice !== null && pickerAttempt === null) return;
+
     const projectId = newProjectId();
     setIsRemoteProjectCloning(true);
     const startResult = await startProjectClone({
@@ -2122,7 +2142,7 @@ function OpenCommandPaletteDialog(props: {
         destinationPath,
       },
     });
-    setIsRemoteProjectCloning(false);
+    if (pickerAttempt === null || startResult._tag === "Failure") setIsRemoteProjectCloning(false);
     if (startResult._tag === "Failure") {
       if (!isAtomCommandInterrupted(startResult)) {
         toastManager.add(
@@ -2135,12 +2155,30 @@ function OpenCommandPaletteDialog(props: {
       }
       return;
     }
+    const projectRef = scopeProjectRef(addProjectCloneFlow.environmentId, projectId);
+    if (pickerAttempt !== null) {
+      void suggestAppAccessForRemote(
+        addProjectCloneFlow.environmentId,
+        addProjectCloneFlow.remoteUrl,
+      );
+      // Closing ends the choice, so the palette stays open until the checkout exists. A failed
+      // clone already toasts and keeps its retry, so the person can back out from here.
+      const reached = await cloneReachedChoice(
+        projectPicker,
+        pickerAttempt,
+        waitForProjectClone(projectRef, ({ phase }) => phase !== "running"),
+      );
+      setIsRemoteProjectCloning(false);
+      if (!reached) return;
+      await waitForProject(projectRef, 3_000).catch(() => null);
+      deliverProject(pickerAttempt, projectRef);
+      return;
+    }
     setOpen(false);
     void suggestAppAccessForRemote(
       addProjectCloneFlow.environmentId,
       addProjectCloneFlow.remoteUrl,
     );
-    const projectRef = scopeProjectRef(addProjectCloneFlow.environmentId, projectId);
     await waitForProject(projectRef, 3_000).catch(() => null);
     const navigationResult = await settlePromise(() => handleNewThread(projectRef));
     if (navigationResult._tag === "Failure") {

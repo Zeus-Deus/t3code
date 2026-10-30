@@ -1,15 +1,17 @@
 import { EnvironmentId, ProjectId } from "@t3tools/contracts";
 import { compileResolvedKeybindingsConfig } from "@t3tools/shared/keybindings";
+import { StrictMode } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { userEvent } from "vite-plus/test/browser";
 
 import { render } from "../../test/render";
-import { openCommandPalette } from "../commandPaletteBus";
+import { openCommandPalette, type CommandPaletteProjectChoice } from "../commandPaletteBus";
 import {
   dispatchCommandPalette,
   isCommandPaletteMounted,
   useCommandPaletteMount,
   useCommandPaletteStore,
+  useLiveProjectChoice,
 } from "../commandPaletteStore";
 import { createProjectPicker } from "../components/CommandPalette.logic";
 import { installCommandPaletteCommands } from "./commandPaletteCommands";
@@ -81,7 +83,31 @@ function MountedProjectChooser(props: { picker: ReturnType<typeof createProjectP
   return null;
 }
 
+function ChooserView(props: {
+  picker: ReturnType<typeof createProjectPicker>;
+  choice: CommandPaletteProjectChoice;
+}) {
+  useLiveProjectChoice(props.picker, props.choice);
+  return null;
+}
+
 describe("project chooser lifetime in the shared palette store", () => {
+  it("stays live through StrictMode's replayed cleanup, and ends with its view", async () => {
+    setup();
+    const picker = createProjectPicker();
+    const choice = { environmentIds: [EnvironmentId.make("env-picker")], choose: vi.fn() };
+    await using screen = await render(
+      <StrictMode>
+        <ChooserView picker={picker} choice={choice} />
+      </StrictMode>,
+      // Under the test router, StrictMode does not replay the mount this test is about.
+      { router: false },
+    );
+    expect(picker.attempt(choice)).not.toBeNull();
+    await screen.rerender(<div />);
+    expect(picker.attempt(choice)).toBeNull();
+  });
+
   it("invalidates pending work synchronously on close, replacement or mode change", async () => {
     setup();
     const picker = createProjectPicker();

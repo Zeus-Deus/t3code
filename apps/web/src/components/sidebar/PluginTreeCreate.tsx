@@ -24,8 +24,8 @@ import { toastManager } from "../ui/toast";
 import { useSidebarViewSourceStore } from "./sidebarView";
 
 /**
- * A plugin tree's "new" row: the person picks an existing project or adds a folder, grants the
- * plugin that project if it lacks it, and the tree's declared action runs with only its id.
+ * A plugin tree's "new" row: the person picks an existing project or adds one, grants the plugin
+ * that project if it lacks it, and the tree's declared action runs with only its id.
  * Shown while some connected environment's installation offers it.
  */
 export function PluginTreeCreate(props: { readonly choice: PluginSidebarTreeOption }) {
@@ -101,6 +101,7 @@ export function PluginTreeCreate(props: { readonly choice: PluginSidebarTreeOpti
             chooseProject: {
               environmentIds: [...offeredBy],
               choose: (projectRef) => void addProject(projectRef),
+              unavailableReason: `${choice.pluginName} isn't available here`,
             },
           })
         }
