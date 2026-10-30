@@ -2126,6 +2126,8 @@ function OpenCommandPaletteDialog(props: {
       return;
     }
 
+    // A failed clone keeps waiting on its retry, so a new clone must lapse it to be the answer.
+    projectPicker.leaveView();
     const pickerAttempt = projectPicker.attempt(projectChoice);
     if (projectChoice !== null && pickerAttempt === null) return;
 
@@ -2142,7 +2144,12 @@ function OpenCommandPaletteDialog(props: {
         destinationPath,
       },
     });
-    if (pickerAttempt === null || startResult._tag === "Failure") setIsRemoteProjectCloning(false);
+    if (
+      pickerAttempt === null ||
+      (startResult._tag === "Failure" && projectPicker.isLive(pickerAttempt))
+    ) {
+      setIsRemoteProjectCloning(false);
+    }
     if (startResult._tag === "Failure") {
       if (!isAtomCommandInterrupted(startResult)) {
         toastManager.add(
@@ -2164,9 +2171,9 @@ function OpenCommandPaletteDialog(props: {
       // Closing ends the choice, so the palette stays open until the checkout exists. A failed
       // clone already toasts and keeps its retry, so it releases the palette for the person to
       // back out, while the choice keeps waiting for a retry to finish.
-      void waitForProjectClone(projectRef, ({ phase }) => phase !== "running").then(() =>
-        setIsRemoteProjectCloning(false),
-      );
+      void waitForProjectClone(projectRef, ({ phase }) => phase !== "running").then(() => {
+        if (projectPicker.isLive(pickerAttempt)) setIsRemoteProjectCloning(false);
+      });
       const reached = await cloneReachedChoice(
         projectPicker,
         pickerAttempt,

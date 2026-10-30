@@ -1066,4 +1066,14 @@ describe("cloneReachedChoice", () => {
     expect(picker.deliver(attempt, project)).toBe(false);
     expect(choose).not.toHaveBeenCalled();
   });
+
+  it("gives the choice to a newer clone when an earlier one finishes first", async () => {
+    const { picker, choose, attempt, reached, resolve } = pending();
+    picker.leaveView();
+    const newer = picker.attempt(attempt.choice);
+    resolve({ phase: "done" });
+    await expect(reached).resolves.toBe(false);
+    expect(newer && picker.isLive(newer)).toBe(true);
+    expect(choose).not.toHaveBeenCalled();
+  });
 });
