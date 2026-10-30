@@ -151,6 +151,15 @@ const make = Effect.gen(function* () {
     if (projection.thread.worktreePath !== null) {
       return yield* alreadyInWorktree(projection.thread.worktreePath);
     }
+    if (
+      projection.thread.pluginOwner !== undefined &&
+      projection.thread.lineage.parentThreadId === null
+    ) {
+      return yield* failure(
+        "invalid_request",
+        `Thread '${scope.thread.threadId}' is a project conversation and stays in the project checkout. Start a worker thread for work in a worktree.`,
+      );
+    }
     if (projection.thread.archivedAt !== null) {
       return yield* failure(
         "invalid_request",

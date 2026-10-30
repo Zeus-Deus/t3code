@@ -46,6 +46,14 @@ export interface PluginTreeOwnerGrant {
 }
 
 /**
+ * A plugin tree's own top-level thread. Read from the thread alone, so its checkout lock holds
+ * before the environment reports its plugins. Threads nested under it have a parent.
+ */
+export const isPluginTreeConversation = (
+  thread: Pick<PluginTreeThread, "lineage" | "pluginOwner">,
+) => thread.pluginOwner !== undefined && thread.lineage.parentThreadId === null;
+
+/**
  * Whether Activity leaves a thread to the tree that owns it: a main thread whose owning
  * installation offers that tree on its environment right now, with access to its project. Any
  * other thread, including one whose environment has not reported its plugins, stays in Activity.
@@ -55,7 +63,7 @@ export function isPluginTreeOwnedThread(
   grants: ReadonlyArray<PluginTreeOwnerGrant> | undefined,
 ): boolean {
   const owner = thread.pluginOwner;
-  if (owner === undefined || grants === undefined || thread.lineage.parentThreadId !== null) {
+  if (owner === undefined || grants === undefined || !isPluginTreeConversation(thread)) {
     return false;
   }
   return grants.some(

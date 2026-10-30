@@ -42,6 +42,7 @@ import { useStableCallback } from "../hooks/useStableCallback";
 import { useProjectScriptEditing } from "./chat/useProjectScriptEditing";
 import { RightPanelSurfaceContent } from "./chat/RightPanelSurfaceContent";
 import { usePendingThreadRequests } from "./chat/usePendingThreadRequests";
+import { isPluginTreeConversation } from "@t3tools/client-runtime/plugins";
 import { isScratchProject } from "@t3tools/client-runtime/state/projects";
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
 import {
@@ -290,6 +291,7 @@ import type { ExpandedImagePreview } from "./chat/ExpandedImagePreview";
 import { ThreadDetailsPanel } from "./chat/ThreadDetailsPanel";
 import { NoActiveThreadState } from "./NoActiveThreadState";
 import {
+  resolveCanOverrideServerThreadEnvMode,
   resolveEffectiveEnvMode,
   resolveLocalCheckoutBranchMismatch,
   shouldShowComposerContextStrip,
@@ -2146,13 +2148,16 @@ export default function ChatView(props: ChatViewProps) {
     draftThreadEnvMode: isLocalDraftThread ? draftThread?.envMode : undefined,
     preparingWorktree: isPreparingWorktree,
   });
-  const canOverrideServerThreadEnvMode = Boolean(
-    isServerThread &&
-    activeThread &&
-    activeMessageCount === 0 &&
-    activeThread.worktreePath === null &&
-    !envLocked,
-  );
+  // Sending reads envMode, so this also keeps a pending, draft or default worktree off the thread.
+  const projectCheckoutLocked = serverThread !== null && isPluginTreeConversation(serverThread);
+  const canOverrideServerThreadEnvMode = resolveCanOverrideServerThreadEnvMode({
+    isServerThread,
+    activeMessageCount,
+    activeWorktreePath,
+    envLocked,
+    projectCheckoutLocked,
+  });
+  const forceNewWorktree = multipleModelSelections !== null && !projectCheckoutLocked;
   if (
     !canOverrideServerThreadEnvMode &&
     (pendingServerThreadEnvModeEntry !== null || pendingServerThreadBranchEntry !== null)
@@ -3636,7 +3641,7 @@ export default function ChatView(props: ChatViewProps) {
                           {showComposerContextStrip && (
                             <div className="pointer-events-auto">
                               <BranchToolbar
-                                forceNewWorktree={multipleModelSelections !== null}
+                                forceNewWorktree={forceNewWorktree}
                                 ref={branchToolbarRef}
                                 environmentId={activeThread.environmentId}
                                 threadId={activeThread.id}
@@ -3657,6 +3662,7 @@ export default function ChatView(props: ChatViewProps) {
                                     }
                                   : {})}
                                 envLocked={envLocked}
+                                projectCheckoutLocked={projectCheckoutLocked}
                                 onComposerFocusRequest={scheduleComposerFocusStable}
                                 {...(canCheckoutPullRequestIntoThread
                                   ? { onCheckoutPullRequestRequest: openPullRequestDialogStable }
@@ -3725,7 +3731,7 @@ export default function ChatView(props: ChatViewProps) {
             <ThreadDetailsPanel
               anchor={threadPanelPopoverAnchorRef}
               handle={threadPanelPopoverHandle}
-              forceNewWorktree={multipleModelSelections !== null}
+              forceNewWorktree={forceNewWorktree}
               environmentId={activeThread.environmentId}
               threadId={activeThread.id}
               projectId={activeThread.projectId}
@@ -3750,6 +3756,7 @@ export default function ChatView(props: ChatViewProps) {
               gitCwd={gitCwd}
               isGitRepo={isGitRepo}
               envLocked={envLocked}
+              projectCheckoutLocked={projectCheckoutLocked}
               availableEnvironments={logicalProjectEnvironments}
               autoEnvironmentLabel={autoEnvironmentLabel}
               onAutoEnvironment={

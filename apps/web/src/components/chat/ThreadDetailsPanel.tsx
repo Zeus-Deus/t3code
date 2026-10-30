@@ -60,6 +60,7 @@ interface ThreadDetailsPanelProps extends Pick<
   gitCwd: string | null;
   isGitRepo: boolean;
   envLocked: boolean;
+  projectCheckoutLocked: boolean;
   availableEnvironments: readonly EnvironmentOption[];
   autoEnvironmentLabel?: string | undefined;
   onAutoEnvironment?: (() => void) | undefined;
@@ -110,6 +111,7 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
       ? { onActiveThreadBranchOverrideChange: props.onActiveThreadBranchOverrideChange }
       : {}),
     envLocked: props.envLocked,
+    projectCheckoutLocked: props.projectCheckoutLocked,
     forceNewWorktree: props.forceNewWorktree ?? false,
     onComposerFocusRequest: props.onComposerFocusRequest,
     ...(props.onCheckoutPullRequestRequest
