@@ -32,7 +32,55 @@ import {
   resolveAssistantMessageCopyState,
   type MessagesTimelineRow,
   workEntryDisplayLabel,
+  threadReadTargetId,
+  threadReadTargetEnvironmentId,
+  threadReadLabelPrefix,
 } from "./MessagesTimeline.logic";
+
+describe("thread tool targets", () => {
+  it.each(["t3_thread_read", "t3_thread_wait"])(
+    "identifies %s before output arrives",
+    (toolName) => {
+      const structuredPayload: OrchestrationV2TurnItem = {
+        id: TurnItemId.make("wait"),
+        threadId: ThreadId.make("coordinator"),
+        runId: null,
+        nodeId: null,
+        providerThreadId: null,
+        providerTurnId: null,
+        nativeItemRef: null,
+        parentItemId: null,
+        ordinal: 1,
+        status: "running",
+        title: null,
+        startedAt: null,
+        completedAt: null,
+        updatedAt: DateTime.makeUnsafe("2026-10-30T00:00:00Z"),
+        type: "dynamic_tool",
+        toolName,
+        input: { threadId: "worker" },
+      };
+      expect(threadReadTargetId({ structuredPayload })).toBe("worker");
+      expect(threadReadTargetEnvironmentId({ structuredPayload })).toBeNull();
+      expect(
+        threadReadTargetEnvironmentId({
+          structuredPayload: {
+            ...structuredPayload,
+            input: { threadId: "worker", environmentId: "remote" },
+          },
+        }),
+      ).toBe("remote");
+      expect(
+        threadReadTargetId({ structuredPayload: { ...structuredPayload, input: {} } }),
+      ).toBeNull();
+      expect(
+        threadReadLabelPrefix(
+          toolName === "t3_thread_wait" ? "Waiting for a T3 thread" : "Read a T3 thread",
+        ),
+      ).toBe(toolName === "t3_thread_wait" ? "Waiting for thread" : "Read thread");
+    },
+  );
+});
 
 describe("resolveAssistantMessageCopyState", () => {
   it("copies the rendered representation of Codex directives", () => {
