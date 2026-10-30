@@ -60,6 +60,8 @@ interface ThreadFixture {
   readonly worktreePath?: string | null;
   readonly archivedAt?: string | null;
   readonly deletedAt?: string | null;
+  readonly pluginOwner?: { readonly installationId: string; readonly treeId: string };
+  readonly lineage?: { readonly parentThreadId: ThreadId | null };
 }
 
 const makeProjection = (overrides: ThreadFixture = {}): OrchestrationV2ThreadProjection =>
@@ -72,6 +74,7 @@ const makeProjection = (overrides: ThreadFixture = {}): OrchestrationV2ThreadPro
       worktreePath: null,
       archivedAt: null,
       deletedAt: null,
+      lineage: { parentThreadId: null },
       ...overrides,
     },
   }) as OrchestrationV2ThreadProjection;
@@ -464,6 +467,25 @@ describe("t3_worktree_handoff", () => {
       expect(harness.createWorktree).not.toHaveBeenCalled();
     });
   });
+
+  it.effect(
+    "keeps a project conversation in the project checkout but lets its workers leave",
+    () => {
+      const pluginOwner = { installationId: "installation", treeId: "projects" };
+      const conversation = makeHarness({ thread: { pluginOwner } });
+      const worker = makeHarness({
+        thread: { pluginOwner, lineage: { parentThreadId: threadId } },
+      });
+      return Effect.gen(function* () {
+        const exit = yield* Effect.exit(runHandoff(conversation, { branch: "feature/side" }));
+        expectTypedFailure(exit, { _tag: "WorktreeMcpFailure", code: "invalid_request" });
+        expect(conversation.createWorktree).not.toHaveBeenCalled();
+
+        yield* runHandoff(worker, { branch: "feature/worker" });
+        expect(worker.createWorktree).toHaveBeenCalled();
+      });
+    },
+  );
 
   it.effect("rejects an existing branch with an actionable error naming its checkout", () => {
     const harness = makeHarness({ existingBranchWorktreePath: "/elsewhere/checkout" });

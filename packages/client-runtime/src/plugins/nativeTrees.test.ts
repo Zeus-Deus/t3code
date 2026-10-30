@@ -5,6 +5,7 @@ import { scopeThreadRef } from "../environment/scoped.ts";
 
 import {
   buildPluginTreeLayout,
+  isPluginTreeConversation,
   PLUGIN_TREE_OTHER_SECTION_KEY,
   pluginTreeNotice,
   pluginTreeFamilyRoots,
@@ -131,6 +132,19 @@ const outline = (result: ReturnType<typeof layout>) =>
       );
     return `${"  ".repeat(section.depth)}${title}${section.folded ? " (folded)" : ""} ${section.count}: ${JSON.stringify(rows(section.rows))}`;
   });
+
+describe("isPluginTreeConversation", () => {
+  const pluginOwner = { installationId: "installation", treeId: "projects" };
+  const parent = ThreadId.make("parent");
+
+  it.each([
+    ["an owned main thread", { pluginOwner, parentThreadId: null }, true],
+    ["a worker nested under one", { pluginOwner, parentThreadId: parent }, false],
+    ["an ordinary session", { pluginOwner: undefined, parentThreadId: null }, false],
+  ])("%s", (_name, { pluginOwner, parentThreadId }, expected) => {
+    expect(isPluginTreeConversation({ pluginOwner, lineage: { parentThreadId } })).toBe(expected);
+  });
+});
 
 describe("pluginTreeFamilyRoots", () => {
   const listed = (id: string, root: string, environmentId = local) => ({

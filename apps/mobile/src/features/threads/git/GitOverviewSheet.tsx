@@ -7,6 +7,7 @@ import {
   getGitActionDisabledReason,
   requiresDefaultBranchConfirmation,
 } from "@t3tools/client-runtime/state/vcs";
+import { isPluginTreeConversation } from "@t3tools/client-runtime/plugins";
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
 import {
@@ -294,7 +295,8 @@ function GitOverviewSheetContent(props: GitOverviewSheetProps) {
           icon="point.topleft.down.curvedto.point.bottomright.up"
           label="Branches & worktrees"
           description={
-            canChangeThreadBranch
+            canChangeThreadBranch &&
+            (selectedThread === null || !isPluginTreeConversation(selectedThread))
               ? "Switch branch, create branch, or move to a worktree"
               : "View branches and worktrees"
           }

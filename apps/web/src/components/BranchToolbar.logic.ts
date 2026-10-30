@@ -105,8 +105,10 @@ export function resolveCurrentWorkspaceLabel(activeWorktreePath: string | null):
 export function resolveLockedWorkspaceLabel(
   activeWorktreePath: string | null,
   effectiveEnvMode: EnvMode,
+  projectCheckoutLocked = false,
 ): string {
   if (activeWorktreePath) return "Worktree";
+  if (projectCheckoutLocked) return "Project checkout";
   return effectiveEnvMode === "worktree" ? resolveEnvModeLabel("worktree") : "Local checkout";
 }
 
@@ -166,6 +168,23 @@ export function resolveEffectiveEnvMode(input: {
     return draftThreadEnvMode === "worktree" ? "worktree" : "local";
   }
   return activeWorktreePath || preparingWorktree ? "worktree" : "local";
+}
+
+/** Whether an unsent server thread may still pick its workspace before the first send. */
+export function resolveCanOverrideServerThreadEnvMode(input: {
+  isServerThread: boolean;
+  activeMessageCount: number;
+  activeWorktreePath: string | null;
+  envLocked: boolean;
+  projectCheckoutLocked: boolean;
+}): boolean {
+  return (
+    input.isServerThread &&
+    input.activeMessageCount === 0 &&
+    input.activeWorktreePath === null &&
+    !input.envLocked &&
+    !input.projectCheckoutLocked
+  );
 }
 
 export function resolveDraftEnvModeAfterBranchChange(input: {

@@ -29,6 +29,7 @@ const PREVIOUS_WORKTREE_SELECT_VALUE = "previous-worktree";
 interface BranchToolbarEnvModeSelectorProps {
   forceNewWorktree?: boolean;
   envLocked: boolean;
+  projectCheckoutLocked?: boolean;
   effectiveEnvMode: EnvMode;
   activeWorktreePath: string | null;
   onEnvModeChange: (mode: EnvMode) => void;
@@ -40,6 +41,7 @@ interface BranchToolbarEnvModeSelectorProps {
 export const BranchToolbarEnvModeSelector = memo(function BranchToolbarEnvModeSelector({
   forceNewWorktree = false,
   envLocked,
+  projectCheckoutLocked = false,
   effectiveEnvMode,
   activeWorktreePath,
   onEnvModeChange,
@@ -71,6 +73,11 @@ export const BranchToolbarEnvModeSelector = memo(function BranchToolbarEnvModeSe
   };
 
   if (envLocked || forceNewWorktree) {
+    const lockedLabel = resolveLockedWorkspaceLabel(
+      activeWorktreePath,
+      effectiveEnvMode,
+      projectCheckoutLocked,
+    );
     const lockedRow = (
       <span
         className="inline-flex h-7 min-w-0 items-center gap-1 border border-transparent px-1.75 font-normal text-muted-foreground/70 text-xs sm:h-6"
@@ -84,9 +91,7 @@ export const BranchToolbarEnvModeSelector = memo(function BranchToolbarEnvModeSe
           <FolderIcon className="size-3" />
         )}
         <ComposerContextLabel>
-          {forceNewWorktree
-            ? resolveEnvModeLabel("worktree")
-            : resolveLockedWorkspaceLabel(activeWorktreePath, effectiveEnvMode)}
+          {forceNewWorktree ? resolveEnvModeLabel("worktree") : lockedLabel}
         </ComposerContextLabel>
       </span>
     );
@@ -95,9 +100,7 @@ export const BranchToolbarEnvModeSelector = memo(function BranchToolbarEnvModeSe
       <Tooltip>
         <TooltipTrigger render={lockedRow} />
         <TooltipPopup>
-          {forceNewWorktree
-            ? "Each model starts in its own worktree."
-            : resolveLockedWorkspaceLabel(activeWorktreePath, effectiveEnvMode)}
+          {forceNewWorktree ? "Each model starts in its own worktree." : lockedLabel}
         </TooltipPopup>
       </Tooltip>
     );

@@ -1,3 +1,4 @@
+import { isPluginTreeConversation } from "@t3tools/client-runtime/plugins";
 import { sanitizeFeatureBranchName } from "@t3tools/shared/git";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { useState } from "react";
@@ -31,7 +32,9 @@ export function GitBranchesSheet(_props: GitBranchesSheetProps) {
   const { selectedThreadCwd, selectedThreadWorktreePath } = useSelectedThreadWorktree();
   const gitState = useSelectedThreadGitState();
   const gitActions = useSelectedThreadGitActions();
-  const { canChangeThreadBranch } = gitActions;
+  const canChangeThreadBranch =
+    gitActions.canChangeThreadBranch &&
+    (selectedThread === null || !isPluginTreeConversation(selectedThread));
 
   const gitStatus = useEnvironmentQuery(
     selectedThread !== null && selectedThreadCwd !== null

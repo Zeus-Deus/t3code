@@ -95,6 +95,8 @@ interface BranchToolbarProps {
   autoEnvironmentLabel?: string | undefined;
   onAutoEnvironment?: (() => void) | undefined;
   envLocked: boolean;
+  /** A plugin tree's conversation: it stays where it is, whatever the send state or defaults. */
+  projectCheckoutLocked?: boolean;
   onCheckoutPullRequestRequest?: (reference: string) => void;
   onComposerFocusRequest?: () => void;
   /** Shown at the end of the composer strip, such as the new thread's permissions. */
@@ -147,6 +149,7 @@ interface RunContextSelectorProps {
   onAutoEnvironment?: (() => void) | undefined;
   envLocked: boolean;
   envModeLocked: boolean;
+  projectCheckoutLocked: boolean;
   environmentId: EnvironmentId;
   availableEnvironments: readonly EnvironmentOption[] | undefined;
   showEnvironmentPicker: boolean;
@@ -170,6 +173,7 @@ const RunContextSelector = memo(function RunContextSelector({
   onAutoEnvironment,
   envLocked,
   envModeLocked,
+  projectCheckoutLocked,
   environmentId,
   availableEnvironments,
   showEnvironmentPicker,
@@ -196,7 +200,7 @@ const RunContextSelector = memo(function RunContextSelector({
   const workspaceLabel = forceNewWorktree
     ? resolveEnvModeLabel("worktree")
     : envModeLocked
-      ? resolveLockedWorkspaceLabel(activeWorktreePath, effectiveEnvMode)
+      ? resolveLockedWorkspaceLabel(activeWorktreePath, effectiveEnvMode, projectCheckoutLocked)
       : effectiveEnvMode === "worktree"
         ? resolveEnvModeLabel("worktree")
         : resolveCurrentWorkspaceLabel(activeWorktreePath);
@@ -617,6 +621,7 @@ export const BranchToolbar = memo(function BranchToolbar({
   autoEnvironmentLabel,
   onAutoEnvironment,
   envLocked,
+  projectCheckoutLocked = false,
   onCheckoutPullRequestRequest,
   onComposerFocusRequest,
   availableEnvironments,
@@ -631,7 +636,8 @@ export const BranchToolbar = memo(function BranchToolbar({
   const activeProject = useProject(activeProjectRef);
   const activeWorktreePath = forceNewWorktree ? null : worktreePath;
   const effectiveEnvMode = forceNewWorktree ? "worktree" : envMode;
-  const envModeLocked = envLocked || (isServerThread && activeWorktreePath !== null);
+  const envModeLocked =
+    envLocked || projectCheckoutLocked || (isServerThread && activeWorktreePath !== null);
 
   const canUsePreviousWorktree = !isServerThread && !envModeLocked && !forceNewWorktree;
   const projectRefsForWorktreeLookup = canUsePreviousWorktree ? [activeProjectRef] : [];
@@ -704,6 +710,7 @@ export const BranchToolbar = memo(function BranchToolbar({
             onAutoEnvironment={onAutoEnvironment}
             envLocked={envLocked}
             envModeLocked={envModeLocked}
+            projectCheckoutLocked={projectCheckoutLocked}
             environmentId={environmentId}
             availableEnvironments={availableEnvironments}
             showEnvironmentPicker={showEnvironmentPicker}
@@ -727,6 +734,7 @@ export const BranchToolbar = memo(function BranchToolbar({
             threadId={threadId}
             {...(draftId ? { draftId } : {})}
             envLocked={envLocked}
+            branchLocked={projectCheckoutLocked}
             effectiveEnvModeOverride={effectiveEnvMode}
             {...(activeThreadBranchOverride !== undefined ? { activeThreadBranchOverride } : {})}
             {...(onActiveThreadBranchOverrideChange ? { onActiveThreadBranchOverrideChange } : {})}
@@ -754,6 +762,7 @@ export const BranchToolbar = memo(function BranchToolbar({
             onAutoEnvironment={onAutoEnvironment}
             envLocked={envLocked}
             envModeLocked={envModeLocked}
+            projectCheckoutLocked={projectCheckoutLocked}
             environmentId={environmentId}
             availableEnvironments={availableEnvironments}
             showEnvironmentPicker={showEnvironmentPicker}
@@ -802,6 +811,7 @@ export const BranchToolbar = memo(function BranchToolbar({
             <BranchToolbarEnvModeSelector
               forceNewWorktree={forceNewWorktree}
               envLocked={envModeLocked}
+              projectCheckoutLocked={projectCheckoutLocked}
               effectiveEnvMode={effectiveEnvMode}
               activeWorktreePath={activeWorktreePath}
               onEnvModeChange={onEnvModeChange}
@@ -822,6 +832,7 @@ export const BranchToolbar = memo(function BranchToolbar({
           threadId={threadId}
           {...(draftId ? { draftId } : {})}
           envLocked={envLocked}
+          branchLocked={projectCheckoutLocked}
           effectiveEnvModeOverride={effectiveEnvMode}
           {...(activeThreadBranchOverride !== undefined ? { activeThreadBranchOverride } : {})}
           {...(onActiveThreadBranchOverrideChange ? { onActiveThreadBranchOverrideChange } : {})}

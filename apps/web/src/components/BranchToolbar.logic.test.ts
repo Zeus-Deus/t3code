@@ -7,7 +7,9 @@ import {
   resolveDraftEnvModeAfterBranchChange,
   resolveEffectiveEnvMode,
   resolveBranchToolbarPrBranch,
+  resolveCanOverrideServerThreadEnvMode,
   resolveLocalCheckoutBranchMismatch,
+  resolveLockedWorkspaceLabel,
   sanitizeNewRefName,
   shouldIncludeBranchPickerItem,
 } from "./BranchToolbar.logic";
@@ -89,6 +91,31 @@ describe("resolveEffectiveEnvMode", () => {
         draftThreadEnvMode: undefined,
       }),
     ).toBe("local");
+  });
+});
+
+describe("resolveCanOverrideServerThreadEnvMode", () => {
+  const unsent = {
+    isServerThread: true,
+    activeMessageCount: 0,
+    activeWorktreePath: null,
+    envLocked: false,
+    projectCheckoutLocked: false,
+  };
+
+  it("lets an unsent session pick its workspace but never a project conversation", () => {
+    expect(resolveCanOverrideServerThreadEnvMode(unsent)).toBe(true);
+    expect(resolveCanOverrideServerThreadEnvMode({ ...unsent, projectCheckoutLocked: true })).toBe(
+      false,
+    );
+  });
+});
+
+describe("resolveLockedWorkspaceLabel", () => {
+  it("names the project checkout, and a conversation already in a worktree stays a worktree", () => {
+    expect(resolveLockedWorkspaceLabel(null, "local", true)).toBe("Project checkout");
+    expect(resolveLockedWorkspaceLabel("/repo/.t3/worktrees/a", "worktree", true)).toBe("Worktree");
+    expect(resolveLockedWorkspaceLabel(null, "local")).toBe("Local checkout");
   });
 });
 

@@ -40,7 +40,10 @@ import { threadEnvironment } from "../state/threads";
 import { useAtomCommand } from "../state/use-atom-command";
 import { vcsEnvironment } from "../state/vcs";
 import { cn } from "../lib/utils";
-import { THREAD_DETAILS_PANEL_ICON_CLASS } from "./chat/threadDetailsPanelStyles";
+import {
+  THREAD_DETAILS_PANEL_ICON_CLASS,
+  THREAD_DETAILS_PANEL_LOCKED_ROW_CLASS,
+} from "./chat/threadDetailsPanelStyles";
 import { ThreadDetailsPrRows } from "./chat/ThreadDetailsPrRows";
 import { parsePullRequestReference } from "@t3tools/client-runtime/pull-request-link-input";
 import { getSourceControlPresentation } from "../sourceControlPresentation";
@@ -82,6 +85,8 @@ interface BranchToolbarBranchSelectorProps {
   threadId: ThreadId;
   draftId?: DraftId;
   envLocked: boolean;
+  /** Shows the branch without a picker, so nothing here can move the thread's checkout. */
+  branchLocked?: boolean;
   effectiveEnvModeOverride?: "local" | "worktree";
   activeThreadBranchOverride?: string | null;
   onActiveThreadBranchOverrideChange?: (refName: string | null) => void;
@@ -104,6 +109,7 @@ export function BranchToolbarBranchSelector({
   threadId,
   draftId,
   envLocked,
+  branchLocked = false,
   effectiveEnvModeOverride,
   activeThreadBranchOverride,
   onActiveThreadBranchOverrideChange,
@@ -519,11 +525,11 @@ export function BranchToolbarBranchSelector({
     ref,
     () => ({
       open: () => {
-        if (isInitialBranchesLoadPending || isBranchActionPending) return;
+        if (branchLocked || isInitialBranchesLoadPending || isBranchActionPending) return;
         handleOpenChange(true);
       },
     }),
-    [handleOpenChange, isBranchActionPending, isInitialBranchesLoadPending],
+    [branchLocked, handleOpenChange, isBranchActionPending, isInitialBranchesLoadPending],
   );
 
   const triggerLabel = resolveBranchTriggerLabel({
@@ -568,6 +574,21 @@ export function BranchToolbarBranchSelector({
     prNumber === undefined
       ? ""
       : `#${prNumber}${displayedPr?.title.trim() ? `: ${displayedPr.title}` : ""}`;
+
+  const branchIcon = (
+    <GitBranchIcon
+      className={cn("size-3 shrink-0", displayMode === "panel" && THREAD_DETAILS_PANEL_ICON_CLASS)}
+    />
+  );
+  const branchLabel = (
+    <ComposerContextLabel displayMode={displayMode}>
+      <MiddleTruncate
+        value={triggerLabel}
+        variant={displayMode === "panel" ? "cap-aligned" : "default"}
+        className="w-full"
+      />
+    </ComposerContextLabel>
+  );
 
   function selectPickerItem(itemValue: string) {
     if (itemValue === checkoutPullRequestItemValue && prReference && onCheckoutPullRequestRequest) {
@@ -708,31 +729,33 @@ export function BranchToolbarBranchSelector({
           }}
           onContextMenu={(event) => handleBranchContextMenu(event, resolvedActiveBranch)}
         >
-          <ComboboxTrigger
-            render={
-              displayMode === "panel" ? (
-                <ThreadDetailsControl part="select" />
-              ) : (
-                <ComposerControl size="xs" />
-              )
-            }
-            className="min-w-0 max-w-full active:scale-100"
-            disabled={isInitialBranchesLoadPending || isBranchActionPending}
-          >
-            <GitBranchIcon
+          {branchLocked ? (
+            <span
               className={cn(
-                "size-3 shrink-0",
-                displayMode === "panel" && THREAD_DETAILS_PANEL_ICON_CLASS,
+                "inline-flex h-7 min-w-0 max-w-full items-center justify-start gap-1 rounded-md border border-transparent px-1.75 font-normal text-foreground/70 text-xs sm:h-6 dark:text-muted-foreground",
+                displayMode === "panel" && THREAD_DETAILS_PANEL_LOCKED_ROW_CLASS,
               )}
-            />
-            <ComposerContextLabel displayMode={displayMode}>
-              <MiddleTruncate
-                value={triggerLabel}
-                variant={displayMode === "panel" ? "cap-aligned" : "default"}
-                className="w-full"
-              />
-            </ComposerContextLabel>
-          </ComboboxTrigger>
+              data-composer-context-control
+            >
+              {branchIcon}
+              {branchLabel}
+            </span>
+          ) : (
+            <ComboboxTrigger
+              render={
+                displayMode === "panel" ? (
+                  <ThreadDetailsControl part="select" />
+                ) : (
+                  <ComposerControl size="xs" />
+                )
+              }
+              className="min-w-0 max-w-full active:scale-100"
+              disabled={isInitialBranchesLoadPending || isBranchActionPending}
+            >
+              {branchIcon}
+              {branchLabel}
+            </ComboboxTrigger>
+          )}
         </span>
         {displayMode === "panel" && prNumber !== undefined && prUrl !== undefined ? (
           <ThreadDetailsPrRows
