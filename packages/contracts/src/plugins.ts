@@ -181,7 +181,7 @@ export const PluginProjectAccessInput = Schema.Struct({
   actionId: identifier,
 });
 export type PluginProjectAccessInput = typeof PluginProjectAccessInput.Type;
-/** An unknown project id reads as "pending" too, so this says nothing about ungranted ids. */
+/** An unknown project id is stored and reads as "pending" too; nothing here reveals existence. */
 export const PluginProjectAccessStatus = Schema.Literals(["pending", "granted", "declined"]);
 export type PluginProjectAccessStatus = typeof PluginProjectAccessStatus.Type;
 export const PluginProjectAccessAnswerInput = Schema.Struct({
@@ -480,7 +480,7 @@ export const PluginProjectAccessRequest = Schema.Struct({
   declinedAt: Schema.optionalKey(IsoDateTime),
 });
 export type PluginProjectAccessRequest = typeof PluginProjectAccessRequest.Type;
-export const MAX_PLUGIN_PROJECT_ACCESS_REQUESTS = 1_000;
+export const MAX_PLUGIN_PROJECT_ACCESS_REQUESTS = 64;
 export const PluginInstallation = Schema.Struct({
   installationId: identifier,
   generation: identifier,

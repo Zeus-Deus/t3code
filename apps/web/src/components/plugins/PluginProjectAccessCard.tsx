@@ -7,12 +7,13 @@ import type {
   EnvironmentId,
   PluginInstallation,
   PluginProjectAccessRequest,
+  ProjectId,
   ScopedThreadRef,
 } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import { useState } from "react";
 
-import { useProject } from "../../state/entities";
+import { useProjects } from "../../state/entities";
 import { pluginEnvironment, usePluginCatalogue } from "../../state/plugins";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { Button } from "../ui/button";
@@ -29,11 +30,18 @@ interface PluginProjectAccess {
 export function usePluginProjectAccess(threadRef: ScopedThreadRef): PluginProjectAccess | null {
   const { environmentId, threadId } = threadRef;
   const { installations } = usePluginCatalogue(environmentId);
-  const access = pluginProjectAccessRequest(installations, threadId);
-  const project = useProject(
-    access === null ? null : { environmentId, projectId: access.request.projectId },
+  const projects = useProjects();
+  const find = (projectId: ProjectId) =>
+    projects.find((entry) => entry.environmentId === environmentId && entry.id === projectId);
+  const access = pluginProjectAccessRequest(
+    installations,
+    threadId,
+    (projectId) => find(projectId) !== undefined,
   );
-  return access === null || project === null ? null : { ...access, projectTitle: project.title };
+  const project = access === null ? undefined : find(access.request.projectId);
+  return access === null || project === undefined
+    ? null
+    : { ...access, projectTitle: project.title };
 }
 
 /**

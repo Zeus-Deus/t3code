@@ -264,10 +264,13 @@ project. Web and desktop show the card; mobile does not yet, so a request can
 stay `pending` until the person opens it elsewhere.
 
 `status` is `granted` if you already hold the project, `declined` after **Not
-now**, and otherwise `pending`, including for an id that does not exist, so
-treat it as "nothing to do yet". Calling again never adds a card: each project
-has one request, which moves to the conversation that asked last, and a thread
-shows one card at a time. After **Not now** the status stays `declined` until the
+now**, and otherwise `pending`. An id that does not exist is stored and handled
+exactly the same way and simply never shows a card, so treat `pending` as "nothing
+to do yet" and do not expect it to resolve. Calling again never adds a card: each
+project has one request, which moves to the conversation that asked last, and a
+thread shows one card at a time. An installation keeps at most 64 requests. Past
+that, a new request drops your oldest unanswered one, whose card disappears until
+you ask again; **Not now** answers are kept. After **Not now** the status stays `declined` until the
 person next writes in the conversation you ask from.
 Other handlers (views, status, trees and events) get `permission_denied`; so does
 a conversation you do not own. An undeclared or `agentCallable` action is

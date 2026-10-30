@@ -8,6 +8,7 @@ import {
   ThreadId,
   type PluginActionContext,
   type OrchestrationV2ThreadShell,
+  type PluginProjectAccessRequest,
   type PluginThreadMetadata,
   PluginThreadCreateInput,
   PluginThreadsListInput,
@@ -96,6 +97,19 @@ const threadMetadata = (thread: OrchestrationV2ThreadShell) =>
     ...(thread.pluginOwner === undefined ? {} : { pluginOwner: thread.pluginOwner }),
     ...(thread.launchedFrom === undefined ? {} : { launchedFrom: thread.launchedFrom }),
   }) satisfies PluginThreadMetadata;
+
+// Evicts the oldest unanswered request first, so flooding ids cannot erase a person's "Not now".
+const withProjectAccessRequest = (
+  requests: ReadonlyArray<PluginProjectAccessRequest>,
+  next: PluginProjectAccessRequest,
+) => {
+  if (requests.length < MAX_PLUGIN_PROJECT_ACCESS_REQUESTS) return [...requests, next];
+  const evicted = Math.max(
+    requests.findIndex((entry) => entry.declinedAt === undefined),
+    0,
+  );
+  return [...requests.filter((_, index) => index !== evicted), next];
+};
 
 const page = <A>(rows: ReadonlyArray<A>, cursor = 0, limit = 50) => ({
   rows: rows.slice(cursor, cursor + limit),
@@ -567,13 +581,10 @@ const make = Effect.gen(function* () {
             reason: "invalid_input",
             message: "The project request needs a declared action agents cannot call.",
           });
-        // From here every result for an ungranted id reads alike, whether or not the project exists.
         if (installation.grants.projectIds.includes(request.projectId))
           return { status: "granted" as const };
-        const project = yield* projects
-          .getShell(request.projectId)
-          .pipe(Effect.orElseSucceed(() => Option.none()));
-        if (Option.isNone(project)) return { status: "pending" as const };
+        // No project lookup: an unknown id takes this same write path, so neither the result nor
+        // its timing says whether it exists. Clients simply have no project to show a card for.
         const requestedAt = DateTime.formatIso(yield* DateTime.now);
         const personSpokeAt = iso(shell.latestUserAuthoredMessageAt);
         return yield* mutate((current, currentState) => {
@@ -610,9 +621,7 @@ const make = Effect.gen(function* () {
                         ...entry.installation,
                         projectAccessRequests:
                           existing === undefined
-                            ? [...projectAccessRequests, next].slice(
-                                -MAX_PLUGIN_PROJECT_ACCESS_REQUESTS,
-                              )
+                            ? withProjectAccessRequest(projectAccessRequests, next)
                             : projectAccessRequests.map((item) =>
                                 item === existing ? next : item,
                               ),

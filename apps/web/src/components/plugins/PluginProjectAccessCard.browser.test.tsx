@@ -35,7 +35,7 @@ vi.mock(import("../../state/plugins"), async (original) => {
 });
 vi.mock(import("../../state/entities"), async (original) => ({
   ...(await original()),
-  useProject: () => ({ title: "alpha-service" }) as never,
+  useProjects: () => [{ environmentId, id: projectId, title: "alpha-service" }] as never,
 }));
 vi.mock(import("../../state/use-atom-command"), async (original) => ({
   ...(await original()),

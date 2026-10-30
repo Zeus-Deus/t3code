@@ -1,4 +1,9 @@
-import type { PluginInstallation, PluginProjectAccessRequest, ThreadId } from "@t3tools/contracts";
+import type {
+  PluginInstallation,
+  PluginProjectAccessRequest,
+  ProjectId,
+  ThreadId,
+} from "@t3tools/contracts";
 
 import { isPluginActive } from "./model.ts";
 
@@ -12,6 +17,8 @@ const PROJECT_ACCESS_CAPABILITY = "projects.request-access";
 export function pluginProjectAccessRequest(
   installations: ReadonlyArray<PluginInstallation>,
   threadId: ThreadId,
+  /** Unknown ids are stored too; they must not hold up a real project's card. */
+  isKnownProject: (projectId: ProjectId) => boolean,
 ): {
   readonly installation: PluginInstallation;
   readonly request: PluginProjectAccessRequest;
@@ -26,7 +33,8 @@ export function pluginProjectAccessRequest(
       (entry) =>
         entry.threadId === threadId &&
         entry.declinedAt === undefined &&
-        !installation.grants.projectIds.includes(entry.projectId),
+        !installation.grants.projectIds.includes(entry.projectId) &&
+        isKnownProject(entry.projectId),
     );
     if (request !== undefined) return { installation, request };
   }

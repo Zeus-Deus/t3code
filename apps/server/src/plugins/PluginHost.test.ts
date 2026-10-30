@@ -14,6 +14,7 @@ import {
   RunId,
   RuntimeRequestId,
   ThreadId,
+  MAX_PLUGIN_PROJECT_ACCESS_REQUESTS,
   type PluginCapability,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -3144,29 +3145,81 @@ const storedRequests = (store: Store.PluginStore["Service"]) =>
     Effect.map((state) => state.installations[0]?.installation.projectAccessRequests ?? []),
   );
 
-it.effect(
-  "answers an unknown project exactly like an ungranted one and records neither twice",
-  () =>
-    Effect.gen(function* () {
-      const f = yield* fixture;
-      yield* grantProjectAccess(f.store);
-      f.setShell({ ...f.shell, id: accessRequest.threadId, pluginOwner: ownedConversation });
-      const unknown = ProjectId.make("project-unknown");
-      f.missingProjects.add(unknown);
-      const ask = (projectId: ProjectId) =>
-        f.host.call(agentInvocation, "projects.requestAccess", { ...accessRequest, projectId });
+it.effect("takes the same write path for an unknown project as for an ungranted one", () =>
+  Effect.gen(function* () {
+    const f = yield* fixture;
+    yield* grantProjectAccess(f.store);
+    const later = ThreadId.make("later-conversation");
+    f.setShell({ ...f.shell, id: accessRequest.threadId, pluginOwner: ownedConversation });
+    f.setShell({ ...f.shell, id: later, pluginOwner: ownedConversation });
+    const unknown = ProjectId.make("project-unknown");
+    f.missingProjects.add(unknown);
+    const ask = (projectId: ProjectId, threadId: ThreadId) =>
+      f.host.call(agentInvocation, "projects.requestAccess", {
+        ...accessRequest,
+        projectId,
+        threadId,
+      });
+    for (const candidate of [unknown, otherProject]) {
+      for (const threadId of [accessRequest.threadId, later]) {
+        const before = yield* f.store.read;
+        expect(yield* ask(candidate, threadId)).toEqual({ status: "pending" });
+        expect(yield* f.store.read).not.toBe(before);
+      }
+      const settled = yield* f.store.read;
+      expect(yield* ask(candidate, later)).toEqual({ status: "pending" });
+      expect(yield* f.store.read).toBe(settled);
+    }
+    expect(yield* storedRequests(f.store)).toMatchObject([
+      { projectId: unknown, threadId: later, actionId: "decided" },
+      { projectId: otherProject, threadId: later, actionId: "decided" },
+    ]);
+    expect(yield* ask(projectId, later)).toEqual({ status: "granted" });
+  }).pipe(Effect.provide(base()), Effect.scoped),
+);
 
-      expect(yield* ask(unknown)).toEqual({ status: "pending" });
-      expect(yield* ask(otherProject)).toEqual({ status: "pending" });
-      expect(yield* storedRequests(f.store)).toMatchObject([accessRequest]);
-
-      const before = yield* f.store.read;
-      expect(yield* ask(unknown)).toEqual({ status: "pending" });
-      expect(yield* ask(otherProject)).toEqual({ status: "pending" });
-      expect(yield* f.store.read).toBe(before);
-      expect(yield* ask(projectId)).toEqual({ status: "granted" });
-      expect(yield* f.store.read).toBe(before);
-    }).pipe(Effect.provide(base()), Effect.scoped),
+it.effect("caps stored requests without letting a flood erase a person's Not now", () =>
+  Effect.gen(function* () {
+    const f = yield* fixture;
+    yield* grantProjectAccess(f.store);
+    f.setShell({ ...f.shell, id: accessRequest.threadId, pluginOwner: ownedConversation });
+    yield* f.store.update((state) =>
+      Effect.succeed([
+        undefined,
+        {
+          ...state,
+          installations: state.installations.map((record) => ({
+            ...record,
+            installation: {
+              ...record.installation,
+              projectAccessRequests: [
+                {
+                  ...accessRequest,
+                  requestedAt: "2026-10-23T12:00:00.000Z",
+                  declinedAt: "2026-10-23T12:30:00.000Z",
+                },
+              ],
+            },
+          })),
+        },
+      ] as const),
+    );
+    for (let index = 0; index < MAX_PLUGIN_PROJECT_ACCESS_REQUESTS + 3; index++)
+      yield* f.host.call(agentInvocation, "projects.requestAccess", {
+        ...accessRequest,
+        projectId: ProjectId.make(`project-flood-${index}`),
+      });
+    const stored = yield* storedRequests(f.store);
+    expect(stored).toHaveLength(MAX_PLUGIN_PROJECT_ACCESS_REQUESTS);
+    expect(stored[0]?.projectId).toBe(otherProject);
+    expect(stored.at(-1)?.projectId).toBe(
+      `project-flood-${MAX_PLUGIN_PROJECT_ACCESS_REQUESTS + 2}`,
+    );
+    expect(stored.some((entry) => entry.projectId === "project-flood-0")).toBe(false);
+    expect(yield* f.host.call(agentInvocation, "projects.requestAccess", accessRequest)).toEqual({
+      status: "declined",
+    });
+  }).pipe(Effect.provide(base()), Effect.scoped),
 );
 
 it.effect("moves a repeated request to the conversation that asked last, keeping one card", () =>

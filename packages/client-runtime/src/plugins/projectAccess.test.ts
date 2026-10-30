@@ -22,7 +22,14 @@ const installation = (overrides: Partial<PluginInstallation>) =>
 describe("pluginProjectAccessRequest", () => {
   it("shows one request per thread, oldest first", () => {
     const owner = installation({ projectAccessRequests: [request(first), request(second)] });
-    expect(pluginProjectAccessRequest([owner], thread)?.request.projectId).toBe(first);
+    expect(pluginProjectAccessRequest([owner], thread, () => true)?.request.projectId).toBe(first);
+  });
+
+  it("does not let a stored unknown id hold up a real project's card", () => {
+    const owner = installation({ projectAccessRequests: [request(first), request(second)] });
+    const known = (projectId: ProjectId) => projectId === second;
+    expect(pluginProjectAccessRequest([owner], thread, known)?.request.projectId).toBe(second);
+    expect(pluginProjectAccessRequest([owner], thread, () => false)).toBeNull();
   });
 
   it.each([
@@ -57,7 +64,7 @@ describe("pluginProjectAccessRequest", () => {
   ] satisfies ReadonlyArray<{ name: string; overrides: Partial<PluginInstallation> }>)(
     "shows nothing for $name",
     ({ overrides }) => {
-      expect(pluginProjectAccessRequest([installation(overrides)], thread)).toBeNull();
+      expect(pluginProjectAccessRequest([installation(overrides)], thread, () => true)).toBeNull();
     },
   );
 });
