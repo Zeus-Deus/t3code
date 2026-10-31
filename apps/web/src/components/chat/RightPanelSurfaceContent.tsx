@@ -15,6 +15,8 @@ import type { ComposerImageAttachment, DraftId } from "../../composerDraftStore"
 import type { ShortcutMatchContext } from "../../keybindings";
 import type { SideChatParentPanel } from "../../lib/sideChatPane";
 import { type RightPanelSurface, useRightPanelStore } from "../../rightPanelStore";
+import { useQuietThreadShell } from "../../state/entities";
+import { useEnvironmentShellStatus } from "../../state/shell";
 import {
   PersistentThreadTerminalPanel,
   type PersistentThreadTerminalPanelProps,
@@ -59,6 +61,36 @@ interface RightPanelFileProps {
   readonly pendingSurfaceIds: ReadonlySet<string>;
   readonly onOpenFile: (relativePath: string) => void;
   readonly onPendingChange: (relativePath: string, pending: boolean) => void;
+}
+
+/** Runs only while its side chat is known to exist, so it can never act on a deleted thread. */
+function SideChatPluginPanel(props: {
+  readonly surface: Extract<RightPanelSurface, { kind: "plugin" }>;
+  readonly panelRef: ScopedThreadRef;
+  readonly sideChatRef: ScopedThreadRef;
+}) {
+  const { surface, panelRef, sideChatRef } = props;
+  const shell = useQuietThreadShell(sideChatRef);
+  // Only a live shell proves absence: a cached one may predate the side chat.
+  const shellLive = useEnvironmentShellStatus(sideChatRef.environmentId) === "live";
+  if (shell === null) {
+    return shellLive ? (
+      <p className="p-3 text-xs text-muted-foreground">This side chat was deleted.</p>
+    ) : (
+      <div role="status" aria-label="Side chat loading" className="size-full" />
+    );
+  }
+  return (
+    <Suspense fallback={null}>
+      <PluginSidePanel
+        threadRef={sideChatRef}
+        panelRef={panelRef}
+        composerTarget={sideChatRef}
+        installationId={surface.installationId}
+        viewId={surface.viewId}
+      />
+    </Suspense>
+  );
 }
 
 export function RightPanelSurfaceContent(props: {
@@ -171,27 +203,27 @@ export function RightPanelSurfaceContent(props: {
     }
     case "pull-requests":
       return <ThreadPullRequestsPanel threadRef={threadRef} />;
-    case "plugin": {
-      const viewThreadRef =
-        surface.originThreadId === undefined
-          ? threadRef
-          : scopeThreadRef(threadRef.environmentId, surface.originThreadId);
-      return (
+    case "plugin":
+      return surface.originThreadId === undefined ? (
         <Suspense fallback={null}>
           <PluginSidePanel
             // A view's state belongs to its thread; switching threads loads a fresh document.
-            key={`${scopedThreadKey(viewThreadRef)}:${surface.id}`}
-            threadRef={viewThreadRef}
+            key={`${scopedThreadKey(threadRef)}:${surface.id}`}
+            threadRef={threadRef}
             panelRef={threadRef}
-            composerTarget={
-              surface.originThreadId === undefined ? props.composerDraftTarget : viewThreadRef
-            }
+            composerTarget={props.composerDraftTarget}
             installationId={surface.installationId}
             viewId={surface.viewId}
           />
         </Suspense>
+      ) : (
+        <SideChatPluginPanel
+          key={surface.id}
+          surface={surface}
+          panelRef={threadRef}
+          sideChatRef={scopeThreadRef(threadRef.environmentId, surface.originThreadId)}
+        />
       );
-    }
     case "side-chat":
       // Not lazy: revealing a suspended tiptap editor tears down its view and crashes the composer.
       return (

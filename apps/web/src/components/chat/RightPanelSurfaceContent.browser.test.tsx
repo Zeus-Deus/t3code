@@ -10,7 +10,7 @@ import { AsyncResult } from "effect/reactivity";
 import { expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
 
-import { render } from "../../../test/render";
+import { act, render } from "../../../test/render";
 
 const state = vi.hoisted(() => ({
   html: "",
@@ -103,6 +103,7 @@ import { RightPanelSurfaceContent } from "./RightPanelSurfaceContent";
 const environmentId = EnvironmentId.make("environment");
 const parent = scopeThreadRef(environmentId, ThreadId.make("parent"));
 const sideChat = scopeThreadRef(environmentId, ThreadId.make("side-chat"));
+const deletedNotice = "This side chat was deleted.";
 const legacyView = {
   id: "plugin:inst:notes",
   kind: "plugin",
@@ -154,6 +155,12 @@ function setup(answer: (name: string) => Promise<PluginInvokeResult>) {
   for (const ref of [parent, sideChat]) useComposerDraftStore.getState().setPrompt(ref, "");
 }
 
+const changeShell = (shell: typeof state.shell) =>
+  act(() => {
+    state.shell = shell;
+    for (const listener of state.shellListeners) listener();
+  });
+
 const panel = (surface: Parameters<typeof RightPanelSurfaceContent>[0]["surface"]) => (
   <RightPanelSurfaceContent
     surface={surface}
@@ -179,6 +186,7 @@ const surfaces = (ref: ScopedThreadRef) =>
   useRightPanelStore.getState().byThreadKey[scopedThreadKey(ref)]?.surfaces;
 const prompt = (ref: ScopedThreadRef) =>
   useComposerDraftStore.getState().getComposerDraft(ref)?.prompt ?? "";
+const frames = () => document.querySelectorAll("iframe").length;
 
 it("keeps a side chat's view on that conversation, in the panel that shows it", async () => {
   setup(async () => ({
@@ -232,6 +240,41 @@ it("leaves a stored view without an origin on the panel's own thread", async () 
     },
   ]);
   expect(prompt(parent)).toBe("from the view");
+});
+
+it("holds a side chat's view until a live shell has the conversation, without retiring it", async () => {
+  setup(async () => ({}));
+  state.shell = { status: "synchronizing", missingThreadIds: new Set([sideChat.threadId]) };
+  await using _screen = await render(panel(sideChatView), { router: "/environment/parent" });
+  await expect.element(page.getByLabelText("Side chat loading")).toBeInTheDocument();
+  expect(frames()).toBe(0);
+  expect(page.getByText(deletedNotice).query()).toBeNull();
+
+  await changeShell({ status: "live", missingThreadIds: new Set() });
+  await vi.waitFor(() => expect(state.contexts).toHaveLength(1));
+  expect(page.getByText(deletedNotice).query()).toBeNull();
+});
+
+it("retires a view whose side chat was deleted, dropping its late insert", async () => {
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  setup(async () => {
+    await held;
+    return { intents: [{ type: "composer.insert", text: "too late" }] };
+  });
+  await using _screen = await render(panel(sideChatView), { router: "/environment/parent" });
+  await vi.waitFor(() => expect(state.contexts).toHaveLength(1));
+
+  await changeShell({ status: "live", missingThreadIds: new Set([sideChat.threadId]) });
+  await expect.element(page.getByText(deletedNotice)).toBeVisible();
+  expect(frames()).toBe(0);
+  await act(async () => {
+    release();
+    await held;
+  });
+  expect(prompt(sideChat)).toBe("");
 });
 
 it("keeps an action's panel when the side chat pane leaves before its answer", async () => {
