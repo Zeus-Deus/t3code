@@ -24,6 +24,7 @@ vi.mock("@effect/atom-react", async (original) => ({
 vi.mock("./plugins/usePluginPaletteItems", () => ({
   usePluginPaletteItems: () => [],
   useSidebarViewPaletteItems: () => [],
+  useWallpaperPaletteItems: () => [],
 }));
 vi.mock("../hooks/useTheme", () => ({
   useRenderedAppearance: () => "light",
