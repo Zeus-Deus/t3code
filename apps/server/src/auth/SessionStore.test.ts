@@ -165,6 +165,11 @@ it.layer(NodeServices.layer)("SessionStore.layer", (it) => {
       closesAtMinute: 60,
     },
     {
+      name: "a renewal for another subject",
+      renewal: { subject: "someone-else" },
+      closesAtMinute: 60,
+    },
+    {
       name: "a renewal, until the original is revoked",
       renewal: {},
       closesAtMinute: 90,
@@ -180,17 +185,21 @@ it.layer(NodeServices.layer)("SessionStore.layer", (it) => {
     Effect.gen(function* () {
       const sessions = yield* SessionStore.SessionStore;
       const client = yield* sessions.issue(relaySessionInput);
+      const credential = yield* sessions.socketCredential(
+        client.sessionId,
+        relaySessionInput.proofKeyThumbprint,
+      );
       const invalidated = yield* Deferred.make<void>();
-      const watcher = yield* sessions
-        .awaitInvalidation(client.sessionId, relaySessionInput.proofKeyThumbprint)
-        .pipe(
-          Effect.andThen(Deferred.succeed(invalidated, undefined)),
-          Effect.forkScoped({ startImmediately: true }),
-        );
+      const watcher = yield* credential.awaitInvalidation.pipe(
+        Effect.andThen(Deferred.succeed(invalidated, undefined)),
+        Effect.forkScoped({ startImmediately: true }),
+      );
       yield* TestClock.adjust(Duration.minutes(59));
       const renewal = yield* sessions.issue({ ...relaySessionInput, ...testCase.renewal });
       yield* TestClock.adjust(Duration.millis((testCase.closesAtMinute - 59) * 60_000 - 1));
       expect(yield* Deferred.isDone(invalidated)).toBe(false);
+      // Whatever keeps the socket open also authorizes it, past the original's expiry included.
+      yield* credential.assertActive;
       yield* TestClock.adjust(Duration.millis(1));
       if ("revoke" in testCase) {
         yield* sessions.revoke(
@@ -198,6 +207,9 @@ it.layer(NodeServices.layer)("SessionStore.layer", (it) => {
         );
       }
       yield* Fiber.join(watcher);
+      expect((yield* Effect.flip(credential.assertActive))._tag).toBe(
+        "SessionCredentialVerificationError",
+      );
     }).pipe(Effect.scoped, Effect.provide(Layer.merge(layerSessionStore(), TestClock.layer()))),
   );
 
@@ -205,13 +217,15 @@ it.layer(NodeServices.layer)("SessionStore.layer", (it) => {
     Effect.gen(function* () {
       const sessions = yield* SessionStore.SessionStore;
       const client = yield* sessions.issue(relaySessionInput);
+      const credential = yield* sessions.socketCredential(
+        client.sessionId,
+        relaySessionInput.proofKeyThumbprint,
+      );
       const invalidated = yield* Deferred.make<void>();
-      const watcher = yield* sessions
-        .awaitInvalidation(client.sessionId, relaySessionInput.proofKeyThumbprint)
-        .pipe(
-          Effect.andThen(Deferred.succeed(invalidated, undefined)),
-          Effect.forkScoped({ startImmediately: true }),
-        );
+      const watcher = yield* credential.awaitInvalidation.pipe(
+        Effect.andThen(Deferred.succeed(invalidated, undefined)),
+        Effect.forkScoped({ startImmediately: true }),
+      );
       yield* TestClock.adjust(Duration.minutes(59));
       const first = yield* sessions.issue(relaySessionInput);
       yield* TestClock.adjust(Duration.minutes(59));
@@ -219,9 +233,51 @@ it.layer(NodeServices.layer)("SessionStore.layer", (it) => {
       // Past the first renewal's expiry, so the socket now follows the second.
       yield* TestClock.adjust(Duration.minutes(2));
       expect(yield* Deferred.isDone(invalidated)).toBe(false);
+      yield* credential.assertActive;
       yield* sessions.revoke(first.sessionId);
+      expect((yield* Effect.flip(credential.assertActive))._tag).toBe(
+        "SessionCredentialVerificationError",
+      );
       yield* Fiber.join(watcher);
     }).pipe(Effect.scoped, Effect.provide(Layer.merge(layerSessionStore(), TestClock.layer()))),
+  );
+
+  it.effect("moves a socket's chain from authorization alone, one renewal at a time", () =>
+    Effect.gen(function* () {
+      const sessions = yield* SessionStore.SessionStore;
+      const client = yield* sessions.issue(relaySessionInput);
+      const credential = yield* sessions.socketCredential(
+        client.sessionId,
+        relaySessionInput.proofKeyThumbprint,
+      );
+      yield* TestClock.adjust(Duration.minutes(59));
+      const renewal = yield* sessions.issue(relaySessionInput);
+      yield* TestClock.adjust(Duration.minutes(2));
+      yield* credential.assertActive;
+      yield* sessions.revoke(renewal.sessionId);
+      expect((yield* Effect.flip(credential.assertActive))._tag).toBe(
+        "SessionCredentialVerificationError",
+      );
+    }).pipe(Effect.provide(Layer.merge(layerSessionStore(), TestClock.layer()))),
+  );
+
+  it.effect("keeps an expired chain ended when a renewal arrives too late", () =>
+    Effect.gen(function* () {
+      const sessions = yield* SessionStore.SessionStore;
+      const client = yield* sessions.issue(relaySessionInput);
+      const credential = yield* sessions.socketCredential(
+        client.sessionId,
+        relaySessionInput.proofKeyThumbprint,
+      );
+      yield* TestClock.adjust(Duration.minutes(61));
+      expect((yield* Effect.flip(credential.assertActive))._tag).toBe(
+        "SessionCredentialVerificationError",
+      );
+      yield* sessions.issue(relaySessionInput);
+      expect((yield* Effect.flip(credential.assertActive))._tag).toBe(
+        "SessionCredentialVerificationError",
+      );
+    }).pipe(Effect.provide(Layer.merge(layerSessionStore(), TestClock.layer()))),
   );
 
   it.effect("keeps a renewed DPoP socket when another socket on its expired session closes", () =>

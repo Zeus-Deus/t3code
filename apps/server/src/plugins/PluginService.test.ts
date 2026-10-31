@@ -575,6 +575,7 @@ it.live(
         Sessions.SessionStore,
       );
       const session = yield* sessions.issue({ subject: "plugin-ws-fixture", scopes: actor.scopes });
+      const credential = yield* sessions.socketCredential(session.sessionId);
       const group = WsRpcGroup.omit(
         ...[...WsRpcGroup.requests.keys()].filter(
           (
@@ -597,9 +598,8 @@ it.live(
       const handler = yield* RpcServer.toHttpEffectWebsocket(group).pipe(
         Effect.provide(
           Layer.mergeAll(
-            RpcHandlers.layer(actor, session.sessionId).pipe(
+            RpcHandlers.layer(actor, credential).pipe(
               Layer.provide(Layer.succeed(Service.PluginService, f.plugins)),
-              Layer.provide(Layer.succeed(Sessions.SessionStore, sessions)),
             ),
             rpcInstrumentationLayer,
             RpcAuthorization.layer(actor.scopes),
@@ -2651,24 +2651,18 @@ it.effect("rechecks the WS session before a host effect after the invocation was
     const client = yield* RpcTest.makeClient(group).pipe(
       Effect.provide(
         Layer.mergeAll(
-          RpcHandlers.layer(actor, sessionId).pipe(
-            Layer.provide(Layer.succeed(Service.PluginService, f.plugins)),
-            Layer.provide(
-              Layer.mock(Sessions.SessionStore)({
-                cookieName: "plugin-test",
-                legacyCookieName: undefined,
-                assertActive: () =>
-                  revoked
-                    ? Effect.fail(
-                        new Sessions.SessionCredentialVerificationError({
-                          sessionId,
-                          cause: "revoked",
-                        }),
-                      )
-                    : Effect.void,
-              }),
+          RpcHandlers.layer(actor, {
+            assertActive: Effect.suspend(() =>
+              revoked
+                ? Effect.fail(
+                    new Sessions.SessionCredentialVerificationError({
+                      sessionId,
+                      cause: "revoked",
+                    }),
+                  )
+                : Effect.void,
             ),
-          ),
+          }).pipe(Layer.provide(Layer.succeed(Service.PluginService, f.plugins))),
           rpcInstrumentationLayer,
           RpcAuthorization.layer(actor.scopes),
         ),

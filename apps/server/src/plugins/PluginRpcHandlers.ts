@@ -1,6 +1,6 @@
-import { WS_METHODS, WsRpcGroup, PluginError, type AuthSessionId } from "@t3tools/contracts";
+import { WS_METHODS, WsRpcGroup, PluginError } from "@t3tools/contracts";
 import type * as RpcGroup from "effect/rpc/RpcGroup";
-import * as SessionStore from "../auth/SessionStore.ts";
+import type { SocketCredential } from "../auth/SessionStore.ts";
 import * as Effect from "effect/Effect";
 import * as PluginService from "./PluginService.ts";
 import type { PluginActor } from "./PluginAuthority.ts";
@@ -38,15 +38,14 @@ const group = WsRpcGroup.omit(
   ),
 ).middleware(RpcInstrumentation);
 
-export const layer = (actor: PluginActor, sessionId: AuthSessionId) =>
+export const layer = (actor: PluginActor, credential: Pick<SocketCredential, "assertActive">) =>
   group.toLayer(
     Effect.gen(function* () {
       const plugins = yield* PluginService.PluginService;
-      const sessions = yield* SessionStore.SessionStore;
       const authorizedActor: PluginActor = {
         ...actor,
         authorize: () =>
-          sessions.assertActive(sessionId).pipe(
+          credential.assertActive.pipe(
             Effect.andThen(() => actor.authorize?.() ?? Effect.void),
             Effect.mapError(
               () =>

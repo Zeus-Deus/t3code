@@ -666,6 +666,7 @@ it.effect(
             {},
             yield* ServerBrowser.ServerBrowser,
             () => Effect.void,
+            { assertActive: Effect.void },
           ).pipe(Layer.provide(configRpcServices)),
         ),
       );
@@ -834,6 +835,7 @@ it.effect("on-demand clients get provider config without workspace snapshots", (
           {},
           yield* ServerBrowser.ServerBrowser,
           () => Effect.void,
+          { assertActive: Effect.void },
         ).pipe(Layer.provide(configRpcServices)),
       ),
     );
