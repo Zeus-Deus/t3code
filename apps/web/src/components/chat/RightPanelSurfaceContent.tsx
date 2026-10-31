@@ -182,6 +182,7 @@ export function RightPanelSurfaceContent(props: {
             // A view's state belongs to its thread; switching threads loads a fresh document.
             key={`${scopedThreadKey(viewThreadRef)}:${surface.id}`}
             threadRef={viewThreadRef}
+            panelRef={threadRef}
             composerTarget={
               surface.originThreadId === undefined ? props.composerDraftTarget : viewThreadRef
             }

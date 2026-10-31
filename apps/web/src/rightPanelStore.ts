@@ -153,6 +153,8 @@ interface RightPanelStoreState {
   openPluginView: (
     ref: ScopedThreadRef,
     target: { installationId: string; viewId: string; title: string; originThreadId?: ThreadId },
+    /** The panel showing `ref`, which outlives a side chat pane's host registration. */
+    panelRef?: ScopedThreadRef,
   ) => void;
   openPullRequest: (
     ref: ScopedThreadRef,
@@ -783,13 +785,14 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
             return upsertSurface({ ...current, surfaces: withoutPlaceholder }, surface);
           }),
         ),
-      openPluginView: (ref, target) =>
+      openPluginView: (ref, target, panelRef) =>
         set((state) => {
           const threadKey = scopedThreadKey(ref);
+          const panelKey = scopedThreadKey(panelRef ?? rightPanelHostRef(ref));
           const surface = pluginSurface(
-            panelHosts.has(threadKey) ? { ...target, originThreadId: ref.threadId } : target,
+            panelKey === threadKey ? target : { ...target, originThreadId: ref.threadId },
           );
-          return userAction(state, threadKey, (current) => upsertSurface(current, surface));
+          return userAction(state, panelKey, (current) => upsertSurface(current, surface));
         }),
       openPullRequest: (ref, target) =>
         set((state) =>

@@ -28,6 +28,7 @@ import { PuzzleIcon, RotateCcwIcon } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 
 import type { ComposerThreadTarget } from "../../composerDraftStore";
+import { rightPanelHostRef } from "../../rightPanelStore";
 import { isElectron } from "../../env";
 import { useHtmlRenderTheme } from "../../hooks/useHtmlRenderTheme";
 import { useEnvironment } from "../../state/environments";
@@ -72,6 +73,8 @@ export function PluginViewFrame(props: {
   readonly view: PluginView;
   readonly placement: PluginViewPlacement;
   readonly threadRef: ScopedThreadRef | null;
+  /** The panel showing this view, when it is not `threadRef`'s own. */
+  readonly panelRef?: ScopedThreadRef;
   readonly composerTarget: ComposerThreadTarget | null;
   /** A conversation card: served only after the server checks where the card came from. */
   readonly card?: PluginCardReference;
@@ -204,10 +207,14 @@ export function PluginViewFrame(props: {
       // Fixed when the view asks: a slow answer must not act on wherever the user went since.
       captureOrigin: () => {
         const current = latest.current;
+        const threadRef = current.props.threadRef;
         return {
           environmentId,
           installation: current.props.installation,
-          threadRef: current.props.threadRef,
+          threadRef,
+          ...(threadRef === null
+            ? {}
+            : { panelRef: current.props.panelRef ?? rightPanelHostRef(threadRef) }),
           // Only a view beside a thread has a composer to write into.
           composerTarget:
             current.props.placement === "side-panel" ? current.props.composerTarget : null,
@@ -435,6 +442,7 @@ function PluginViewResolver(props: {
   readonly viewId: string;
   readonly placement: "page" | "side-panel";
   readonly threadRef: ScopedThreadRef | null;
+  readonly panelRef?: ScopedThreadRef;
   readonly composerTarget: ComposerThreadTarget | null;
 }) {
   const catalogue = usePluginCatalogue(props.environmentId);
@@ -491,6 +499,7 @@ function PluginViewResolver(props: {
       view={entry.view}
       placement={props.placement}
       threadRef={props.threadRef}
+      {...(props.panelRef === undefined ? {} : { panelRef: props.panelRef })}
       composerTarget={props.composerTarget}
     />
   );
@@ -499,6 +508,7 @@ function PluginViewResolver(props: {
 /** The panel's tab already names the view and closes it. */
 export function PluginSidePanel(props: {
   readonly threadRef: ScopedThreadRef;
+  readonly panelRef: ScopedThreadRef;
   readonly composerTarget: ComposerThreadTarget;
   readonly installationId: string;
   readonly viewId: string;
@@ -510,6 +520,7 @@ export function PluginSidePanel(props: {
       viewId={props.viewId}
       placement="side-panel"
       threadRef={props.threadRef}
+      panelRef={props.panelRef}
       composerTarget={props.composerTarget}
     />
   );

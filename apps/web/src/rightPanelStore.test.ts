@@ -92,6 +92,20 @@ describe("rightPanelStore", () => {
     );
   });
 
+  it("opens a side chat's next plugin view in the panel named for it, once unhosted", () => {
+    const view = { installationId: "inst", viewId: "notes", title: "Notes" };
+    useRightPanelStore.getState().openPluginView(refB, view, refA);
+    const opened = selectActiveRightPanelSurface(useRightPanelStore.getState().byThreadKey, refA);
+    expect(opened).toMatchObject({ ...view, originThreadId: refB.threadId });
+    expect(
+      selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refB).surfaces,
+    ).toEqual([]);
+    useRightPanelStore.getState().openPluginView(refA, view, refA);
+    expect(
+      selectActiveRightPanelSurface(useRightPanelStore.getState().byThreadKey, refA),
+    ).not.toHaveProperty("originThreadId");
+  });
+
   it("keeps stored plugin views that predate their originating thread", async () => {
     const legacy = {
       id: "plugin:inst:notes",
