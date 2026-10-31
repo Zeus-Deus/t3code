@@ -147,9 +147,13 @@ describe("adding an archived project's folder to a project choice", () => {
   const environmentId = EnvironmentId.make("local");
 
   async function submitArchivedFolder() {
-    const revival = Promise.withResolvers<unknown>();
+    let settle: (result: unknown) => void = () => {};
+    const pending = new Promise<unknown>((resolve) => {
+      settle = resolve;
+    });
+    const revival = { resolve: (result: unknown) => settle(result) };
     const choose = vi.fn();
-    const unarchive = vi.fn(() => revival.promise);
+    const unarchive = vi.fn(() => pending);
     state.command = unarchive;
     state.projects = [
       {
