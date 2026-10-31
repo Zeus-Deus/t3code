@@ -797,12 +797,20 @@ function useCreateProject(
           })
         )._tag === "Success";
       if (toDestination) {
-        finishAtProjectDestination(
-          navigation,
-          projectDestination,
-          routeKey,
-          scopeProjectRef(existing.environmentId, existing.id),
-        );
+        // Only a project that came back reaches the chooser, which must still be open.
+        if (unarchived) {
+          finishAtProjectDestination(
+            navigation,
+            projectDestination,
+            routeKey,
+            scopeProjectRef(existing.environmentId, existing.id),
+          );
+        } else {
+          Dialog.alert(
+            "Project not added",
+            `${existing.title} is still archived. Try again later.`,
+          );
+        }
         return;
       }
       Dialog.alert(

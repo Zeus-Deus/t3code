@@ -2,10 +2,19 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
 import { DEFAULT_RESOLVED_KEYBINDINGS } from "@t3tools/shared/keybindings";
 import { DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts/settings";
+import { EnvironmentId, ProjectId } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
+import { AsyncResult } from "effect/reactivity";
 import { act, render } from "../../test/render";
 import { CommandPalette } from "./CommandPalette";
+import { toastManager } from "./ui/toast";
 import { openCommandPalette } from "../commandPaletteBus";
 import { primaryServerKeybindingsAtom } from "../state/server";
+
+const state = vi.hoisted(() => ({
+  projects: [] as unknown[],
+  command: (): Promise<unknown> => Promise.resolve({ _tag: "Success", value: undefined }),
+}));
 
 vi.mock("@effect/atom-react", async (original) => ({
   ...(await original<typeof import("@effect/atom-react")>()),
@@ -42,7 +51,7 @@ vi.mock("../hooks/useHandleNewThread", () => ({
 vi.mock("../hooks/useOpenPanelPullRequestUrl", () => ({ useOpenPanelPullRequestUrl: () => null }));
 vi.mock("../connection/useDesktopLocalBootstraps", () => ({ useDesktopLocalBootstraps: () => [] }));
 vi.mock("../state/use-atom-command", () => ({
-  useAtomCommand: () => async () => ({ _tag: "Success", value: undefined }),
+  useAtomCommand: () => () => state.command(),
 }));
 vi.mock("../state/use-atom-query-runner", () => ({
   useAtomQueryRunner: () => async () => ({ _tag: "Success", value: undefined }),
@@ -68,7 +77,7 @@ vi.mock("../state/environments", async (original) => ({
 }));
 vi.mock("../state/entities", async (original) => ({
   ...(await original<typeof import("../state/entities")>()),
-  useProjects: () => [],
+  useProjects: () => state.projects,
   useThreadShells: () => [],
   useServerConfigs: () => new Map(),
   waitForProject: async () => undefined,
@@ -130,5 +139,72 @@ describe.each(["repository", "folder", "destination"] as const)("add-project %s"
       await userEvent.keyboard("{Enter}");
       await expect.element(page.getByRole("combobox")).not.toBeInTheDocument();
     }
+  });
+});
+
+// The real palette: a project choice must not receive a folder whose project stayed archived.
+describe("adding an archived project's folder to a project choice", () => {
+  const environmentId = EnvironmentId.make("local");
+
+  async function submitArchivedFolder() {
+    const revival = Promise.withResolvers<unknown>();
+    const choose = vi.fn();
+    const unarchive = vi.fn(() => revival.promise);
+    state.command = unarchive;
+    state.projects = [
+      {
+        environmentId,
+        id: ProjectId.make("archived"),
+        title: "Archived",
+        workspaceRoot: "/workspace/archived",
+        archivedAt: "2026-10-31T00:00:00.000Z",
+      },
+    ];
+    await act(() =>
+      openCommandPalette({ chooseProject: { environmentIds: [environmentId], choose } }),
+    );
+    await page.getByText("Add project", { exact: true }).click();
+    await page.getByText("Local folder", { exact: true }).click();
+    await page.getByRole("combobox").fill("/workspace/archived");
+    await userEvent.keyboard("{Enter}");
+    await vi.waitFor(() => expect(unarchive).toHaveBeenCalledOnce());
+    return { choose, revival };
+  }
+
+  it("delivers the project only once it is back", async () => {
+    await using _screen = await render(<CommandPalette>{null}</CommandPalette>);
+    const { choose, revival } = await submitArchivedFolder();
+    expect(choose).not.toHaveBeenCalled();
+    await act(() => revival.resolve({ _tag: "Success", value: undefined }));
+    await vi.waitFor(() =>
+      expect(choose).toHaveBeenCalledExactlyOnceWith({
+        environmentId,
+        projectId: ProjectId.make("archived"),
+      }),
+    );
+    await expect.element(page.getByRole("combobox")).not.toBeInTheDocument();
+  });
+
+  it("keeps the choice open when the project stays archived", async () => {
+    await using _screen = await render(<CommandPalette>{null}</CommandPalette>);
+    using toast = vi.spyOn(toastManager, "add");
+    const { choose, revival } = await submitArchivedFolder();
+    await act(() => revival.resolve(AsyncResult.failure(Cause.fail(new Error("Archive locked")))));
+    await vi.waitFor(() =>
+      expect(toast).toHaveBeenCalledWith(
+        expect.objectContaining({ title: "Failed to unarchive project" }),
+      ),
+    );
+    expect(choose).not.toHaveBeenCalled();
+    await expect.element(page.getByRole("combobox")).toBeInTheDocument();
+  });
+
+  it("delivers nothing to a choice left while the project came back", async () => {
+    await using _screen = await render(<CommandPalette>{null}</CommandPalette>);
+    const { choose, revival } = await submitArchivedFolder();
+    await userEvent.keyboard("{Escape}");
+    await act(() => revival.resolve({ _tag: "Success", value: undefined }));
+    await act(() => Promise.resolve());
+    expect(choose).not.toHaveBeenCalled();
   });
 });

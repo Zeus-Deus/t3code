@@ -1932,14 +1932,21 @@ function OpenCommandPaletteDialog(props: {
     );
     if (existing) {
       // Adding an archived project's folder again brings the project back.
-      if (existing.archivedAt != null) {
-        void updateProject({
-          environmentId: existing.environmentId,
-          input: { projectId: existing.id, archived: false },
-        }).then((result) => reportProjectFailure("Failed to unarchive project", result));
-      }
+      const revival =
+        existing.archivedAt == null
+          ? null
+          : updateProject({
+              environmentId: existing.environmentId,
+              input: { projectId: existing.id, archived: false },
+            }).then((result) => {
+              reportProjectFailure("Failed to unarchive project", result);
+              return result;
+            });
       if (attempt !== null) {
-        deliverProject(attempt, scopeProjectRef(existing.environmentId, existing.id));
+        // A choice gets only a project that came back; delivery rechecks it is still live.
+        if (revival === null || (await revival)._tag === "Success") {
+          deliverProject(attempt, scopeProjectRef(existing.environmentId, existing.id));
+        }
         return;
       }
       const latestThread = getLatestThreadForProject(

@@ -6,7 +6,11 @@ import * as NodeModule from "node:module";
 import type { EnvironmentConnectionPhase } from "@t3tools/client-runtime/connection";
 import { workspaceDetailRouter } from "../workspace/workspace-detail-selection";
 import type { NavigationState } from "@react-navigation/native";
-import { AuthOrchestrationOperateScope, AuthSourceControlWriteScope } from "@t3tools/contracts";
+import {
+  AuthOrchestrationOperateScope,
+  AuthSourceControlWriteScope,
+  EnvironmentId,
+} from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
 import { act, createElement, isValidElement, type ReactNode } from "react";
@@ -22,7 +26,9 @@ const state = vi.hoisted(() => ({
     id: string;
     title: string;
     workspaceRoot: string;
+    archivedAt?: string | null;
   }[],
+  updateResult: null as Promise<unknown> | null,
   createResult: null as Promise<unknown> | null,
   createNewResult: null as Promise<unknown> | null,
   startCloneResult: null as Promise<unknown> | null,
@@ -88,6 +94,7 @@ vi.mock("@react-navigation/native", () => ({
   CommonActions: { reset: (input: unknown) => input },
   StackActions: {
     push: (name: string, params: unknown) => ({ type: "PUSH", payload: { name, params } }),
+    pop: (count: number) => ({ type: "POP", payload: { count } }),
   },
 }));
 vi.mock("react-native-safe-area-context", () => ({
@@ -154,6 +161,7 @@ vi.mock("../../state/sourceControl", () => ({
 vi.mock("../../state/projects", () => ({
   projectEnvironment: {
     createNew: () => state.createNewResult,
+    update: () => state.updateResult,
     create: ({ input }: { input: { workspaceRoot: string } }) => {
       if (!state.scopes.has(AuthOrchestrationOperateScope)) {
         return Promise.resolve(
@@ -179,6 +187,7 @@ import {
   AddProjectSourceScreen,
 } from "./AddProjectScreen";
 import { AddProjectSourceRoute } from "./AddProjectSourceRoute";
+import { readProjectDestination, registerProjectDestination } from "./projectDestination";
 
 function findAction(
   node: ReactNode,
@@ -656,6 +665,87 @@ describe("local project navigation", () => {
       expect(navigation.getState().routes).toEqual([navigation.home]);
     },
   );
+});
+
+describe("archived project at a destination", () => {
+  afterEach(() => {
+    state.existingProjects = [];
+    state.updateResult = null;
+  });
+
+  function setup() {
+    state.navigationState = undefined;
+    state.scopes = new Set([AuthOrchestrationOperateScope]);
+    state.baseDirectory = "/tmp/t3-mobile-audit-fixture";
+    state.dispatch.mockReset();
+    state.alert.mockReset();
+    state.existingProjects = [
+      {
+        environmentId: "environment",
+        id: "archived",
+        title: "Archived",
+        workspaceRoot: "/tmp/t3-mobile-audit-fixture",
+        archivedAt: "2026-10-31T00:00:00.000Z",
+      },
+    ];
+    const revival = Promise.withResolvers<unknown>();
+    state.updateResult = revival.promise;
+    const choose = vi.fn();
+    const token = registerProjectDestination({
+      environmentIds: [EnvironmentId.make("environment")],
+      choose,
+    });
+    const submit = findAction(
+      renderScreen(() =>
+        AddProjectLocalFolderScreen({ environmentId: "environment", projectDestination: token }),
+      ),
+      "Add project",
+    );
+    if (!submit) throw new Error("Add project action missing");
+    return { choose, revival, submit, token };
+  }
+
+  it("hands the project over only once it is back", async () => {
+    const { choose, revival, submit, token } = setup();
+    const submission = submit();
+    await Promise.resolve();
+    expect(choose).not.toHaveBeenCalled();
+    revival.resolve(AsyncResult.success(undefined));
+    await submission;
+    expect(choose).toHaveBeenCalledExactlyOnceWith({
+      environmentId: "environment",
+      projectId: "archived",
+    });
+    expect(readProjectDestination(token)).toBeNull();
+  });
+
+  it("keeps the chooser open when the project stays archived", async () => {
+    const { choose, revival, submit, token } = setup();
+    const submission = submit();
+    revival.resolve(AsyncResult.failure(Cause.fail(new Error("Archive locked"))));
+    await submission;
+    expect(choose).not.toHaveBeenCalled();
+    expect(readProjectDestination(token)).not.toBeNull();
+    expect(state.dispatch).not.toHaveBeenCalled();
+    expect(state.alert).toHaveBeenCalledExactlyOnceWith(
+      "Project not added",
+      "Archived is still archived. Try again later.",
+    );
+  });
+
+  it("hands nothing to a chooser left while the project came back", async () => {
+    const { choose, revival, submit, token } = setup();
+    const submission = submit();
+    state.navigationState = {
+      routes: [{ key: "home", name: "Home" }],
+      index: 0,
+    } as NavigationState;
+    revival.resolve(AsyncResult.success(undefined));
+    await submission;
+    expect(choose).not.toHaveBeenCalled();
+    expect(readProjectDestination(token)).not.toBeNull();
+    expect(state.dispatch).not.toHaveBeenCalled();
+  });
 });
 
 describe("local folder path", () => {
