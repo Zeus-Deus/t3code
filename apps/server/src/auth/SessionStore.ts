@@ -18,6 +18,7 @@ import * as Layer from "effect/Layer";
 import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import * as Option from "effect/Option";
 
@@ -47,6 +48,13 @@ export interface IssuedSession {
   readonly expiresAt: DateTime.DateTime;
   readonly scopes: ReadonlyArray<AuthEnvironmentScope>;
   readonly proofKeyThumbprint?: string;
+}
+
+export interface SocketCredential {
+  /** Fails once the socket's renewal chain is revoked, expired, or stops covering its grants. */
+  readonly assertActive: Effect.Effect<void, SessionCredentialVerificationError>;
+  /** Completes when `assertActive` would start failing. */
+  readonly awaitInvalidation: Effect.Effect<void, SessionCredentialVerificationError>;
 }
 
 export interface VerifiedSession {
@@ -412,8 +420,15 @@ export class SessionStore extends Context.Service<
     readonly assertActive: (
       sessionId: AuthSessionId,
     ) => Effect.Effect<void, SessionCredentialVerificationError>;
+    /** The credential of one live socket, which outlives its session through DPoP renewals. */
+    readonly socketCredential: (
+      sessionId: AuthSessionId,
+      proofKeyThumbprint?: string,
+    ) => Effect.Effect<SocketCredential>;
+    /** Completes when a live socket's session is revoked or expires without a renewal for its DPoP key. */
     readonly awaitInvalidation: (
       sessionId: AuthSessionId,
+      proofKeyThumbprint?: string,
     ) => Effect.Effect<void, SessionCredentialVerificationError>;
     readonly revoke: (
       sessionId: AuthSessionId,
@@ -500,6 +515,9 @@ const make = Effect.gen(function* () {
   const signingSecret = yield* secretStore.getOrCreateRandom(SIGNING_SECRET_NAME, 32);
   const connectedSessionsRef = yield* Ref.make(new Map<AuthSessionId, number>());
   const changesPubSub = yield* PubSub.unbounded<SessionCredentialChange>();
+  // Newest session per DPoP key. A live socket moves to it at expiry, so a
+  // client that renews its short-lived token keeps its socket.
+  const latestSessionByProofKey = new Map<string, AuthSessionId>();
   const cookieInput = {
     mode: serverConfig.mode,
     port: serverConfig.port,
@@ -706,6 +724,7 @@ const make = Effect.gen(function* () {
             })
           : authSessions.create(sessionRecord).pipe(Effect.as([] as ReadonlyArray<AuthSessionId>))
       ).pipe(Effect.mapError((cause) => new SessionCredentialIssueError({ sessionId, cause })));
+      if (claims.jkt) latestSessionByProofKey.set(claims.jkt, sessionId);
       if (replacedSessionIds.length > 0) {
         yield* Ref.update(connectedSessionsRef, (current) => {
           const next = new Map(current);
@@ -837,7 +856,7 @@ const make = Effect.gen(function* () {
         client: toClientMetadata(row.value.client),
         expiresAt: expiresAt.value,
         subject: claims.sub,
-        scopes: claims.scopes,
+        scopes: row.value.scopes,
         ...(claims.jkt ? { proofKeyThumbprint: claims.jkt } : {}),
         ...(claims.rtc ? { runtimeModeCeiling: claims.rtc } : {}),
         ...(claims.plk === 1 ? { peerLink: true as const } : {}),
@@ -1053,33 +1072,99 @@ const make = Effect.gen(function* () {
     }
   });
 
-  const awaitInvalidation = Effect.fn(function* (sessionId: AuthSessionId) {
-    return yield* Effect.scoped(
+  const socketCredential = Effect.fn("SessionStore.socketCredential")(function* (
+    sessionId: AuthSessionId,
+    proofKeyThumbprint?: string,
+  ) {
+    const readRow = (id: AuthSessionId) =>
+      authSessions
+        .getById({ sessionId: id })
+        .pipe(
+          Effect.mapError(
+            (cause) => new SessionCredentialVerificationError({ sessionId: id, cause }),
+          ),
+        );
+    const lock = yield* Semaphore.make(1);
+    const chain = [sessionId];
+    let ended = false;
+    // Millis left on the chain's newest session, or null once the chain has ended for good.
+    // The watcher and authorization share this: whichever runs first at an expiry moves the chain.
+    const remainingMillis = Effect.gen(function* () {
+      if (ended) return null;
+      while (true) {
+        const rows = yield* Effect.forEach(chain, readRow);
+        // Revoking any session the socket has used closes it.
+        const live = rows.flatMap((row) =>
+          Option.isSome(row) && row.value.revokedAt === null ? [row.value] : [],
+        );
+        const original = live[0];
+        const current = live.at(-1);
+        if (live.length < chain.length || original === undefined || current === undefined) {
+          ended = true;
+          return null;
+        }
+        const now = yield* DateTime.now;
+        const remaining = current.expiresAt.epochMilliseconds - now.epochMilliseconds;
+        if (remaining > 0) return remaining;
+        const successorId =
+          proofKeyThumbprint === undefined
+            ? undefined
+            : latestSessionByProofKey.get(proofKeyThumbprint);
+        const successor =
+          successorId === undefined || successorId === current.sessionId
+            ? Option.none()
+            : yield* readRow(successorId);
+        // The socket keeps its original scopes, so the renewal must still grant all of them.
+        if (
+          Option.isNone(successor) ||
+          successor.value.subject !== original.subject ||
+          !original.scopes.every((scope) => successor.value.scopes.includes(scope))
+        ) {
+          ended = true;
+          return null;
+        }
+        chain.push(successor.value.sessionId);
+      }
+    }).pipe(lock.withPermits(1));
+    const assertSocketActive = Effect.gen(function* () {
+      if ((yield* remainingMillis) === null) {
+        return yield* new SessionCredentialVerificationError({
+          sessionId,
+          cause: "inactive-session",
+        });
+      }
+    });
+    const awaitSocketInvalidation = Effect.scoped(
       Effect.gen(function* () {
         // Subscribe before reading: revocation can race with the WebSocket upgrade.
         const subscription = yield* PubSub.subscribe(changesPubSub);
-        const row = yield* authSessions
-          .getById({ sessionId })
-          .pipe(
-            Effect.mapError(
-              (cause) => new SessionCredentialVerificationError({ sessionId, cause }),
-            ),
-          );
-        if (Option.isNone(row) || row.value.revokedAt !== null) return;
-        const now = yield* DateTime.now;
-        const remaining = row.value.expiresAt.epochMilliseconds - now.epochMilliseconds;
-        if (remaining <= 0) return;
-        yield* Effect.raceFirst(
-          Stream.fromSubscription(subscription).pipe(
-            Stream.filter(
-              (change) => change.type === "clientRemoved" && change.sessionId === sessionId,
-            ),
-            Stream.runHead,
-          ),
-          Effect.sleep(Duration.millis(remaining)),
-        );
+        // Events only wake this loop and the rows decide: revocations are written before they are
+        // published, and clientRemoved also reports an expired session losing its last socket.
+        const nextRemoval = Effect.gen(function* () {
+          while (true) {
+            const change = yield* PubSub.take(subscription);
+            if (change.type === "clientRemoved" && chain.includes(change.sessionId)) return;
+          }
+        });
+        while (true) {
+          const remaining = yield* remainingMillis;
+          if (remaining === null) return;
+          yield* Effect.raceFirst(nextRemoval, Effect.sleep(Duration.millis(remaining)));
+        }
       }),
     );
+    return {
+      assertActive: assertSocketActive,
+      awaitInvalidation: awaitSocketInvalidation,
+    } satisfies SocketCredential;
+  });
+
+  const awaitInvalidation = Effect.fn(function* (
+    sessionId: AuthSessionId,
+    proofKeyThumbprint?: string,
+  ) {
+    const credential = yield* socketCredential(sessionId, proofKeyThumbprint);
+    return yield* credential.awaitInvalidation;
   });
 
   return SessionStore.of({
@@ -1091,6 +1176,7 @@ const make = Effect.gen(function* () {
     verifyWebSocketToken,
     listActive,
     assertActive,
+    socketCredential,
     awaitInvalidation,
     get streamChanges() {
       return Stream.fromPubSub(changesPubSub);

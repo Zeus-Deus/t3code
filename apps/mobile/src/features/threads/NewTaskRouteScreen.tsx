@@ -10,7 +10,7 @@ import {
   type StaticScreenProps,
 } from "@react-navigation/native";
 import { SymbolView } from "../../components/ui/AppSymbol";
-import { availableScratchWorkspaceRoot } from "@t3tools/client-runtime/operations/projects";
+import { pickableProjectGroups } from "@t3tools/client-runtime/state/project-grouping";
 import { isScratchProject } from "@t3tools/client-runtime/state/projects";
 import {
   isAtomCommandInterrupted,
@@ -36,6 +36,11 @@ import { useWorkspaceState } from "../../state/workspace";
 import { useIncomingShare } from "../sharing/IncomingShareProvider";
 import { useNewTaskFlow } from "./new-task-flow-provider";
 import {
+  filterProjectScopes,
+  getProjectScopeSelectionTarget,
+  resolveNewTaskScratchOption,
+} from "./new-task-project-selection";
+import {
   projectDestinationOffers,
   readProjectDestination,
   releaseProjectDestination,
@@ -46,7 +51,6 @@ import type { HomeProjectScope } from "../home/homeThreadList";
 import { scopedProjectKey } from "../../lib/scopedEntities";
 import type { ConnectedEnvironmentSummary } from "../../state/remote-runtime-types";
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
-import { filterProjectScopes, getProjectScopeSelectionTarget } from "./new-task-project-selection";
 import { useSelectWorkspaceDetail } from "../workspace/useSelectWorkspaceDetail";
 
 type NewTaskRouteParams = {
@@ -186,6 +190,8 @@ function destinationProjectScopes(
         representative: project,
         projects: [project],
         projectRefs: [scopeProjectRef(project.environmentId, project.id)],
+        pinned: project.pinnedAt != null,
+        archived: project.archivedAt != null,
       };
     });
 }
@@ -227,18 +233,16 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
   const projectEmptyState = deriveProjectEmptyState(catalogState);
   const serverConfigs = useServerConfigs();
   const { connectedEnvironments } = useRemoteConnectionStatus();
-  const listScopes =
+  const listScopes = pickableProjectGroups(
     destination === null
-      ? projectScopes.filter(
-          (scope) =>
-            !scope.projects.every((project) =>
-              isScratchProject(
-                project,
-                serverConfigs.get(project.environmentId)?.scratchWorkspaceRoot,
-              ),
-            ),
-        )
-      : destinationProjectScopes(destination, projects, serverConfigs, connectedEnvironments);
+      ? projectScopes
+      : destinationProjectScopes(destination, projects, serverConfigs, connectedEnvironments),
+  ).filter(
+    (scope) =>
+      !scope.projects.every((project) =>
+        isScratchProject(project, serverConfigs.get(project.environmentId)?.scratchWorkspaceRoot),
+      ),
+  );
   const visibleScopes = filterProjectScopes(listScopes, searchText);
   const resumedDestinationKeyRef = useRef<string | null>(null);
   const reservedDestinationProject = incomingShare?.destination
@@ -256,21 +260,15 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
   const openScratch = useAtomCommand(projectEnvironment.openScratch, {
     reportFailure: false,
   });
-  const scratchEnvironments = connectedEnvironments.filter(
-    (environment) =>
-      availableScratchWorkspaceRoot(
-        environment.connectionState,
-        serverConfigs.get(environment.environmentId),
-      ) !== null,
-  );
-  const scratchEnvironment =
-    scratchEnvironments.find(
-      (environment) => environment.environmentId === selectedEnvironmentId,
-    ) ??
-    scratchEnvironments[0] ??
-    null;
-  const canStartScratch =
-    scratchEnvironment !== null && reservedDestinationProject === null && destination === null;
+  const scratchOption =
+    reservedDestinationProject === null && destination === null
+      ? resolveNewTaskScratchOption({
+          environments: connectedEnvironments,
+          serverConfigs,
+          selectedEnvironmentId,
+        })
+      : null;
+  const canStartScratch = scratchOption?.ready === true;
   const scratchStartInFlightRef = useRef(false);
 
   async function selectProject(project: EnvironmentProject): Promise<void> {
@@ -318,8 +316,8 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
   }
 
   async function startScratch(): Promise<void> {
-    if (!scratchEnvironment || scratchStartInFlightRef.current) return;
-    const environmentId = scratchEnvironment.environmentId;
+    if (!canStartScratch || !scratchOption || scratchStartInFlightRef.current) return;
+    const environmentId = scratchOption.environmentId;
     scratchStartInFlightRef.current = true;
     const result = await openScratch({ environmentId, input: {} });
     if (result._tag === "Failure") {
@@ -401,13 +399,14 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
               : {}),
           }}
         >
-          {canStartScratch && listScopes.length > 0 ? (
+          {scratchOption !== null && listScopes.length > 0 ? (
             Platform.OS === "android" ? (
               <View collapsable={false} className="overflow-hidden rounded-[28px] bg-grouped-card">
                 <NavigationRow
                   className="bg-grouped-card"
                   title="No project"
                   subtitle="Start a task without a project"
+                  disabled={!canStartScratch}
                   onPress={() => void startScratch()}
                   leading={
                     <SymbolView
@@ -424,8 +423,12 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
                 <Pressable
                   accessibilityRole="button"
                   accessibilityLabel="No project"
+                  disabled={!canStartScratch}
                   onPress={() => void startScratch()}
-                  className="flex-row items-center gap-3 bg-grouped-card px-4 py-3.5"
+                  className={cn(
+                    "flex-row items-center gap-3 bg-grouped-card px-4 py-3.5",
+                    !canStartScratch && "opacity-45",
+                  )}
                 >
                   <View className="h-7 w-7 items-center justify-center">
                     <SymbolView

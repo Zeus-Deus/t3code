@@ -12,3 +12,4 @@ export * from "./cards.ts";
 export * from "./startPage.ts";
 export * from "./treeCreate.ts";
 export * from "./wallpapers.ts";
+export * from "./projectAccess.ts";

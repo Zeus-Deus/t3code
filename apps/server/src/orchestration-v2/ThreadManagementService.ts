@@ -11,6 +11,7 @@ import type {
 import {
   type ChatAttachment,
   CommandId,
+  isListedThreadLineage,
   MessageId,
   OrchestrationV2StopWorkflowError,
   type OrchestrationV2StopWorkflowInput,
@@ -18,6 +19,7 @@ import {
   type OrchestrationV2ForceStopThreadInput,
   type OrchestrationV2ForceStopThreadResult,
   type ModelSelection,
+  type OrchestrationMessageContext,
   type OrchestrationV2Actor,
   type OrchestrationV2Command,
   type OrchestrationV2GetTurnItemResult,
@@ -143,6 +145,7 @@ export interface ThreadManagementSendInput {
   readonly senderThreadId?: ThreadId;
   readonly text: string;
   readonly attachments: ReadonlyArray<ChatAttachment>;
+  readonly context?: OrchestrationMessageContext;
   readonly modelSelection?: ModelSelection;
   readonly mode: ThreadManagementSendMode;
   readonly createdBy: OrchestrationV2Actor;
@@ -420,7 +423,7 @@ export interface ThreadManagementServiceShape {
   >;
   readonly getThreadMetadata: Orchestrator.OrchestratorV2["Service"]["getThreadMetadata"];
   readonly getThreadShell: Orchestrator.OrchestratorV2["Service"]["getThreadShell"];
-  /** Omit `projectId` to list every project's threads. */
+  /** Omit `projectId` to list every project's threads. Side chats are never listed. */
   readonly listProjectThreads: (input: {
     readonly projectId?: ProjectId | undefined;
     readonly includeSubagents: boolean;
@@ -726,6 +729,22 @@ const make = Effect.gen(function* () {
             }),
           ),
         );
+      case "prepared-run.release":
+      case "prepared-run.retry":
+        return orchestrator
+          .getThreadRecords(command.threadId, ["runs"], { runIds: [command.runId] })
+          .pipe(
+            Effect.flatMap((projection) => {
+              const run = projection.runs.find((candidate) => candidate.id === command.runId);
+              return run === undefined
+                ? Effect.void
+                : assertProviderInstanceEnabled({
+                    projectId: projection.thread.projectId,
+                    commandId: command.commandId,
+                    instanceId: run.providerInstanceId,
+                  });
+            }),
+          );
       default:
         return Effect.void;
     }
@@ -779,9 +798,10 @@ const make = Effect.gen(function* () {
         ),
         Effect.map((snapshot) =>
           snapshot.threads
-            .filter(
-              (thread) =>
-                input.includeSubagents || thread.lineage.relationshipToParent !== "subagent",
+            .filter((thread) =>
+              input.includeSubagents
+                ? thread.lineage.sideChat !== true
+                : isListedThreadLineage(thread.lineage),
             )
             .toSorted(
               (left, right) =>
@@ -833,6 +853,7 @@ const make = Effect.gen(function* () {
       ...(input.senderThreadId === undefined ? {} : { senderThreadId: input.senderThreadId }),
       text: input.text,
       attachments: input.attachments,
+      ...(input.context === undefined ? {} : { context: input.context }),
       ...(input.modelSelection === undefined ? {} : { modelSelection: input.modelSelection }),
       dispatchMode,
       createdBy: input.createdBy,

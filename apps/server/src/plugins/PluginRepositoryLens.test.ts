@@ -121,7 +121,7 @@ const loadPlugin = Effect.fn("RepositoryLensTest.loadPlugin")((initialPath: stri
         list: unexpected,
         metadata: unexpected,
       },
-      projects: { list: unexpected },
+      projects: { list: unexpected, requestAccess: unexpected },
       models: { list: unexpected },
       trees: {
         register: () => {

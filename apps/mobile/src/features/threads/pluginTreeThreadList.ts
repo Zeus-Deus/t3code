@@ -63,7 +63,8 @@ export function buildPluginTreeThreadListItems(input: {
       return scope === undefined ? null : { key: scope.key, project: scope };
     },
     showsEmptyProject: (scope) =>
-      input.selectedProjectKey === null || scope.key === input.selectedProjectKey,
+      !scope.archived &&
+      (input.selectedProjectKey === null || scope.key === input.selectedProjectKey),
     folds: input.folds,
     routeThreadKey: input.selectedThreadKey,
     activityAt: threadActivityTimestampMs,

@@ -28,6 +28,14 @@ const snapshot: PreviewSessionSnapshot = {
   updatedAt: "2026-10-06T17:00:00.000Z",
 };
 
+const pluginView = {
+  id: "plugin:inst:notes",
+  kind: "plugin",
+  installationId: "inst",
+  viewId: "notes",
+  title: "Notes",
+} as const;
+
 describe("closedViewStore", () => {
   it.each([
     { id: "bad", kind: "browser", threadRef: refA, snapshot: {} },
@@ -54,6 +62,18 @@ describe("closedViewStore", () => {
       threadRef: refA,
       surface: { kind: "pull-request", id: "pull-request:x", repository: "owner/repo", number: 1 },
     },
+    {
+      id: "bad",
+      kind: "panel-tab",
+      threadRef: refA,
+      surface: { kind: "side-chat", id: "side-chat:x" },
+    },
+    {
+      id: "bad",
+      kind: "panel-tab",
+      threadRef: refA,
+      surface: { ...pluginView, id: "plugin:inst:notes:someone-else", originThreadId: "side" },
+    },
   ])("discards incomplete saved views %j while retaining valid history", async (entry) => {
     const id = useClosedViewStore.getState().remember(diff(refA));
     const { storage, name } = useClosedViewStore.persist.getOptions();
@@ -66,6 +86,20 @@ describe("closedViewStore", () => {
     expect(useClosedViewStore.getState().entries).toEqual([{ ...diff(refA), id }]);
     expect(() => useClosedViewStore.getState().remember(diff(refB))).not.toThrow();
   });
+
+  it.each([
+    pluginView,
+    { ...pluginView, id: "plugin:inst:notes:side", originThreadId: ThreadId.make("side") },
+  ] as const)(
+    "keeps a closed plugin view through a stored-state migration: %j",
+    async (surface) => {
+      const entry = { id: "closed", kind: "panel-tab", threadRef: refA, surface } as const;
+      const { storage, name } = useClosedViewStore.persist.getOptions();
+      await storage!.setItem(name!, { state: { entries: [entry] }, version: 1 });
+      await useClosedViewStore.persist.rehydrate();
+      expect(useClosedViewStore.getState().entries).toEqual([entry]);
+    },
+  );
 
   it("keeps private tabs available in memory without saving their metadata", async () => {
     const store = useClosedViewStore.getState();
@@ -85,6 +119,11 @@ describe("closedViewStore", () => {
 
   it("removes private metadata and malformed entries from history saved by earlier versions", async () => {
     const store = useClosedViewStore.getState();
+    const sideChatId = store.remember({
+      kind: "panel-tab",
+      threadRef: refA,
+      surface: { id: "side-chat:side", kind: "side-chat", threadId: ThreadId.make("side") },
+    });
     const publicId = store.remember(diff(refA));
     const browserId = store.remember({
       kind: "browser",
@@ -115,6 +154,7 @@ describe("closedViewStore", () => {
     expect(useClosedViewStore.getState().entries.map((entry) => entry.id)).toEqual([
       browserId,
       publicId,
+      sideChatId,
     ]);
     const saved = JSON.stringify(await storage!.getItem(name!));
     expect(saved).not.toContain("private.example");

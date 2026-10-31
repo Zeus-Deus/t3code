@@ -1,4 +1,4 @@
-import type { ResolvedKeybindingsConfig, ScopedThreadRef } from "@t3tools/contracts";
+import { ThreadId, type ResolvedKeybindingsConfig, type ScopedThreadRef } from "@t3tools/contracts";
 import { DEFAULT_RESOLVED_KEYBINDINGS } from "@t3tools/shared/keybindings";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
@@ -10,6 +10,7 @@ const state = vi.hoisted(() => ({
   keybindings: [] as ResolvedKeybindingsConfig,
   params: {} as Record<string, string>,
   workspaceAvailable: true,
+  deletedThreadIds: new Set<string>(),
   navigate: vi.fn(),
   openPreview: vi.fn(),
   setShortcuts: vi.fn(async () => undefined),
@@ -65,7 +66,10 @@ vi.mock(import("../state/shell"), async (original) => {
 });
 vi.mock(import("../state/entities"), async (original) => ({
   ...(await original()),
-  readThreadShell: (() => ({ projectId: "project-1", worktreePath: null })) as never,
+  readThreadShell: ((threadRef: ScopedThreadRef) =>
+    state.deletedThreadIds.has(threadRef.threadId)
+      ? null
+      : { projectId: "project-1", worktreePath: null }) as never,
   readProject: (() =>
     state.workspaceAvailable ? { workspaceRoot: "/work/project" } : null) as never,
 }));
@@ -96,6 +100,7 @@ function setup() {
     keybindings: DEFAULT_RESOLVED_KEYBINDINGS,
     params: {},
     workspaceAvailable: true,
+    deletedThreadIds: new Set<string>(),
   });
   state.navigate.mockResolvedValue(undefined);
   state.openPreview.mockReset();
@@ -148,6 +153,34 @@ function press(target: Element = document.body) {
 }
 
 describe("root reopen shortcut", () => {
+  it("skips a closed plugin view whose side chat is gone, keeping it for when it returns", async () => {
+    setup();
+    const sideChatId = ThreadId.make("side-chat");
+    state.deletedThreadIds = new Set([sideChatId]);
+    const store = useClosedViewStore.getState();
+    store.remember({ kind: "panel-tab", threadRef: ref, surface: { id: "diff", kind: "diff" } });
+    const pluginView = store.remember({
+      kind: "panel-tab",
+      threadRef: ref,
+      surface: {
+        id: `plugin:inst:notes:${sideChatId}`,
+        kind: "plugin",
+        installationId: "inst",
+        viewId: "notes",
+        title: "Notes",
+        originThreadId: sideChatId,
+      },
+    });
+    await using _shortcut = await renderShortcut();
+    await act(() => press());
+    await vi.waitFor(() =>
+      expect(
+        selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, ref).surfaces,
+      ).toEqual([{ id: "diff", kind: "diff" }]),
+    );
+    expect(useClosedViewStore.getState().entries.map((entry) => entry.id)).toEqual([pluginView]);
+  });
+
   it("serializes deliberate presses while a browser restore waits for RPC", async () => {
     setup();
     useClosedViewStore

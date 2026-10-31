@@ -18,6 +18,7 @@ import { isPreviewFocused } from "../lib/previewFocus";
 import { isTerminalFocused } from "../lib/terminalFocus";
 import { isModelPickerOpen } from "../modelPickerVisibility";
 import {
+  closedViewSideChatId,
   planNextReopen,
   pullRequestsSearchForRestore,
   reopenClosedView,
@@ -91,14 +92,19 @@ export function ReopenClosedViewShortcut() {
           environmentKnown: true,
           catalogReady: true,
           ownerExists: true,
+          sideChatExists: true,
           shellLive: true,
           panel,
         };
       }
+      const sideChatId = closedViewSideChatId(entry);
       return {
         environmentKnown: catalog.entries.has(ref.environmentId),
         catalogReady: catalog.isReady,
         ownerExists: readThreadShell(ref) !== null || drafts.getDraftThreadByRef(ref) !== null,
+        sideChatExists:
+          sideChatId === null ||
+          readThreadShell(scopeThreadRef(ref.environmentId, sideChatId)) !== null,
         shellLive:
           appAtomRegistry.get(environmentShell.stateValueAtom(ref.environmentId)).status === "live",
         panel,

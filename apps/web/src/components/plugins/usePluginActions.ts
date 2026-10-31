@@ -33,7 +33,7 @@ import { openUrlInPreview } from "../../browser/openFileInPreview";
 import { isPreviewAvailableFor } from "../../browser/previewRuntime";
 import { composerTargetKey, type ComposerThreadTarget } from "../../composerDraftStore";
 import { readLocalApi } from "../../localApi";
-import { useRightPanelStore } from "../../rightPanelStore";
+import { rightPanelHostRef, useRightPanelStore } from "../../rightPanelStore";
 import { buildThreadRouteParams } from "../../threadRoutes";
 import { pluginEnvironment } from "../../state/plugins";
 import { previewEnvironment } from "../../state/preview";
@@ -47,6 +47,8 @@ interface PluginInvocationTarget {
   readonly environmentId: EnvironmentId;
   readonly installation: PluginInstallation;
   readonly threadRef: ScopedThreadRef | null;
+  /** The panel showing `threadRef`, when that is not its own: a side chat's parent. */
+  readonly panelRef?: ScopedThreadRef;
   readonly composerTarget: ComposerThreadTarget | null;
   /** `router.state.location.pathname` when the user acted. */
   readonly locationKey: string;
@@ -81,7 +83,10 @@ const openExternally = (url: string) => {
 export function usePluginViewOpener() {
   const navigate = useNavigate();
   return (
-    target: Pick<PluginInvocationTarget, "environmentId" | "installation" | "threadRef">,
+    target: Pick<
+      PluginInvocationTarget,
+      "environmentId" | "installation" | "threadRef" | "panelRef"
+    >,
     viewId: string,
     requestedThreadId?: ThreadId,
   ) => {
@@ -98,11 +103,15 @@ export function usePluginViewOpener() {
     );
     if (view.placement === "side-panel" && threadId !== null) {
       const threadRef = scopeThreadRef(target.environmentId, threadId);
-      useRightPanelStore.getState().openPluginView(threadRef, {
-        installationId: target.installation.installationId,
-        viewId: view.id,
-        title: view.title,
-      });
+      useRightPanelStore.getState().openPluginView(
+        threadRef,
+        {
+          installationId: target.installation.installationId,
+          viewId: view.id,
+          title: view.title,
+        },
+        requestedThreadId === undefined ? target.panelRef : undefined,
+      );
       if (requestedThreadId !== undefined) {
         void navigate({
           to: "/$environmentId/$threadId",
@@ -147,7 +156,7 @@ export function usePluginIntentApplier() {
         return;
       case "preview.open":
         if (target.threadRef !== null && step.mode === "apply") {
-          void openInPreview(target.threadRef, intent.url);
+          void openInPreview(target.panelRef ?? target.threadRef, intent.url);
         } else {
           openExternally(intent.url);
         }
@@ -253,10 +262,15 @@ export function usePluginActionRunner() {
   const invoke = useAtomCommand(pluginEnvironment.invoke, { reportFailure: false });
   const applyIntents = usePluginIntentApplier();
   return async (
-    target: PluginInvocationTarget,
+    actedOn: PluginInvocationTarget,
     action: PluginAction,
     context: PluginActionContext,
   ): Promise<void> => {
+    // Read before any await: a side chat pane that unmounts meanwhile drops its host mapping.
+    const target =
+      actedOn.threadRef === null || actedOn.panelRef !== undefined
+        ? actedOn
+        : { ...actedOn, panelRef: rightPanelHostRef(actedOn.threadRef) };
     const name = target.installation.manifest.name;
     if (!readEnvironmentScope(target.environmentId, AuthOrchestrationOperateScope)) {
       toastManager.add({

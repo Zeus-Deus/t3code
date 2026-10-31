@@ -146,6 +146,13 @@ export class ProjectService extends Context.Service<
     readonly getShell: (
       projectId: ProjectId,
     ) => Effect.Effect<Option.Option<OrchestrationProjectShell>, ProjectOperationError>;
+    /** The stored name and folder, without the enrichment `getShell` waits for. Safe under a lock. */
+    readonly getIdentity: (
+      projectId: ProjectId,
+    ) => Effect.Effect<
+      Option.Option<{ readonly title: string; readonly workspaceRoot: string }>,
+      ProjectOperationError
+    >;
     readonly listShells: (options?: {
       readonly projectIds?: ReadonlyArray<ProjectId>;
     }) => Effect.Effect<ReadonlyArray<OrchestrationProjectShell>, ProjectOperationError>;
@@ -179,6 +186,8 @@ export const make = Effect.gen(function* () {
     autoPull: row.autoPull,
     projectIcon: row.projectIcon,
     scripts: row.scripts,
+    pinnedAt: row.pinnedAt,
+    archivedAt: row.archivedAt,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     deletedAt: row.deletedAt,
@@ -386,6 +395,8 @@ export const make = Effect.gen(function* () {
           ? {}
           : { defaultThreadEnvMode: input.defaultThreadEnvMode }),
         ...(input.scripts === undefined ? {} : { scripts: input.scripts }),
+        ...(input.pinned === undefined ? {} : { pinned: input.pinned }),
+        ...(input.archived === undefined ? {} : { archived: input.archived }),
       });
       if (workspaceRoot !== previousRoot) {
         yield* projectEnrichment.invalidate([previousRoot, workspaceRoot]);
@@ -538,6 +549,11 @@ export const make = Effect.gen(function* () {
     },
   );
 
+  const getIdentity: ProjectService["Service"]["getIdentity"] = (projectId) =>
+    readRow(projectId).pipe(
+      Effect.map(Option.map(({ title, workspaceRoot }) => ({ title, workspaceRoot }))),
+    );
+
   const listShells: ProjectService["Service"]["listShells"] = Effect.fn(
     "ProjectService.listShells",
   )(function* (options) {
@@ -593,6 +609,7 @@ export const make = Effect.gen(function* () {
     snapshot,
     listPage,
     getShell,
+    getIdentity,
     listShells,
   });
 });

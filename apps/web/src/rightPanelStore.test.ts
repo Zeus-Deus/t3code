@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it } from "vite-plus/test";
 import { useClosedViewStore } from "./closedViewStore";
 import { reopenClosedView } from "./reopenClosedView";
 import {
+  hostRightPanel,
   migratePersistedRightPanelState,
   pullRequestSurface,
   pullRequestSurfaceId,
@@ -39,6 +40,87 @@ async function reloadRightPanelStore() {
 }
 
 describe("rightPanelStore", () => {
+  it("opens a hosted side chat's panel actions in its parent's panel until unhosted", () => {
+    const store = useRightPanelStore.getState();
+    const unhost = hostRightPanel(refB, refA);
+    store.openFile(refB, "src/app.ts");
+    expect(selectActiveRightPanelSurface(useRightPanelStore.getState().byThreadKey, refA)?.id).toBe(
+      "file:src/app.ts",
+    );
+    expect(
+      selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refB).surfaces,
+    ).toEqual([]);
+    unhost();
+    store.openFile(refB, "src/app.ts");
+    expect(selectActiveRightPanelSurface(useRightPanelStore.getState().byThreadKey, refB)?.id).toBe(
+      "file:src/app.ts",
+    );
+  });
+
+  it("binds a plugin view opened from a hosted side chat to that side chat", async () => {
+    const store = useRightPanelStore.getState();
+    const view = { installationId: "inst", viewId: "notes", title: "Notes" };
+    store.openPluginView(refA, view);
+    const unhost = hostRightPanel(refB, refA);
+    store.openPluginView(refB, view);
+    unhost();
+    const opened = selectThreadRightPanelState(
+      useRightPanelStore.getState().byThreadKey,
+      refA,
+    ).surfaces;
+    const [parentView, sideChatView] = opened;
+    expect(parentView).toEqual({ ...view, id: "plugin:inst:notes", kind: "plugin" });
+    expect(sideChatView).toEqual({
+      ...view,
+      id: `plugin:inst:notes:${refB.threadId}`,
+      kind: "plugin",
+      originThreadId: refB.threadId,
+    });
+
+    // Reopening a closed tab happens on the parent, after the side chat may have closed.
+    store.closeSurface(refA, sideChatView!.id);
+    const [closed] = useClosedViewStore.getState().entries;
+    expect(closed).toMatchObject({ kind: "panel-tab", threadRef: refA, surface: sideChatView });
+    await reopenClosedView(closed!, {
+      workspaceAvailable: true,
+      openPreview: () => {
+        throw new Error("A plugin tab must not create a browser session");
+      },
+    });
+    expect(selectActiveRightPanelSurface(useRightPanelStore.getState().byThreadKey, refA)).toEqual(
+      sideChatView,
+    );
+  });
+
+  it("opens a side chat's next plugin view in the panel named for it, once unhosted", () => {
+    const view = { installationId: "inst", viewId: "notes", title: "Notes" };
+    useRightPanelStore.getState().openPluginView(refB, view, refA);
+    const opened = selectActiveRightPanelSurface(useRightPanelStore.getState().byThreadKey, refA);
+    expect(opened).toMatchObject({ ...view, originThreadId: refB.threadId });
+    expect(
+      selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refB).surfaces,
+    ).toEqual([]);
+    useRightPanelStore.getState().openPluginView(refA, view, refA);
+    expect(
+      selectActiveRightPanelSurface(useRightPanelStore.getState().byThreadKey, refA),
+    ).not.toHaveProperty("originThreadId");
+  });
+
+  it("keeps stored plugin views that predate their originating thread", async () => {
+    const legacy = {
+      id: "plugin:inst:notes",
+      kind: "plugin",
+      installationId: "inst",
+      viewId: "notes",
+      title: "Notes",
+    } as const;
+    useRightPanelStore.getState().openPluginView(refA, legacy);
+    await reloadRightPanelStore();
+    expect(selectActiveRightPanelSurface(useRightPanelStore.getState().byThreadKey, refA)).toEqual(
+      legacy,
+    );
+  });
+
   it("records single and bulk tab closes, newest first", () => {
     const store = useRightPanelStore.getState();
     const pr = pullRequestSurface({

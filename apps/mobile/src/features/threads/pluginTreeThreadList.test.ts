@@ -209,7 +209,16 @@ describe("buildPluginTreeThreadListItems", () => {
       });
     const delegated = subagent("delegated", "mcp");
     const internal = subagent("internal", "provider");
-    const all = [main, delegated, internal, thread("loose")];
+    const sideChat = thread("side-chat", {
+      source: { ...main.source, creationSource: "mcp" },
+      lineage: {
+        parentThreadId: main.id,
+        rootThreadId: main.id,
+        relationshipToParent: "fork",
+        sideChat: true,
+      },
+    });
+    const all = [main, delegated, internal, sideChat, thread("loose")];
     // Activity's own filter still hides every subagent.
     expect(
       filterThreadListV2Threads({ threads: all, environmentId: null }).map((entry) => entry.id),

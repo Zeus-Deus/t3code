@@ -1,4 +1,4 @@
-import type { EnvironmentId, ProjectId } from "@t3tools/contracts";
+import type { EnvironmentId, ProjectId, ThreadId } from "@t3tools/contracts";
 
 import type { OpenPreviewMutation } from "./browser/openFileInPreview";
 import type { ClosedView, ClosedViewEntry } from "./closedViewStore";
@@ -14,8 +14,17 @@ export interface ReopenOwnerState {
   environmentKnown: boolean;
   catalogReady: boolean;
   ownerExists: boolean;
+  /** False only for a tab that depends on a side chat gone from the shell. */
+  sideChatExists: boolean;
   shellLive: boolean;
   panel: ThreadRightPanelState;
+}
+
+/** The side chat a closed tab depends on: its own conversation, or a plugin view's origin. */
+export function closedViewSideChatId(view: ClosedView): ThreadId | null {
+  if (view.kind !== "panel-tab") return null;
+  if (view.surface.kind === "side-chat") return view.surface.threadId;
+  return view.surface.kind === "plugin" ? (view.surface.originThreadId ?? null) : null;
 }
 
 export function planNextReopen(
@@ -30,7 +39,7 @@ export function planNextReopen(
       drop.push(entry);
       continue;
     }
-    if (!owner.ownerExists) {
+    if (!owner.ownerExists || !owner.sideChatExists) {
       if (owner.shellLive) continue;
       break;
     }
@@ -136,6 +145,9 @@ export async function reopenClosedView(
       break;
     case "plugin":
       panels.openPluginView(ref, surface);
+      break;
+    case "side-chat":
+      panels.openSideChat(ref, surface.threadId);
       break;
     default:
       panels.open(ref, surface.kind);

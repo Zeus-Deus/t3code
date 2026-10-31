@@ -258,6 +258,10 @@ export const runPluginHostChild = async (): Promise<void> => {
           (await hostCall("projects.list", input)) as Awaited<
             ReturnType<PluginContext["projects"]["list"]>
           >,
+        requestAccess: async (input) =>
+          (await hostCall("projects.requestAccess", input)) as Awaited<
+            ReturnType<PluginContext["projects"]["requestAccess"]>
+          >,
       },
       models: {
         list: async (input) =>

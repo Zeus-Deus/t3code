@@ -22,6 +22,7 @@ const RIGHT_PANEL_KINDS = [
   "pull-request",
   "pull-requests",
   "plugin",
+  "side-chat",
 ] as const;
 export type RightPanelKind = (typeof RIGHT_PANEL_KINDS)[number];
 
@@ -83,7 +84,10 @@ export type RightPanelSurface =
       installationId: string;
       viewId: string;
       title: string;
-    };
+      /** The side chat it opened from, hosted in this panel; absent means the panel's own thread. */
+      originThreadId?: ThreadId;
+    }
+  | { id: `side-chat:${string}`; kind: "side-chat"; threadId: ThreadId };
 
 const RIGHT_PANEL_STORAGE_KEY = "t3code:right-panel-state:v2";
 const RIGHT_PANEL_STORAGE_VERSION = 14;
@@ -130,8 +134,9 @@ interface RightPanelStoreState {
   ) => boolean;
   open: (
     ref: ScopedThreadRef,
-    kind: Exclude<RightPanelKind, "file" | "terminal" | "pull-request" | "plugin">,
+    kind: Exclude<RightPanelKind, "file" | "terminal" | "pull-request" | "plugin" | "side-chat">,
   ) => void;
+  openSideChat: (ref: ScopedThreadRef, threadId: ThreadId) => void;
   openDevice: (ref: ScopedThreadRef, target: DeviceTabTarget, automatic?: boolean) => void;
   renameDevice: (ref: ScopedThreadRef, surfaceId: string, title: string) => void;
   openBrowser: (ref: ScopedThreadRef, tabId: string | null) => void;
@@ -147,7 +152,9 @@ interface RightPanelStoreState {
   openAttachment: (ref: ScopedThreadRef, attachment: ChatFileAttachment) => void;
   openPluginView: (
     ref: ScopedThreadRef,
-    target: { installationId: string; viewId: string; title: string },
+    target: { installationId: string; viewId: string; title: string; originThreadId?: ThreadId },
+    /** The panel showing `ref`, which outlives a side chat pane's host registration. */
+    panelRef?: ScopedThreadRef,
   ) => void;
   openPullRequest: (
     ref: ScopedThreadRef,
@@ -193,7 +200,7 @@ interface RightPanelStoreState {
   toggleVisibility: (ref: ScopedThreadRef) => void;
   toggle: (
     ref: ScopedThreadRef,
-    kind: Exclude<RightPanelKind, "file" | "terminal" | "pull-request" | "plugin">,
+    kind: Exclude<RightPanelKind, "file" | "terminal" | "pull-request" | "plugin" | "side-chat">,
   ) => void;
   setThreadPanelOpen: (
     ref: ScopedThreadRef,
@@ -219,16 +226,25 @@ const pluginSurface = (target: {
   installationId: string;
   viewId: string;
   title: string;
+  originThreadId?: ThreadId;
 }): Extract<RightPanelSurface, { kind: "plugin" }> => ({
-  id: `plugin:${target.installationId}:${target.viewId}`,
+  // A view keeps one document per thread, so a side chat's copy is a separate tab from its parent's.
+  id:
+    target.originThreadId === undefined
+      ? `plugin:${target.installationId}:${target.viewId}`
+      : `plugin:${target.installationId}:${target.viewId}:${target.originThreadId}`,
   kind: "plugin",
   installationId: target.installationId,
   viewId: target.viewId,
   title: target.title,
+  ...(target.originThreadId === undefined ? {} : { originThreadId: target.originThreadId }),
 });
 
 const singletonSurface = (
-  kind: Exclude<RightPanelKind, "file" | "preview" | "terminal" | "pull-request" | "plugin">,
+  kind: Exclude<
+    RightPanelKind,
+    "file" | "preview" | "terminal" | "pull-request" | "plugin" | "side-chat"
+  >,
 ): RightPanelSurface => {
   switch (kind) {
     case "diff":
@@ -407,11 +423,39 @@ const automaticUpdate = (
   ...updateThread(state, threadKey, updater),
 });
 
+// A side chat pane has no panel of its own, so its panel actions open in its parent's panel.
+const panelHosts = new Map<string, ScopedThreadRef>();
+
+/** Routes `guest`'s panel actions to `host`'s panel until the returned cleanup runs. */
+export function hostRightPanel(guest: ScopedThreadRef, host: ScopedThreadRef): () => void {
+  const guestKey = scopedThreadKey(guest);
+  panelHosts.set(guestKey, host);
+  return () => {
+    if (panelHosts.get(guestKey) === host) panelHosts.delete(guestKey);
+  };
+}
+
+/** The thread whose panel shows `ref`'s panel actions, so it also owns their browser tabs. */
+export function rightPanelHostRef(ref: ScopedThreadRef): ScopedThreadRef {
+  return panelHosts.get(scopedThreadKey(ref)) ?? ref;
+}
+
 const userAction = (
+  state: RightPanelStoreState,
+  guestKey: string,
+  updater: (current: ThreadRightPanelState) => ThreadRightPanelState,
+  closesView = false,
+): Partial<RightPanelStoreState> => {
+  const host = panelHosts.get(guestKey);
+  const threadKey = host === undefined ? guestKey : scopedThreadKey(host);
+  return userActionOnThread(state, threadKey, updater, closesView);
+};
+
+const userActionOnThread = (
   state: RightPanelStoreState,
   threadKey: string,
   updater: (current: ThreadRightPanelState) => ThreadRightPanelState,
-  closesView = false,
+  closesView: boolean,
 ): Partial<RightPanelStoreState> => ({
   ...updateThread(state, threadKey, (current) => {
     const next = updater(current);
@@ -714,6 +758,12 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
             );
           }),
         ),
+      openSideChat: (ref, threadId) =>
+        set((state) =>
+          userAction(state, scopedThreadKey(ref), (current) =>
+            upsertSurface(current, { id: `side-chat:${threadId}`, kind: "side-chat", threadId }),
+          ),
+        ),
       renameDevice: (ref, surfaceId, title) =>
         set((state) =>
           userAction(state, scopedThreadKey(ref), (current) => ({
@@ -735,12 +785,15 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
             return upsertSurface({ ...current, surfaces: withoutPlaceholder }, surface);
           }),
         ),
-      openPluginView: (ref, target) =>
-        set((state) =>
-          userAction(state, scopedThreadKey(ref), (current) =>
-            upsertSurface(current, pluginSurface(target)),
-          ),
-        ),
+      openPluginView: (ref, target, panelRef) =>
+        set((state) => {
+          const threadKey = scopedThreadKey(ref);
+          const panelKey = scopedThreadKey(panelRef ?? rightPanelHostRef(ref));
+          const surface = pluginSurface(
+            panelKey === threadKey ? target : { ...target, originThreadId: ref.threadId },
+          );
+          return userAction(state, panelKey, (current) => upsertSurface(current, surface));
+        }),
       openPullRequest: (ref, target) =>
         set((state) =>
           userAction(state, scopedThreadKey(ref), (current) => {
