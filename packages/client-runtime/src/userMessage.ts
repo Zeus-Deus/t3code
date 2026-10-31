@@ -9,6 +9,7 @@ import {
   type OrchestrationV2PluginBrief,
   type MessageId,
   type OrchestrationV2UserMessageInputIntent,
+  type PluginMessageSender,
   ScheduledTaskId,
 } from "@t3tools/contracts";
 import {
@@ -67,13 +68,20 @@ export function resolveUserMessagePresentation(message: {
   readonly createdBy?: OrchestrationV2Actor;
   readonly creationSource?: OrchestrationV2CreationSource;
   readonly scheduledTaskId?: ScheduledTaskId | undefined;
-  readonly context?: { readonly guest?: GuestMessageAttribution | undefined } | undefined;
+  readonly context?:
+    | {
+        readonly guest?: GuestMessageAttribution | undefined;
+        readonly pluginSender?: PluginMessageSender | undefined;
+      }
+    | undefined;
 }): {
   readonly text: string;
   readonly attribution: "automation" | "agent" | "t3code" | "guest" | null;
   readonly scheduledTaskId: ScheduledTaskId | undefined;
   /** Set when `attribution` is "guest". */
   readonly guestName?: string;
+  /** Replaces the sending thread's title when the server verified who sent it. */
+  readonly senderLabel?: string;
 } {
   if (message.role !== "user") {
     return { text: message.text, attribution: null, scheduledTaskId: undefined };
@@ -86,6 +94,15 @@ export function resolveUserMessagePresentation(message: {
       attribution: "guest",
       scheduledTaskId: undefined,
       guestName: guest.name,
+    };
+  }
+  const pluginSender = message.context?.pluginSender;
+  if (pluginSender !== undefined) {
+    return {
+      text: pluginSender.text,
+      attribution: "agent",
+      scheduledTaskId: undefined,
+      senderLabel: `From ${pluginSender.projectTitle}`,
     };
   }
   if (message.scheduledTaskId !== undefined) {

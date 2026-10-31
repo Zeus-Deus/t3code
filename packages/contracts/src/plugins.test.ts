@@ -105,10 +105,11 @@ it("keeps exclusive tree declarations and ownership additive in API 1", () => {
 });
 
 it("requires management authority to add exactly one project grant", () => {
-  expect(clientRpcRequiredScopes("plugins.grantProject", {})).toEqual([
-    AuthAccessWriteScope,
-    AuthTerminalOperateScope,
-  ]);
+  for (const method of ["plugins.grantProject", "plugins.answerProjectAccess"])
+    expect(clientRpcRequiredScopes(method, {})).toEqual([
+      AuthAccessWriteScope,
+      AuthTerminalOperateScope,
+    ]);
 });
 
 it("keeps optional project conversations in API 1 trees with only one opening target", () => {

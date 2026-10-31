@@ -236,6 +236,12 @@ const CAPABILITY_TEXT: Record<
       "Own project conversations in its sidebar, choose projects to add, and restore its archived threads when you ask.",
     projectScoped: false,
   },
+  "projects.request-access": {
+    title: "Ask to add projects",
+    detail:
+      "Ask you, in its own conversations, to give it another project. Only your answer grants it.",
+    projectScoped: false,
+  },
   "ui.conversation-cards": {
     title: "Show cards in chat",
     detail: "Show its own interactive cards in a conversation when an agent uses it.",

@@ -18,6 +18,7 @@ export const pluginRpcTags = [
   WS_METHODS.pluginsDiscardPendingUpdate,
   WS_METHODS.pluginsConsent,
   WS_METHODS.pluginsGrantProject,
+  WS_METHODS.pluginsAnswerProjectAccess,
   WS_METHODS.pluginsSetEnabled,
   WS_METHODS.pluginsResume,
   WS_METHODS.pluginsRemove,
@@ -68,6 +69,8 @@ export const layer = (actor: PluginActor, sessionId: AuthSessionId) =>
         [WS_METHODS.pluginsDiscardPendingUpdate]: (input) => plugins.discardPendingUpdate(input),
         [WS_METHODS.pluginsConsent]: (input) => plugins.consent(input),
         [WS_METHODS.pluginsGrantProject]: (input) => plugins.grantProject(input, authorizedActor),
+        [WS_METHODS.pluginsAnswerProjectAccess]: (input) =>
+          plugins.answerProjectAccess(input, authorizedActor),
         [WS_METHODS.pluginsSetEnabled]: (input) => plugins.setEnabled(input),
         [WS_METHODS.pluginsResume]: (input) => plugins.resume(input),
         [WS_METHODS.pluginsRemove]: (input) => plugins.remove(input),

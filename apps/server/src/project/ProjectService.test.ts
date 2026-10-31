@@ -201,6 +201,10 @@ it.layer(layerTest)("ProjectService", (it) => {
       assert.isTrue(Option.isSome(byId));
       assert.isTrue(Option.isSome(byWorkspace));
       assert.equal(Option.getOrThrow(byWorkspace).id, projectId);
+      assert.deepEqual(Option.getOrThrow(yield* service.getIdentity(projectId)), {
+        title: "Renamed",
+        workspaceRoot: updated.workspaceRoot,
+      });
       assert.isTrue(Option.getOrThrow(byId).autoPull);
       assert.deepEqual(Option.getOrThrow(byId).projectIcon, updated.projectIcon);
       assert.equal(Option.getOrThrow(byId).faviconPath, updated.faviconPath);

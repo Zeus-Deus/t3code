@@ -36,6 +36,7 @@ export const PluginHostMethod = Schema.Literals([
   "threads.adopt",
   "threads.unarchive",
   "projects.list",
+  "projects.requestAccess",
   "models.list",
   "ui.invalidate",
 ]);

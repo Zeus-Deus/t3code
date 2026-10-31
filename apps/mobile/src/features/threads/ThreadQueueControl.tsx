@@ -72,7 +72,9 @@ function QueuedRunSender(props: {
   readonly environmentId: EnvironmentId;
   readonly message: QueuedRunMessage;
 }) {
-  const { attribution, scheduledTaskId } = resolveUserMessagePresentation(props.message);
+  const { attribution, scheduledTaskId, senderLabel } = resolveUserMessagePresentation(
+    props.message,
+  );
   const senderThreadId = attribution === "agent" ? props.message.senderThreadId : undefined;
   const senderShell = useQuietThreadShell(
     senderThreadId ? scopeThreadRef(props.environmentId, senderThreadId) : null,
@@ -92,7 +94,7 @@ function QueuedRunSender(props: {
       : attribution === "agent"
         ? {
             icon: "bubble.left.and.bubble.right" as const,
-            label: senderShell?.title.trim() || "Agent",
+            label: senderLabel ?? (senderShell?.title.trim() || "Agent"),
           }
         : attribution === "t3code"
           ? { icon: null, label: "Sent by T3 Code" }

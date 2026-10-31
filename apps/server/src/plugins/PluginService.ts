@@ -2,6 +2,7 @@ import {
   AuthAccessWriteScope,
   AuthTerminalOperateScope,
   type PluginGrantProjectInput,
+  type PluginProjectAccessAnswerInput,
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
   ProjectId,
@@ -159,6 +160,10 @@ export class PluginService extends Context.Service<
       readonly grants: PluginGrants;
       readonly eventBacklog?: PluginEventBacklogPolicy;
     }) => Effect.Effect<PluginInstallation, PluginError>;
+    readonly answerProjectAccess: (
+      input: PluginProjectAccessAnswerInput,
+      actor: PluginActor,
+    ) => Effect.Effect<PluginInstallation, PluginError>;
     readonly grantProject: (
       input: PluginGrantProjectInput,
       actor: PluginActor,
@@ -1804,9 +1809,14 @@ const make = Effect.gen(function* () {
       };
     });
   }, lifecycle);
-  const grantProject = Effect.fn("PluginService.grantProject")(function* (
-    input: PluginGrantProjectInput,
+  // Every project grant goes through here: only a person's session can reach it, never a plugin,
+  // an agent or a background delivery.
+  const changeProjectAccess = Effect.fn("PluginService.changeProjectAccess")(function* <A>(
+    input: Pick<PluginGrantProjectInput, "installationId" | "generation" | "projectId">,
     actor: PluginActor,
+    change: (
+      record: PluginStore.StoredInstallation,
+    ) => Effect.Effect<readonly [A, PluginStore.StoredInstallation], PluginError>,
   ) {
     if (
       actor.source !== "client" ||
@@ -1834,35 +1844,120 @@ const make = Effect.gen(function* () {
               assertPluginActive(present(record), input.generation) ??
               assertNotTransitioning(input.installationId);
             if (denied) return yield* denied;
-            if (!pluginCapabilityAllowed(record.installation, actor, "ui.native-tree-projects"))
-              return yield* pluginPermissionDenied();
-            if (record.installation.grants.projectIds.includes(input.projectId))
-              return [present(record), state] as const;
-            const next = {
-              ...record,
-              installation: {
-                ...record.installation,
-                grants: {
-                  ...record.installation.grants,
-                  projectIds: [...record.installation.grants.projectIds, input.projectId],
-                },
-              },
-            };
+            const [value, next] = yield* change(record);
             return [
-              present(next),
-              {
-                ...state,
-                installations: state.installations.map((current) =>
-                  current === record ? next : current,
-                ),
-              },
+              value,
+              next === record
+                ? state
+                : {
+                    ...state,
+                    installations: state.installations.map((current) =>
+                      current === record ? next : current,
+                    ),
+                  },
             ] as const;
           }),
         )
         .pipe(Effect.mapError((error) => (isPluginError(error) ? error : failure())));
       if (Option.isSome(result) && result.value !== null) return result.value;
     }
+  });
+  const withProject = (record: PluginStore.StoredInstallation, projectId: ProjectId) =>
+    record.installation.grants.projectIds.includes(projectId)
+      ? record
+      : {
+          ...record,
+          installation: {
+            ...record.installation,
+            grants: {
+              ...record.installation.grants,
+              projectIds: [...record.installation.grants.projectIds, projectId],
+            },
+          },
+        };
+  const grantProject = Effect.fn("PluginService.grantProject")(function* (
+    input: PluginGrantProjectInput,
+    actor: PluginActor,
+  ) {
+    return yield* changeProjectAccess(input, actor, (record) => {
+      if (!pluginCapabilityAllowed(record.installation, actor, "ui.native-tree-projects"))
+        return Effect.fail(pluginPermissionDenied());
+      const next = withProject(record, input.projectId);
+      return Effect.succeed([present(next), next] as const);
+    });
   }, lifecycle);
+  const answerProjectAccessRequest = Effect.fn("PluginService.answerProjectAccessRequest")(
+    function* (input: PluginProjectAccessAnswerInput, actor: PluginActor) {
+      const declinedAt = yield* now;
+      return yield* changeProjectAccess(input, actor, (record) => {
+        const requests = record.installation.projectAccessRequests ?? [];
+        const request = requests.find(
+          (entry) => entry.projectId === input.projectId && entry.declinedAt === undefined,
+        );
+        if (!pluginCapabilityAllowed(record.installation, actor, "projects.request-access"))
+          return Effect.fail(pluginPermissionDenied());
+        // A second person's answer, or an RPC nothing asked for, lands here.
+        if (request === undefined)
+          return Effect.fail(
+            new PluginError({
+              reason: "not_found",
+              message: "This project request has already been answered.",
+            }),
+          );
+        const remaining =
+          input.decision === "grant"
+            ? requests.filter((entry) => entry !== request)
+            : requests.map((entry) => (entry === request ? { ...entry, declinedAt } : entry));
+        const answered = input.decision === "grant" ? withProject(record, input.projectId) : record;
+        const result = [
+          request,
+          {
+            ...answered,
+            installation: { ...answered.installation, projectAccessRequests: remaining },
+          },
+        ] as const;
+        if (input.decision === "decline") return Effect.succeed(result);
+        // Project writes don't touch this store, so compare here, after authorization and under
+        // its lock. A later rename is ordered after the grant, like one a moment after it.
+        return projects.getIdentity(input.projectId).pipe(
+          Effect.mapError(() => pluginPermissionDenied()),
+          Effect.filterOrFail(
+            (project) =>
+              Option.isSome(project) &&
+              project.value.title === input.shown.title &&
+              project.value.workspaceRoot === input.shown.workspaceRoot,
+            () =>
+              new PluginError({
+                reason: "permission_denied",
+                code: "project_changed",
+                message:
+                  "This project's name or folder changed. Check the card again before adding it.",
+              }),
+          ),
+          Effect.as(result),
+        );
+      });
+    },
+    lifecycle,
+  );
+  const answerProjectAccess = Effect.fn("PluginService.answerProjectAccess")(function* (
+    input: PluginProjectAccessAnswerInput,
+    actor: PluginActor,
+  ) {
+    const request = yield* answerProjectAccessRequest(input, actor);
+    yield* invoke(
+      {
+        installationId: input.installationId,
+        generation: input.generation,
+        handler: `action:${request.actionId}`,
+        input: { projectAccess: input.decision === "grant" ? "granted" : "declined" },
+        context: { projectId: request.projectId, threadId: request.threadId },
+        operationId: yield* id,
+      },
+      actor,
+    );
+    return present(yield* get(input.installationId));
+  });
   const execute = Effect.fn("PluginService.execute")(
     function* (
       input: {
@@ -2561,6 +2656,7 @@ const make = Effect.gen(function* () {
     remove,
     updateSettings,
     grantProject,
+    answerProjectAccess,
     invoke,
     readTree,
     readCardView,

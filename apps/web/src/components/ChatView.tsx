@@ -151,6 +151,7 @@ import { subscribeSnapShotComposerFocus } from "../lib/desktopSnapShot";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { FileMetadataThreadProvider } from "../hooks/FileMetadataThreadProvider";
 import { RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY } from "../rightPanelLayout";
+import { PluginProjectAccessCard, usePluginProjectAccess } from "./plugins/PluginProjectAccessCard";
 import { PluginThreadStatusesProvider } from "./plugins/PluginThreadStatuses";
 import { PopoverCreateHandle } from "./ui/popover";
 import {
@@ -473,6 +474,7 @@ export default function ChatView(props: ChatViewProps) {
         : null,
   );
   const serverThreadShell = useQuietThreadShell(routeThreadRef);
+  const pendingProjectAccess = usePluginProjectAccess(routeThreadRef);
   const routeThreadDetailRef = resolveThreadDetailRef(routeThreadRef, {
     shellExists: serverThreadShell !== null,
     waitForShell: draftThread !== null,
@@ -3033,12 +3035,16 @@ export default function ChatView(props: ChatViewProps) {
   // The end of the timeline holds the thread's present and next turns: what it is doing now,
   // its lifecycle status, guest messages awaiting you, then your queued messages.
   const timelineFooter =
+    pendingProjectAccess === null &&
     pendingHandoff === null &&
     !hasThreadNow &&
     threadStatusLine === null &&
     pendingGuestMessageCount === 0 &&
     !hasQueuedTurns ? null : (
       <>
+        {pendingProjectAccess === null ? null : (
+          <PluginProjectAccessCard environmentId={environmentId} access={pendingProjectAccess} />
+        )}
         {pendingHandoff === null ? null : (
           <div className="chat-content-lane">
             <HandoffRow
