@@ -5,7 +5,7 @@ import {
   type ScopedThreadRef,
 } from "@t3tools/contracts";
 import { EllipsisIcon, PuzzleIcon, QuoteIcon } from "lucide-react";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { use, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   captureAssistantTextSelection,
@@ -20,6 +20,7 @@ import {
 import { Button } from "../ui/button";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
 import { usePluginSelectionActions } from "../plugins/usePluginSelectionActions";
+import { BackgroundThreadContext } from "./backgroundThread";
 
 // More would crowd the selection; the rest go in an overflow menu.
 const MAX_INLINE_PLUGIN_ACTIONS = 3;
@@ -45,6 +46,7 @@ export function AssistantSelectionToolbar({
   const overflowTriggerRef = useRef<HTMLButtonElement>(null);
   const pluginActions = usePluginSelectionActions(threadRef);
   const actionsRef = useRef<ReturnType<typeof observeSelectionActions> | null>(null);
+  const backgroundThread = use(BackgroundThreadContext);
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- measures the toolbar DOM node and clamps its position inside the window before paint
   useLayoutEffect(() => {
@@ -174,7 +176,8 @@ export function AssistantSelectionToolbar({
       event.stopPropagation();
       first.focus({ preventScroll: true });
     };
-    document.addEventListener("keydown", focusActions, true);
+    // Tab belongs to the foreground chat; a background timeline only follows its selection.
+    if (!backgroundThread) document.addEventListener("keydown", focusActions, true);
     document.addEventListener("selectionchange", actions.selectionChanged);
     return () => {
       document.removeEventListener("keydown", focusActions, true);
@@ -182,7 +185,7 @@ export function AssistantSelectionToolbar({
       actions.dispose();
       actionsRef.current = null;
     };
-  }, [threadRef, viewport]);
+  }, [backgroundThread, threadRef, viewport]);
 
   if (!selection) return null;
   const tooLong = selection.citation.text.length > ASSISTANT_CITATION_MAX_TEXT_LENGTH;

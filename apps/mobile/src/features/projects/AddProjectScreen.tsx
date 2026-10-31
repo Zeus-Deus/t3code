@@ -761,6 +761,9 @@ function useCreateProject(
   const navigation = useNavigation();
   const routeKey = useRoute().key;
   const createProject = useAtomCommand(projectEnvironment.create, { reportFailure: false });
+  const updateProject = useAtomCommand(projectEnvironment.update, {
+    label: "project unarchive",
+  });
   const projects = useProjects();
 
   return async (workspaceRoot: string, originRoute = getActiveRoute(navigation)) => {
@@ -783,17 +786,29 @@ function useCreateProject(
     });
     // Taken only once a project exists, so a failed create can be retried in the same flow.
     const toDestination = readProjectDestination(projectDestination) !== null;
-    if (existing && toDestination) {
-      finishAtProjectDestination(
-        navigation,
-        projectDestination,
-        routeKey,
-        scopeProjectRef(existing.environmentId, existing.id),
-      );
-      return;
-    }
     if (existing) {
-      Dialog.alert("Project already exists", existing.title);
+      // Adding an archived project's folder again brings the project back.
+      const unarchived =
+        existing.archivedAt == null ||
+        (
+          await updateProject({
+            environmentId: existing.environmentId,
+            input: { projectId: existing.id, archived: false },
+          })
+        )._tag === "Success";
+      if (toDestination) {
+        finishAtProjectDestination(
+          navigation,
+          projectDestination,
+          routeKey,
+          scopeProjectRef(existing.environmentId, existing.id),
+        );
+        return;
+      }
+      Dialog.alert(
+        "Project already exists",
+        unarchived ? existing.title : `${existing.title} is still archived. Try again later.`,
+      );
       openNewTaskDraft(
         {
           environmentId: existing.environmentId,

@@ -23,6 +23,7 @@ interface ProjectViewGroupInput {
   readonly memberProjectRefs: ReadonlyArray<ScopedProjectRef>;
   readonly updatedAt: string;
   readonly isScratch?: true | undefined;
+  readonly archived?: boolean | undefined;
 }
 
 export interface ProjectViewSection<TGroup, TThread> {
@@ -183,8 +184,8 @@ export function buildProjectView<
       continue;
     }
     const hasThreads = activity.has(key);
-    // Threads without a project only matter while something there is live.
-    if (group.isScratch) continue;
+    // Threads without a project and archived projects only matter while something there is live.
+    if (group.isScratch || group.archived) continue;
     if (!hasThreads && input.view.emptyProjects !== "show") continue;
     const lastActivity = Date.parse(result.lastActivityAt ?? group.updatedAt);
     if (quietBefore !== null && !(lastActivity >= quietBefore)) quietSections.push(result);

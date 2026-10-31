@@ -220,6 +220,11 @@ describe("buildProjectView", () => {
     const input = { groups: [scratch], allThreads: [parked] };
     expect(build({ ...input, view: { ...view, emptyProjects: "show" } }).sections).toEqual([]);
     expect(build({ ...input, routeThreadKey: keyOf(parked) }).sections).toHaveLength(1);
+    const archived = { ...group("old", [ref(laptop, "old")]), archived: true };
+    const settled = thread("settled", laptop, "old");
+    const quiet = { groups: [archived], allThreads: [settled] };
+    expect(build({ ...quiet, view: { ...view, emptyProjects: "show" } }).sections).toEqual([]);
+    expect(build({ ...quiet, liveThreads: [settled] }).sections).toHaveLength(1);
   });
 
   it("hides a folded project's rows except the open thread, and orders keys as rendered", () => {
