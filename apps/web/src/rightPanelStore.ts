@@ -84,6 +84,8 @@ export type RightPanelSurface =
       installationId: string;
       viewId: string;
       title: string;
+      /** The side chat it opened from, hosted in this panel; absent means the panel's own thread. */
+      originThreadId?: ThreadId;
     }
   | { id: `side-chat:${string}`; kind: "side-chat"; threadId: ThreadId };
 
@@ -150,7 +152,7 @@ interface RightPanelStoreState {
   openAttachment: (ref: ScopedThreadRef, attachment: ChatFileAttachment) => void;
   openPluginView: (
     ref: ScopedThreadRef,
-    target: { installationId: string; viewId: string; title: string },
+    target: { installationId: string; viewId: string; title: string; originThreadId?: ThreadId },
   ) => void;
   openPullRequest: (
     ref: ScopedThreadRef,
@@ -222,12 +224,18 @@ const pluginSurface = (target: {
   installationId: string;
   viewId: string;
   title: string;
+  originThreadId?: ThreadId;
 }): Extract<RightPanelSurface, { kind: "plugin" }> => ({
-  id: `plugin:${target.installationId}:${target.viewId}`,
+  // A view keeps one document per thread, so a side chat's copy is a separate tab from its parent's.
+  id:
+    target.originThreadId === undefined
+      ? `plugin:${target.installationId}:${target.viewId}`
+      : `plugin:${target.installationId}:${target.viewId}:${target.originThreadId}`,
   kind: "plugin",
   installationId: target.installationId,
   viewId: target.viewId,
   title: target.title,
+  ...(target.originThreadId === undefined ? {} : { originThreadId: target.originThreadId }),
 });
 
 const singletonSurface = (
@@ -776,11 +784,13 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
           }),
         ),
       openPluginView: (ref, target) =>
-        set((state) =>
-          userAction(state, scopedThreadKey(ref), (current) =>
-            upsertSurface(current, pluginSurface(target)),
-          ),
-        ),
+        set((state) => {
+          const threadKey = scopedThreadKey(ref);
+          const surface = pluginSurface(
+            panelHosts.has(threadKey) ? { ...target, originThreadId: ref.threadId } : target,
+          );
+          return userAction(state, threadKey, (current) => upsertSurface(current, surface));
+        }),
       openPullRequest: (ref, target) =>
         set((state) =>
           userAction(state, scopedThreadKey(ref), (current) => {

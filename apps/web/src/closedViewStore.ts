@@ -97,7 +97,8 @@ const isClosedViewEntry = (entry: unknown): entry is ClosedViewEntry => {
       );
     case "plugin":
       return (
-        surface.id === `plugin:${surface.installationId}:${surface.viewId}` &&
+        surface.id ===
+          `plugin:${surface.installationId}:${surface.viewId}${surface.originThreadId === undefined ? "" : `:${surface.originThreadId}`}` &&
         typeof surface.title === "string"
       );
     default:

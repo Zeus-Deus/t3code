@@ -8,7 +8,7 @@ import type {
   ThreadLinkedPullRequest,
   ThreadPullRequestLink,
 } from "@t3tools/contracts";
-import { scopedThreadKey } from "@t3tools/client-runtime/environment";
+import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { lazy, Suspense } from "react";
 import SideChatPane from "./SideChatPane";
 import type { ComposerImageAttachment, DraftId } from "../../composerDraftStore";
@@ -171,19 +171,26 @@ export function RightPanelSurfaceContent(props: {
     }
     case "pull-requests":
       return <ThreadPullRequestsPanel threadRef={threadRef} />;
-    case "plugin":
+    case "plugin": {
+      const viewThreadRef =
+        surface.originThreadId === undefined
+          ? threadRef
+          : scopeThreadRef(threadRef.environmentId, surface.originThreadId);
       return (
         <Suspense fallback={null}>
           <PluginSidePanel
             // A view's state belongs to its thread; switching threads loads a fresh document.
-            key={`${scopedThreadKey(threadRef)}:${surface.id}`}
-            threadRef={threadRef}
-            composerTarget={props.composerDraftTarget}
+            key={`${scopedThreadKey(viewThreadRef)}:${surface.id}`}
+            threadRef={viewThreadRef}
+            composerTarget={
+              surface.originThreadId === undefined ? props.composerDraftTarget : viewThreadRef
+            }
             installationId={surface.installationId}
             viewId={surface.viewId}
           />
         </Suspense>
       );
+    }
     case "side-chat":
       // Not lazy: revealing a suspended tiptap editor tears down its view and crashes the composer.
       return (

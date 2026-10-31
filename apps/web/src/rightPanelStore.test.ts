@@ -57,6 +57,56 @@ describe("rightPanelStore", () => {
     );
   });
 
+  it("binds a plugin view opened from a hosted side chat to that side chat", async () => {
+    const store = useRightPanelStore.getState();
+    const view = { installationId: "inst", viewId: "notes", title: "Notes" };
+    store.openPluginView(refA, view);
+    const unhost = hostRightPanel(refB, refA);
+    store.openPluginView(refB, view);
+    unhost();
+    const opened = selectThreadRightPanelState(
+      useRightPanelStore.getState().byThreadKey,
+      refA,
+    ).surfaces;
+    const [parentView, sideChatView] = opened;
+    expect(parentView).toEqual({ ...view, id: "plugin:inst:notes", kind: "plugin" });
+    expect(sideChatView).toEqual({
+      ...view,
+      id: `plugin:inst:notes:${refB.threadId}`,
+      kind: "plugin",
+      originThreadId: refB.threadId,
+    });
+
+    // Reopening a closed tab happens on the parent, after the side chat may have closed.
+    store.closeSurface(refA, sideChatView!.id);
+    const [closed] = useClosedViewStore.getState().entries;
+    expect(closed).toMatchObject({ kind: "panel-tab", threadRef: refA, surface: sideChatView });
+    await reopenClosedView(closed!, {
+      workspaceAvailable: true,
+      openPreview: () => {
+        throw new Error("A plugin tab must not create a browser session");
+      },
+    });
+    expect(selectActiveRightPanelSurface(useRightPanelStore.getState().byThreadKey, refA)).toEqual(
+      sideChatView,
+    );
+  });
+
+  it("keeps stored plugin views that predate their originating thread", async () => {
+    const legacy = {
+      id: "plugin:inst:notes",
+      kind: "plugin",
+      installationId: "inst",
+      viewId: "notes",
+      title: "Notes",
+    } as const;
+    useRightPanelStore.getState().openPluginView(refA, legacy);
+    await reloadRightPanelStore();
+    expect(selectActiveRightPanelSurface(useRightPanelStore.getState().byThreadKey, refA)).toEqual(
+      legacy,
+    );
+  });
+
   it("records single and bulk tab closes, newest first", () => {
     const store = useRightPanelStore.getState();
     const pr = pullRequestSurface({
