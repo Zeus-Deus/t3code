@@ -23,6 +23,8 @@ import {
   searchSidebarThreads,
   shouldRecedeSidebarThread,
   sortInboxThreadsByReturn,
+  resolveExclusiveTreeDropTarget,
+  sidebarMarkerId,
   resolveSidebarDropTarget,
   planSidebarThreadDrop,
   sortPinnedThreadsForSidebar,
@@ -1240,6 +1242,40 @@ describe("Working shelf (beta)", () => {
         activeOrder: ["a1", "a2", "p1"],
       });
       expect(resolveSidebarDropVerb("active", "working")).toBeNull();
+    });
+
+    it("only crosses the Settled header in an exclusive tree", () => {
+      const tree: readonly SidebarListItem[] = [
+        row("a1", "active"),
+        row("kept", "settled"),
+        marker("settled-header"),
+        marker("settled-placeholder"),
+        row("s1", "settled"),
+      ];
+      const target = (activeKey: string, overId: string) =>
+        resolveExclusiveTreeDropTarget(tree, activeKey, overId)?.section ?? null;
+      expect(target("a1", sidebarMarkerId("settled-header"))).toBe("settled");
+      expect(target("a1", "s1")).toBe("settled");
+      expect(target("s1", "a1")).toBe("active");
+      // A settled row the tree keeps is on the tree's side; nothing reorders within a side.
+      expect(target("s1", "kept")).toBe("active");
+      expect(target("a1", "kept")).toBeNull();
+      expect(target("s1", sidebarMarkerId("settled-placeholder"))).toBeNull();
+    });
+
+    it("lets a settled row return to an exclusive tree of only headings", () => {
+      const tree: readonly SidebarListItem[] = [
+        marker("active-placeholder"),
+        marker("settled-header"),
+        marker("settled-placeholder"),
+        row("s1", "settled"),
+      ];
+      const target = resolveExclusiveTreeDropTarget(
+        tree,
+        "s1",
+        sidebarMarkerId("active-placeholder"),
+      );
+      expect(target?.section).toBe("active");
     });
 
     it.each([

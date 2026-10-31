@@ -249,6 +249,26 @@ export function resolveSidebarDropTarget(
   return { section, pinnedOrder, activeOrder };
 }
 
+/**
+ * An exclusive tree's order is derived, so a drag there only crosses the Settled header: a row
+ * dropped below it settles, and a settled row dropped above it returns.
+ */
+export function resolveExclusiveTreeDropTarget(
+  items: readonly SidebarListItem[],
+  activeKey: string,
+  overId: string,
+): SidebarDropTarget | null {
+  const active = items.find((item) => sidebarListItemId(item) === activeKey);
+  const overIndex = items.findIndex((item) => sidebarListItemId(item) === overId);
+  if (active?.kind !== "thread" || overIndex === -1) return null;
+  const headerIndex = items.findIndex(
+    (item) => item.kind === "marker" && item.marker === "settled-header",
+  );
+  const section = overIndex >= headerIndex ? "settled" : "active";
+  if ((active.section === "settled") === (section === "settled")) return null;
+  return { section, pinnedOrder: [], activeOrder: [] };
+}
+
 type SidebarThreadDropPlan =
   | { readonly kind: "none" }
   | {
