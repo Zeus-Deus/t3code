@@ -348,6 +348,22 @@ it("names what an update adds and approves it with one button", async () => {
   expect(callsTo(":set-enabled")).toEqual([]);
 });
 
+it("counts granted projects it cannot name yet", async () => {
+  const update = stagedUpdate();
+  const projectId = ProjectId.make("proj-unlisted");
+  setup({ ...update, grants: { capabilities: ["ui"], projectIds: [projectId] } });
+  await using _screen = await renderWide();
+
+  await press(page.getByRole("button", { name: "Review update" }));
+  await expect.element(page.getByText("In 1 project")).toBeVisible();
+  await press(page.getByRole("button", { name: "Update", exact: true }));
+
+  await vi.waitFor(() => expect(callsTo(":consent")).toHaveLength(1));
+  expect(callsTo(":consent")[0]).toMatchObject({
+    grants: { capabilities: ["ui", "threads.send"], projectIds: [projectId] },
+  });
+});
+
 it("keeps an update waiting on Not now", async () => {
   setup(stagedUpdate());
   await using _screen = await renderWide();

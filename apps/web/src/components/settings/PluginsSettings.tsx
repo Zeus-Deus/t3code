@@ -22,6 +22,7 @@ import {
   pluginSettingsDraft,
   pluginSourceLabel,
   pluginStatusPresentation,
+  pluginUpdateProjects,
   pluginUpdateScopeNote,
   type PluginQuickUpdate,
   type PluginReviewRevision,
@@ -2105,6 +2106,7 @@ function UpdatePluginForm(props: {
         quickUpdate.grants.projectIds.includes(project.id),
     )
     .map((project) => project.title);
+  const projects = pluginUpdateProjects(quickUpdate.grants.projectIds, projectTitles);
   const [allowed, setAllowed] = useState<ReadonlyArray<PluginCapability>>([]);
   const { saving, canManage, approve, discardUpdate, backlogDialog } = usePluginApproval(props);
   const capabilities = [
@@ -2112,7 +2114,7 @@ function UpdatePluginForm(props: {
     ...offered.map((entry) => entry.capability).filter((entry) => allowed.includes(entry)),
   ];
   const note = (entry: PluginQuickUpdate["added"][number]) =>
-    entry.projectScoped ? pluginUpdateScopeNote(projectTitles) : entry.detail;
+    entry.projectScoped ? pluginUpdateScopeNote(projects) : entry.detail;
   return (
     <>
       <DialogHeader>
@@ -2214,9 +2216,7 @@ function UpdatePluginForm(props: {
                   <section className="space-y-1">
                     <h3 className="text-sm font-medium">Projects</h3>
                     <p className="text-sm text-muted-foreground">
-                      {projectTitles.length === 0
-                        ? "No projects chosen."
-                        : projectTitles.join(", ")}
+                      {projects ?? "No projects chosen."}
                     </p>
                   </section>
                 ) : null}

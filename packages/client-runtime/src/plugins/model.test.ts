@@ -23,6 +23,8 @@ import {
   pluginThreadStatusEntries,
   pluginSettingsDraft,
   pluginStatusPresentation,
+  pluginUpdateProjects,
+  pluginUpdateScopeNote,
   pluginViewEntries,
 } from "./model.ts";
 import { pluginInstallationFixture } from "./testFixtures.ts";
@@ -510,6 +512,20 @@ describe("pluginQuickUpdate", () => {
     expect(
       pluginQuickUpdate(stage(running, ["ui", "future.required" as PluginCapability])),
     ).toBeNull();
+  });
+});
+
+describe("pluginUpdateScopeNote", () => {
+  it("never reads as fewer projects than the update carries over", () => {
+    const note = (ids: ReadonlyArray<string>, titles: ReadonlyArray<string>) =>
+      pluginUpdateScopeNote(pluginUpdateProjects(ids, titles));
+
+    expect(note(["a", "b"], ["Alpha", "Beta"])).toBe("In Alpha, Beta");
+    // The project list has not loaded, or one project is gone.
+    expect(note(["a", "b"], [])).toBe("In 2 projects");
+    expect(note(["a"], [])).toBe("In 1 project");
+    expect(note(["a", "b"], ["Alpha"])).toBe("In 2 projects");
+    expect(note([], [])).toContain("No projects chosen yet");
   });
 });
 

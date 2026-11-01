@@ -438,11 +438,27 @@ export function pluginQuickUpdate(installation: PluginInstallation): PluginQuick
   };
 }
 
+const projectCountLabel = (count: number) => `${count} ${count === 1 ? "project" : "projects"}`;
+
+/**
+ * The projects an update carries over. Grants decide this, not the titles: a project list that is
+ * still loading, or a project since removed, must not read as fewer projects than are granted.
+ */
+export const pluginUpdateProjects = (
+  projectIds: ReadonlyArray<string>,
+  projectTitles: ReadonlyArray<string>,
+) => {
+  if (projectIds.length === 0) return null;
+  return projectTitles.length === projectIds.length
+    ? projectTitles.join(", ")
+    : projectCountLabel(projectIds.length);
+};
+
 /** Where a project-scoped permission will apply after a one-click update. */
-export const pluginUpdateScopeNote = (projectTitles: ReadonlyArray<string>) =>
-  projectTitles.length === 0
+export const pluginUpdateScopeNote = (projects: string | null) =>
+  projects === null
     ? "No projects chosen yet. Choose them under Review permissions after updating."
-    : `In ${projectTitles.join(", ")}`;
+    : `In ${projects}`;
 
 export type PluginStatusTone = "success" | "warning" | "error" | "muted";
 

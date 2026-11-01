@@ -24,6 +24,7 @@ import {
   pluginSettingsDraft,
   pluginSourceLabel,
   pluginStatusPresentation,
+  pluginUpdateProjects,
   pluginUpdateScopeNote,
   type PluginQuickUpdate,
   type PluginReviewRevision,
@@ -40,6 +41,7 @@ import {
   type PluginCapability,
   type PluginGrants,
   type PluginInstallation,
+  type PluginManifest,
   type ProjectId,
 } from "@t3tools/contracts";
 import { useState, type ReactNode } from "react";
@@ -1057,6 +1059,7 @@ function PluginUpdate(props: {
         quickUpdate.grants.projectIds.includes(project.id),
     )
     .map((project) => project.title);
+  const projects = pluginUpdateProjects(quickUpdate.grants.projectIds, projectTitles);
   const [allowed, setAllowed] = useState<ReadonlyArray<PluginCapability>>([]);
   const [details, setDetails] = useState(false);
   const { saving, canManage, approve, discardUpdate, goBack } = usePluginApproval(props);
@@ -1065,7 +1068,7 @@ function PluginUpdate(props: {
     ...offered.map((entry) => entry.capability).filter((entry) => allowed.includes(entry)),
   ];
   const note = (entry: PluginQuickUpdate["added"][number]) =>
-    entry.projectScoped ? pluginUpdateScopeNote(projectTitles) : entry.detail;
+    entry.projectScoped ? pluginUpdateScopeNote(projects) : entry.detail;
   return (
     <>
       <View className="gap-1 px-2">
@@ -1150,13 +1153,12 @@ function PluginUpdate(props: {
               </Text>
               {pluginNeedsProjects(manifest) ? (
                 <Text className="text-sm text-foreground-muted">
-                  {projectTitles.length === 0
-                    ? "No projects chosen."
-                    : `Projects: ${projectTitles.join(", ")}`}
+                  {projects === null ? "No projects chosen." : `Projects: ${projects}`}
                 </Text>
               ) : null}
             </View>
           </SettingsSection>
+          <PluginContributions manifest={manifest} />
           <Button
             label={labels.discard}
             tone="danger"
@@ -1167,6 +1169,31 @@ function PluginUpdate(props: {
         </>
       ) : null}
     </>
+  );
+}
+
+function PluginContributions(props: { readonly manifest: PluginManifest }) {
+  const { manifest } = props;
+  const lines = [
+    ...manifest.actions.map(
+      (action) => `${action.title}${action.agentCallable ? " (agents can call it)" : ""}`,
+    ),
+    ...manifest.views.map((view) => `${view.title} view`),
+    ...(manifest.sidebarViews ?? []).map(
+      (view) => `${view.title} sidebar layout (off until you choose it)`,
+    ),
+  ];
+  if (lines.length === 0) return null;
+  return (
+    <SettingsSection title="Adds">
+      <View className="gap-1 p-4">
+        {lines.map((line) => (
+          <Text key={line} className="text-sm text-foreground-muted">
+            {line}
+          </Text>
+        ))}
+      </View>
+    </SettingsSection>
   );
 }
 
@@ -1198,6 +1225,9 @@ function PluginSourceSection(props: { readonly subject: ReturnType<typeof plugin
   return (
     <SettingsSection title="Source">
       <View className="gap-1 p-4">
+        <Text className="font-mono text-xs text-foreground-muted" selectable>
+          {props.subject.manifest.id}
+        </Text>
         <Text className="text-sm text-foreground" selectable>
           {pluginSourceLabel(props.subject.source)}
         </Text>
