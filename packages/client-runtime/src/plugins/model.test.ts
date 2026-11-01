@@ -1,3 +1,9 @@
+import {
+  ProjectId,
+  type PluginCapability,
+  type PluginInstallation,
+  type PluginManifest,
+} from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -10,12 +16,15 @@ import {
   pluginApiSupport,
   parsePluginSourceInput,
   pluginObserverError,
+  pluginQuickUpdate,
   pluginReviewSubject,
   pluginActionEntries,
   pluginRunnableInstallations,
   pluginThreadStatusEntries,
   pluginSettingsDraft,
   pluginStatusPresentation,
+  pluginUpdateProjects,
+  pluginUpdateScopeNote,
   pluginViewEntries,
 } from "./model.ts";
 import { pluginInstallationFixture } from "./testFixtures.ts";
@@ -407,6 +416,116 @@ describe("derived compatibility", () => {
       initialPluginGrants(pluginInstallationFixture({ consentedDigest: null, manifest }))
         .capabilities,
     ).toEqual(["settings", "ui"]);
+  });
+});
+
+describe("pluginQuickUpdate", () => {
+  const stage = (
+    overrides: Parameters<typeof pluginInstallationFixture>[0],
+    capabilities: ReadonlyArray<PluginCapability>,
+    optionalCapabilities: ReadonlyArray<string> = [],
+    kind?: "local-repair" | "previous",
+  ) => {
+    const running = pluginInstallationFixture(overrides);
+    return {
+      ...running,
+      pendingUpdate: {
+        ...(kind ? { kind } : {}),
+        manifest: { ...manifest, capabilities, optionalCapabilities },
+        source: running.source,
+        digest: "d".repeat(64),
+        generation: "gen-2",
+        updatedAt: "2026-10-23T00:00:00.000Z",
+      },
+    };
+  };
+  const capabilityIds = (entries: ReadonlyArray<{ readonly capability: string }>) =>
+    entries.map((entry) => entry.capability);
+  const manifest: PluginManifest = {
+    ...pluginInstallationFixture().manifest,
+    capabilities: ["ui"],
+  };
+  const projectId = ProjectId.make("proj-1");
+  const running = {
+    manifest,
+    grants: { capabilities: ["ui"], projectIds: [projectId] },
+  } satisfies Partial<PluginInstallation>;
+
+  it("carries grants and projects over when nothing new is requested", () => {
+    const update = pluginQuickUpdate(stage(running, ["ui"]));
+    expect(update?.grants).toEqual({ capabilities: ["ui"], projectIds: [projectId] });
+    expect(update?.added).toEqual([]);
+    expect(update?.offered).toEqual([]);
+  });
+
+  it("grants new required permissions and names each one", () => {
+    const update = pluginQuickUpdate(stage(running, ["ui", "threads.send"]));
+    expect(update?.grants).toEqual({
+      capabilities: ["ui", "threads.send"],
+      projectIds: [projectId],
+    });
+    expect(capabilityIds(update?.added ?? [])).toEqual(["threads.send"]);
+  });
+
+  it("names a required permission the user turned off rather than restoring it silently", () => {
+    const update = pluginQuickUpdate(
+      stage(
+        {
+          grants: { capabilities: ["ui"], projectIds: [] },
+          manifest: { ...manifest, capabilities: ["ui", "storage"] },
+        },
+        ["ui", "storage"],
+      ),
+    );
+    expect(capabilityIds(update?.added ?? [])).toEqual(["storage"]);
+    expect(update?.grants.capabilities).toEqual(["ui", "storage"]);
+  });
+
+  it("leaves new optional permissions off and does not re-ask declined ones", () => {
+    const update = pluginQuickUpdate(
+      stage(
+        {
+          ...running,
+          manifest: { ...manifest, optionalCapabilities: ["storage"] },
+        },
+        ["ui"],
+        ["storage", "ui.changes"],
+      ),
+    );
+    expect(capabilityIds(update?.offered ?? [])).toEqual(["ui.changes"]);
+    expect(update?.added).toEqual([]);
+    expect(update?.grants.capabilities).toEqual(["ui"]);
+  });
+
+  it("drops permissions the new version no longer requests", () => {
+    const update = pluginQuickUpdate(
+      stage({ grants: { capabilities: ["ui", "storage"], projectIds: [] } }, ["ui"]),
+    );
+    expect(update?.grants.capabilities).toEqual(["ui"]);
+  });
+
+  it("leaves everything else to the full review", () => {
+    expect(pluginQuickUpdate(pluginInstallationFixture())).toBeNull();
+    expect(pluginQuickUpdate(stage({ ...running, consentedDigest: null }, ["ui"]))).toBeNull();
+    expect(pluginQuickUpdate(stage(running, ["ui"], [], "local-repair"))).toBeNull();
+    expect(pluginQuickUpdate(stage(running, ["ui"], [], "previous"))).toBeNull();
+    expect(
+      pluginQuickUpdate(stage(running, ["ui", "future.required" as PluginCapability])),
+    ).toBeNull();
+  });
+});
+
+describe("pluginUpdateScopeNote", () => {
+  it("never reads as fewer projects than the update carries over", () => {
+    const note = (ids: ReadonlyArray<string>, titles: ReadonlyArray<string>) =>
+      pluginUpdateScopeNote(pluginUpdateProjects(ids, titles));
+
+    expect(note(["a", "b"], ["Alpha", "Beta"])).toBe("In Alpha, Beta");
+    // The project list has not loaded, or one project is gone.
+    expect(note(["a", "b"], [])).toBe("In 2 projects");
+    expect(note(["a"], [])).toBe("In 1 project");
+    expect(note(["a", "b"], ["Alpha"])).toBe("In 2 projects");
+    expect(note([], [])).toContain("No projects chosen yet");
   });
 });
 

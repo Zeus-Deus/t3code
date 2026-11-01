@@ -84,7 +84,11 @@ Plugin pages can also be this device's start page on web and desktop; choose
 one in **Settings → Plugins**. An unavailable page falls back to T3's usual start.
 
 Use **Check source for changes** to stage an update. The current version stays active until
-you review and approve the update. You can discard the staged update instead.
+you choose **Update**. An update keeps the plugin's permissions and projects, and names any
+required permission it would add, so **Not now** is how you decline one. A new optional
+permission stays off unless you allow it. You can discard the staged update under **Details**.
+To change projects or remove a permission afterwards, use **Review permissions** in the plugin's
+settings.
 Disable a plugin to stop its process and withdraw its contributions. Removal
 keeps its data unless you explicitly choose to delete it. Reinstalling the same
 plugin from the same local path or Git repository restores that data. Review

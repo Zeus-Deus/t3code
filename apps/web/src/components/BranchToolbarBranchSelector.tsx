@@ -582,11 +582,7 @@ export function BranchToolbarBranchSelector({
   );
   const branchLabel = (
     <ComposerContextLabel displayMode={displayMode}>
-      <MiddleTruncate
-        value={triggerLabel}
-        variant={displayMode === "panel" ? "cap-aligned" : "default"}
-        className="w-full"
-      />
+      <MiddleTruncate value={triggerLabel} variant="cap-aligned" className="w-full" />
     </ComposerContextLabel>
   );
 
@@ -732,7 +728,7 @@ export function BranchToolbarBranchSelector({
           {branchLocked ? (
             <span
               className={cn(
-                "inline-flex h-7 min-w-0 max-w-full items-center justify-start gap-1 rounded-md border border-transparent px-1.75 font-normal text-foreground/70 text-xs sm:h-6 dark:text-muted-foreground",
+                "inline-flex h-7 min-w-0 max-w-full items-center justify-start gap-1.5 rounded-md border border-transparent px-1.75 font-normal text-foreground/70 text-xs sm:h-6 dark:text-muted-foreground",
                 displayMode === "panel" && THREAD_DETAILS_PANEL_LOCKED_ROW_CLASS,
               )}
               data-composer-context-control

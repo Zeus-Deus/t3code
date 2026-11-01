@@ -399,6 +399,73 @@ export function initialPluginGrants(
   };
 }
 
+type PluginGrantableCapability = Extract<PluginCapabilityDescription, { readonly known: true }>;
+
+/** What a one-click update changes about a plugin the user already approved. */
+export interface PluginQuickUpdate {
+  /** Approved by updating: what it has now, plus every required permission it lacks. */
+  readonly grants: PluginGrants;
+  /** Required permissions the plugin lacks. Updating grants these, so they are always shown. */
+  readonly added: ReadonlyArray<PluginGrantableCapability>;
+  /** Optional permissions this version introduces. Each stays off unless the user allows it. */
+  readonly offered: ReadonlyArray<PluginGrantableCapability>;
+}
+
+/**
+ * The one-click form of a publisher update, or null when it needs the full review: a plugin never
+ * approved has no earlier grants to carry over, a version this environment cannot run has nothing
+ * to approve, and local fixes and earlier versions carry warnings of their own.
+ */
+export function pluginQuickUpdate(installation: PluginInstallation): PluginQuickUpdate | null {
+  const subject = pluginReviewSubject(installation);
+  if (
+    subject.revision !== "update" ||
+    installation.consentedDigest === null ||
+    pluginHasUnsupportedRequirement(subject.manifest)
+  ) {
+    return null;
+  }
+  const kept = initialPluginGrants(installation, subject.manifest);
+  const missing = describePluginCapabilities(subject.manifest).filter(
+    (entry): entry is PluginGrantableCapability =>
+      entry.known && !kept.capabilities.includes(entry.capability),
+  );
+  const added = missing.filter((entry) => !entry.optional);
+  return {
+    grants: {
+      capabilities: [...kept.capabilities, ...added.map((entry) => entry.capability)],
+      projectIds: kept.projectIds,
+    },
+    added,
+    // An optional permission from an earlier version was already declined, so it is not asked again.
+    offered: missing.filter(
+      (entry) => entry.optional && subject.newCapabilities.includes(entry.capability),
+    ),
+  };
+}
+
+const projectCountLabel = (count: number) => `${count} ${count === 1 ? "project" : "projects"}`;
+
+/**
+ * The projects an update carries over. Grants decide this, not the titles: a project list that is
+ * still loading, or a project since removed, must not read as fewer projects than are granted.
+ */
+export const pluginUpdateProjects = (
+  projectIds: ReadonlyArray<string>,
+  projectTitles: ReadonlyArray<string>,
+) => {
+  if (projectIds.length === 0) return null;
+  return projectTitles.length === projectIds.length
+    ? projectTitles.join(", ")
+    : projectCountLabel(projectIds.length);
+};
+
+/** Where a project-scoped permission will apply after a one-click update. */
+export const pluginUpdateScopeNote = (projects: string | null) =>
+  projects === null
+    ? "No projects chosen yet. Choose them under Review permissions after updating."
+    : `In ${projects}`;
+
 export type PluginStatusTone = "success" | "warning" | "error" | "muted";
 
 interface PluginStatusPresentation {
