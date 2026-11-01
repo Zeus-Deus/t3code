@@ -329,23 +329,83 @@ function stagedUpdate() {
   });
 }
 
-it("approves a staged update without widening grants or re-enabling", async () => {
+it("names what an update adds and approves it with one button", async () => {
   setup(stagedUpdate());
   await using _screen = await renderWide();
 
   await press(page.getByRole("button", { name: "Review update" }));
-  // New in the update, so it starts off; the running version never had it.
-  await expect.element(page.getByRole("checkbox", { name: "Send messages" })).not.toBeChecked();
-  await expect.element(page.getByRole("checkbox", { name: "Show views" })).toBeChecked();
-  await press(page.getByRole("button", { name: "Approve update" }));
+  await expect.element(page.getByText("This update can also:")).toBeVisible();
+  await expect.element(page.getByText("v1.0.0 → v1.1.0")).toBeVisible();
+  await expect.element(page.getByRole("checkbox")).not.toBeInTheDocument();
+  await press(page.getByRole("button", { name: "Update", exact: true }));
 
   await vi.waitFor(() => expect(callsTo(":consent")).toHaveLength(1));
   expect(callsTo(":consent")[0]).toEqual({
     installationId: "inst-1",
     digest: PENDING_DIGEST,
-    grants: { capabilities: ["ui"], projectIds: [] },
+    grants: { capabilities: ["ui", "threads.send"], projectIds: [] },
   });
   expect(callsTo(":set-enabled")).toEqual([]);
+});
+
+it("keeps an update waiting on Not now", async () => {
+  setup(stagedUpdate());
+  await using _screen = await renderWide();
+
+  await press(page.getByRole("button", { name: "Review update" }));
+  await press(page.getByRole("button", { name: "Not now" }));
+
+  await expect
+    .element(page.getByRole("button", { name: "Update", exact: true }))
+    .not.toBeInTheDocument();
+  expect(callsTo(":consent")).toEqual([]);
+  expect(callsTo(":discard-pending-update")).toEqual([]);
+});
+
+it("says nothing is new when an update asks for no more access", async () => {
+  const update = stagedUpdate();
+  setup({
+    ...update,
+    pendingUpdate: {
+      ...update.pendingUpdate!,
+      manifest: { ...update.pendingUpdate!.manifest, capabilities: ["ui"] },
+    },
+  });
+  await using _screen = await renderWide();
+
+  await press(page.getByRole("button", { name: "Review update" }));
+  await expect.element(page.getByText("Nothing new to approve.", { exact: false })).toBeVisible();
+  await press(page.getByRole("button", { name: "Update", exact: true }));
+
+  await vi.waitFor(() => expect(callsTo(":consent")).toHaveLength(1));
+  expect(callsTo(":consent")[0]).toMatchObject({
+    grants: { capabilities: ["ui"], projectIds: [] },
+  });
+});
+
+it("grants a new optional permission only when allowed", async () => {
+  const update = stagedUpdate();
+  setup({
+    ...update,
+    pendingUpdate: {
+      ...update.pendingUpdate!,
+      manifest: {
+        ...update.pendingUpdate!.manifest,
+        capabilities: ["ui"],
+        optionalCapabilities: ["ui.changes"],
+      },
+    },
+  });
+  await using _screen = await renderWide();
+
+  await press(page.getByRole("button", { name: "Review update" }));
+  await press(page.getByRole("switch", { name: "Refresh its views" }));
+  await press(page.getByRole("button", { name: "Update", exact: true }));
+
+  await vi.waitFor(() => expect(callsTo(":consent")).toHaveLength(1));
+  expect(callsTo(":consent")[0]).toMatchObject({
+    grants: { capabilities: ["ui", "ui.changes"], projectIds: [] },
+  });
 });
 
 it("keeps the running version when an update is discarded", async () => {
@@ -353,6 +413,7 @@ it("keeps the running version when an update is discarded", async () => {
   await using _screen = await renderWide();
 
   await press(page.getByRole("button", { name: "Review update" }));
+  await press(page.getByRole("button", { name: "Details" }));
   await press(page.getByRole("button", { name: "Discard update" }));
 
   await vi.waitFor(() =>

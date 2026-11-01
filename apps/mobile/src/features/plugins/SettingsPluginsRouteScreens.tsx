@@ -16,6 +16,7 @@ import {
   pluginDisplayVersion,
   pluginHasUnsupportedRequirement,
   pluginNeedsProjects,
+  pluginQuickUpdate,
   pluginRecoveryActions,
   pluginRecoveryDetails,
   pluginRemovalNote,
@@ -23,6 +24,8 @@ import {
   pluginSettingsDraft,
   pluginSourceLabel,
   pluginStatusPresentation,
+  pluginUpdateScopeNote,
+  type PluginQuickUpdate,
   type PluginReviewRevision,
   type PluginSettingDraft,
 } from "@t3tools/client-runtime/plugins";
@@ -34,6 +37,7 @@ import {
 import {
   EnvironmentId,
   resolveEnvironmentMachineKind,
+  type PluginCapability,
   type PluginGrants,
   type PluginInstallation,
   type ProjectId,
@@ -899,12 +903,21 @@ function PluginReviewScreen(props: { readonly params: PluginRouteParams }) {
   });
   if (listed !== null && installed !== null) setInstalled(null);
   const installation = listed ?? installed;
+  const quickUpdate = installation === null ? null : pluginQuickUpdate(installation);
   return (
-    <PluginScreen title="Review plugin">
+    <PluginScreen title={quickUpdate === null ? "Review plugin" : "Update plugin"}>
       {installation === null ? (
         <Text className="px-2 text-base text-foreground-muted">
           {catalogue.loaded ? "This plugin is no longer installed." : "Loading plugin…"}
         </Text>
+      ) : quickUpdate !== null ? (
+        <PluginUpdate
+          key={pluginReviewSubject(installation).digest}
+          environmentId={environmentId}
+          installation={installation}
+          quickUpdate={quickUpdate}
+          recoverySupported={catalogue.recoverySupported}
+        />
       ) : (
         <PluginReview
           key={pluginReviewSubject(installation).digest}
@@ -928,7 +941,7 @@ function reviewLabels(revision: PluginReviewRevision, runningLocalFix: boolean) 
             discard: "Discard update",
             approve: "Switch to publisher version",
           }
-        : { keep: "Keep current version", discard: "Discard update", approve: "Approve update" };
+        : { keep: "Not now", discard: "Discard update", approve: "Update" };
     case "local-repair":
       return {
         keep: "Keep current version",
@@ -946,7 +959,8 @@ const SETTING_CHANGE_TEXT = {
   "type-changed": "changes type; the stored value may reset",
 } as const;
 
-function PluginReview(props: {
+/** Saving a review's decision, shared by the full review and the one-click update. */
+function usePluginApproval(props: {
   readonly environmentId: EnvironmentId;
   readonly installation: PluginInstallation;
   readonly recoverySupported: boolean;
@@ -956,29 +970,12 @@ function PluginReview(props: {
   const { manifest } = subject;
   const isUpdate = subject.kind === "update";
   const navigation = usePluginNavigation();
-  const capabilities = describePluginCapabilities(manifest);
-  const runningLocalFix = installation.recovery?.activeSource === "local-repair";
-  const labels = reviewLabels(subject.revision, runningLocalFix);
-  const unsupported = capabilities
-    .filter((entry) => !entry.known && !entry.optional)
-    .map((entry) => entry.capability);
-  // The running version's availability says nothing about a staged update.
-  const incompatible =
-    (!isUpdate && isPluginUnavailable(installation)) || pluginHasUnsupportedRequirement(manifest);
   const resolveBacklog = usePluginEventBacklog();
-  const projects = useProjects().filter(
-    (project) => project.environmentId === environmentId && project.isScratch !== true,
-  );
-  const [grants, setGrants] = useState<PluginGrants>(() => initialPluginGrants(installation));
   const [saving, setSaving] = useState(false);
   const consent = useAtomCommand(pluginEnvironment.consent, { reportFailure: false });
   const setEnabled = useAtomCommand(pluginEnvironment.setEnabled, { reportFailure: false });
   const discard = useAtomCommand(pluginEnvironment.discardPendingUpdate, { reportFailure: false });
   const canManage = useAtomValue(pluginEnvironment.consent.permissionAtom(environmentId));
-  const changed =
-    !isUpdate &&
-    installation.consentedDigest !== null &&
-    installation.consentedDigest !== installation.digest;
   const discardUpdate = async () => {
     setSaving(true);
     const result = await discard({
@@ -990,10 +987,7 @@ function PluginReview(props: {
       navigation.goBack();
     }
   };
-  const projectScopedGranted = capabilities.some(
-    (entry) => entry.known && entry.projectScoped && grants.capabilities.includes(entry.capability),
-  );
-  const approve = async () => {
+  const approve = async (grants: PluginGrants) => {
     setSaving(true);
     // Asked before anything is saved, so cancelling leaves the plugin as it was.
     const backlogStep = pluginApprovalBacklogStep(installation);
@@ -1037,6 +1031,214 @@ function PluginReview(props: {
     setSaving(false);
     navigation.goBack();
   };
+  return { saving, canManage, approve, discardUpdate, goBack: () => navigation.goBack() };
+}
+
+/**
+ * An update to a plugin the user already approved: one button, naming only what it adds. Grants
+ * and projects carry over, and Not now keeps the running version, so nothing widens unseen.
+ */
+function PluginUpdate(props: {
+  readonly environmentId: EnvironmentId;
+  readonly installation: PluginInstallation;
+  readonly quickUpdate: PluginQuickUpdate;
+  readonly recoverySupported: boolean;
+}) {
+  const { environmentId, installation, quickUpdate } = props;
+  const subject = pluginReviewSubject(installation);
+  const { manifest } = subject;
+  const { added, offered } = quickUpdate;
+  const runningLocalFix = installation.recovery?.activeSource === "local-repair";
+  const labels = reviewLabels(subject.revision, runningLocalFix);
+  const projectTitles = useProjects()
+    .filter(
+      (project) =>
+        project.environmentId === environmentId &&
+        quickUpdate.grants.projectIds.includes(project.id),
+    )
+    .map((project) => project.title);
+  const [allowed, setAllowed] = useState<ReadonlyArray<PluginCapability>>([]);
+  const [details, setDetails] = useState(false);
+  const { saving, canManage, approve, discardUpdate, goBack } = usePluginApproval(props);
+  const capabilities = [
+    ...quickUpdate.grants.capabilities,
+    ...offered.map((entry) => entry.capability).filter((entry) => allowed.includes(entry)),
+  ];
+  const note = (entry: PluginQuickUpdate["added"][number]) =>
+    entry.projectScoped ? pluginUpdateScopeNote(projectTitles) : entry.detail;
+  return (
+    <>
+      <View className="gap-1 px-2">
+        <Text className="text-lg font-t3-medium text-foreground">Update {manifest.name}</Text>
+        <Text className="text-base text-foreground-muted">
+          v{installation.manifest.version} → v{manifest.version}
+        </Text>
+      </View>
+      {added.length === 0 ? (
+        <Text className="px-2 text-base text-foreground">
+          {offered.length === 0 ? "Nothing new to approve. " : ""}It keeps the access it has now.
+        </Text>
+      ) : (
+        <SettingsSection title="This update can also">
+          <View className="gap-3 p-4">
+            {added.map((entry) => (
+              <View key={entry.capability} className="gap-0.5">
+                <Text className="text-base text-foreground">{entry.title}</Text>
+                <Text className="text-sm text-foreground-muted">{note(entry)}</Text>
+              </View>
+            ))}
+          </View>
+        </SettingsSection>
+      )}
+      {offered.length > 0 ? (
+        <SettingsSection title="You can also allow">
+          {offered.map((entry) => (
+            <SettingsSwitchRow
+              key={entry.capability}
+              label={entry.title}
+              subtitle={note(entry)}
+              value={allowed.includes(entry.capability)}
+              disabled={saving}
+              onValueChange={(next) =>
+                setAllowed((current) =>
+                  next
+                    ? [...current, entry.capability]
+                    : current.filter((capability) => capability !== entry.capability),
+                )
+              }
+            />
+          ))}
+        </SettingsSection>
+      ) : null}
+      <PluginRevisionChanges installation={installation} subject={subject} />
+      {runningLocalFix ? (
+        <Text className="px-2 text-sm text-foreground-muted">
+          {`This is the publisher's version ${manifest.version}. ${pluginCurrentRevisionNote(installation)} After switching, your local fix stays available as the previous version.`}
+        </Text>
+      ) : added.length > 0 ? (
+        <Text className="px-2 text-sm text-foreground-muted">
+          Everything else stays the same. {pluginCurrentRevisionNote(installation)}
+        </Text>
+      ) : null}
+      <Button
+        label={labels.approve}
+        tone="primary"
+        fullWidth
+        loading={saving}
+        disabled={!canManage}
+        onPress={() => void approve({ capabilities, projectIds: quickUpdate.grants.projectIds })}
+      />
+      <Button label={labels.keep} tone="secondary" fullWidth disabled={saving} onPress={goBack} />
+      <Button
+        label={details ? "Hide details" : "Details"}
+        tone="secondary"
+        fullWidth
+        onPress={() => setDetails((current) => !current)}
+      />
+      {details ? (
+        <>
+          <PluginSourceSection subject={subject} />
+          <SettingsSection title="Allowed after updating">
+            <View className="gap-1 p-4">
+              <Text className="text-sm text-foreground-muted">
+                {capabilities.length === 0
+                  ? "No permissions."
+                  : describePluginCapabilities(manifest)
+                      .filter((entry) => entry.known && capabilities.includes(entry.capability))
+                      .map((entry) => entry.title)
+                      .join(" · ")}
+              </Text>
+              {pluginNeedsProjects(manifest) ? (
+                <Text className="text-sm text-foreground-muted">
+                  {projectTitles.length === 0
+                    ? "No projects chosen."
+                    : `Projects: ${projectTitles.join(", ")}`}
+                </Text>
+              ) : null}
+            </View>
+          </SettingsSection>
+          <Button
+            label={labels.discard}
+            tone="danger"
+            fullWidth
+            disabled={saving || !canManage}
+            onPress={() => void discardUpdate()}
+          />
+        </>
+      ) : null}
+    </>
+  );
+}
+
+function PluginRevisionChanges(props: {
+  readonly installation: PluginInstallation;
+  readonly subject: ReturnType<typeof pluginReviewSubject>;
+}) {
+  const { subject } = props;
+  if (subject.removedCapabilities.length === 0 && subject.settingChanges.length === 0) return null;
+  return (
+    <SettingsSection title={`Changes from v${props.installation.manifest.version}`}>
+      <View className="gap-1 p-4">
+        {subject.removedCapabilities.map((capability) => (
+          <Text key={`cap:${capability}`} className="text-sm text-foreground-muted">
+            No longer asks for {capability}
+          </Text>
+        ))}
+        {subject.settingChanges.map((change) => (
+          <Text key={`setting:${change.key}`} className="text-sm text-foreground-muted">
+            {change.label} setting {SETTING_CHANGE_TEXT[change.change]}
+          </Text>
+        ))}
+      </View>
+    </SettingsSection>
+  );
+}
+
+function PluginSourceSection(props: { readonly subject: ReturnType<typeof pluginReviewSubject> }) {
+  return (
+    <SettingsSection title="Source">
+      <View className="gap-1 p-4">
+        <Text className="text-sm text-foreground" selectable>
+          {pluginSourceLabel(props.subject.source)}
+        </Text>
+        <Text className="font-mono text-xs text-foreground-muted" selectable>
+          {props.subject.digest}
+        </Text>
+      </View>
+    </SettingsSection>
+  );
+}
+
+function PluginReview(props: {
+  readonly environmentId: EnvironmentId;
+  readonly installation: PluginInstallation;
+  readonly recoverySupported: boolean;
+}) {
+  const { environmentId, installation } = props;
+  const subject = pluginReviewSubject(installation);
+  const { manifest } = subject;
+  const isUpdate = subject.kind === "update";
+  const capabilities = describePluginCapabilities(manifest);
+  const runningLocalFix = installation.recovery?.activeSource === "local-repair";
+  const labels = reviewLabels(subject.revision, runningLocalFix);
+  const unsupported = capabilities
+    .filter((entry) => !entry.known && !entry.optional)
+    .map((entry) => entry.capability);
+  // The running version's availability says nothing about a staged update.
+  const incompatible =
+    (!isUpdate && isPluginUnavailable(installation)) || pluginHasUnsupportedRequirement(manifest);
+  const projects = useProjects().filter(
+    (project) => project.environmentId === environmentId && project.isScratch !== true,
+  );
+  const [grants, setGrants] = useState<PluginGrants>(() => initialPluginGrants(installation));
+  const { saving, canManage, approve, discardUpdate, goBack } = usePluginApproval(props);
+  const changed =
+    !isUpdate &&
+    installation.consentedDigest !== null &&
+    installation.consentedDigest !== installation.digest;
+  const projectScopedGranted = capabilities.some(
+    (entry) => entry.known && entry.projectScoped && grants.capabilities.includes(entry.capability),
+  );
   return (
     <>
       <View className="gap-1 px-2">
@@ -1068,22 +1270,7 @@ function PluginReview(props: {
           inside or outside T3 Code.
         </Text>
       ) : null}
-      {subject.removedCapabilities.length > 0 || subject.settingChanges.length > 0 ? (
-        <SettingsSection title={`Changes from v${installation.manifest.version}`}>
-          <View className="gap-1 p-4">
-            {subject.removedCapabilities.map((capability) => (
-              <Text key={`cap:${capability}`} className="text-sm text-foreground-muted">
-                No longer asks for {capability}
-              </Text>
-            ))}
-            {subject.settingChanges.map((change) => (
-              <Text key={`setting:${change.key}`} className="text-sm text-foreground-muted">
-                {change.label} setting {SETTING_CHANGE_TEXT[change.change]}
-              </Text>
-            ))}
-          </View>
-        </SettingsSection>
-      ) : null}
+      <PluginRevisionChanges installation={installation} subject={subject} />
       {changed ? (
         <Text className="px-2 text-sm text-warning-foreground">
           The plugin&apos;s files changed since you approved them. It stays stopped until you
@@ -1148,16 +1335,7 @@ function PluginReview(props: {
           )}
         </SettingsSection>
       ) : null}
-      <SettingsSection title="Source">
-        <View className="gap-1 p-4">
-          <Text className="text-sm text-foreground" selectable>
-            {pluginSourceLabel(subject.source)}
-          </Text>
-          <Text className="font-mono text-xs text-foreground-muted" selectable>
-            {subject.digest}
-          </Text>
-        </View>
-      </SettingsSection>
+      <PluginSourceSection subject={subject} />
       {incompatible ? (
         <Text className="px-2 text-sm text-danger-foreground">
           {unsupported.length > 0
@@ -1172,7 +1350,7 @@ function PluginReview(props: {
           fullWidth
           loading={saving}
           disabled={!canManage}
-          onPress={() => void approve()}
+          onPress={() => void approve(grants)}
         />
       )}
       {isUpdate ? (
@@ -1182,7 +1360,7 @@ function PluginReview(props: {
             tone="secondary"
             fullWidth
             disabled={saving}
-            onPress={() => navigation.goBack()}
+            onPress={goBack}
           />
           <Button
             label={labels.discard}
