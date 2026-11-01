@@ -360,7 +360,12 @@ export function SidebarProjectSectionHeader(props: {
             >
               {conversation.status}
             </span>
-            {conversation.jumpHint}
+            {conversation.jumpHint ? (
+              // Over the status and the new-thread button, which share this end of the heading.
+              <span className="pointer-events-none absolute right-1.5 top-1/2 z-10 flex -translate-y-1/2 rounded-sm bg-sidebar">
+                {conversation.jumpHint}
+              </span>
+            ) : null}
           </button>
           {foldable ? (
             // Over the icon, with room for a fingertip; never opens the conversation.
